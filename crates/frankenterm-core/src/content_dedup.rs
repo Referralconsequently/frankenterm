@@ -401,10 +401,6 @@ mod tests {
         DedupEngine::new(DedupConfig::default(), MemoryStore::default())
     }
 
-    fn engine_with_config(config: DedupConfig) -> DedupEngine<MemoryStore> {
-        DedupEngine::new(config, MemoryStore::default())
-    }
-
     // ── Hashing tests ─────────────────────────────────────────────────
 
     #[test]
