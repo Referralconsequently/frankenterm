@@ -153,18 +153,26 @@ run_rch_phase \
   "cargo test -p frankenterm-core --test vendored_async_contract_integration --no-default-features -- --test-threads=1" \
   test -p frankenterm-core --test vendored_async_contract_integration --no-default-features -- --test-threads=1
 
-# ---- Phase 4: Surface guard static analysis ---------------------------------
+# ---- Phase 4: Vendored feature error-context spot checks --------------------
 
-echo "=== Phase 4: Surface guard confinement tests ==="
+echo "=== Phase 4: Vendored error-context spot checks ==="
+run_rch_phase \
+  "vendored_error_context" \
+  "cargo test -p frankenterm-core --test vendored_async_contract_behavioral --no-default-features --features vendored vendored_error_chain_preserves -- --test-threads=1" \
+  test -p frankenterm-core --test vendored_async_contract_behavioral --no-default-features --features vendored vendored_error_chain_preserves -- --test-threads=1
+
+# ---- Phase 5: Surface guard static analysis ---------------------------------
+
+echo "=== Phase 5: Surface guard confinement tests ==="
 run_rch_phase \
   "surface_guard" \
   "cargo test -p frankenterm-core --test runtime_compat_surface_guard --no-default-features -- --test-threads=1" \
   test -p frankenterm-core --test runtime_compat_surface_guard --no-default-features -- --test-threads=1
 
-# ---- Phase 5: Repeat-run stability (determinism) ----------------------------
+# ---- Phase 6: Repeat-run stability (determinism) ----------------------------
 
-echo "=== Phase 5: Repeat-run stability (3 iterations) ==="
-emit_log "start" "stability" "phase5_start" "begin" "none" "${ARTIFACT_DIR}/stability_run1_${RUN_ID}.log" "3-pass determinism check"
+echo "=== Phase 6: Repeat-run stability (3 iterations) ==="
+emit_log "start" "stability" "phase6_start" "begin" "none" "${ARTIFACT_DIR}/stability_run1_${RUN_ID}.log" "3-pass determinism check"
 
 STABILITY_OK=true
 for iteration in 1 2 3; do
@@ -173,7 +181,7 @@ for iteration in 1 2 3; do
     env TMPDIR="${RCH_REMOTE_TMPDIR}" CARGO_TARGET_DIR="${RCH_TARGET_DIR}" \
     cargo test -p frankenterm-core --test vendored_async_contract_behavioral --no-default-features -- --test-threads=1; then
     STABILITY_OK=false
-    emit_log "fail" "stability_run${iteration}" "phase5_iteration" \
+    emit_log "fail" "stability_run${iteration}" "phase6_iteration" \
       "stability_failure" "non_deterministic" \
       "${stability_log}" "iteration=${iteration}"
     echo "  FAIL: stability run ${iteration} failed"
@@ -181,11 +189,11 @@ for iteration in 1 2 3; do
 done
 
 if [ "${STABILITY_OK}" = true ]; then
-  emit_log "pass" "stability" "phase5_complete" "3_iterations_stable" "none" "${ARTIFACT_DIR}" "all_3_passed"
+  emit_log "pass" "stability" "phase6_complete" "3_iterations_stable" "none" "${ARTIFACT_DIR}" "all_3_passed"
   echo "  PASS: all 3 stability runs passed"
 else
   FAIL_COUNT=$((FAIL_COUNT + 1))
-  emit_log "fail" "stability" "phase5_complete" "stability_failure" "non_deterministic" "${ARTIFACT_DIR}" ""
+  emit_log "fail" "stability" "phase6_complete" "stability_failure" "non_deterministic" "${ARTIFACT_DIR}" ""
   echo "  FAIL: repeat-run stability check failed"
 fi
 

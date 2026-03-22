@@ -129,10 +129,11 @@ fi
 echo -n "S11: Boundary harness enforces rch offload... "
 RCH_EXEC_REFS=$(grep -c 'run_rch_cargo_logged\|rch exec --' "${BOUNDARY_HARNESS}" || true)
 RCH_GUARD_REFS=$(grep -c 'lib_rch_guards.sh\|RCH-LOCAL-FALLBACK\|ensure_rch_ready\|workers probe' "${BOUNDARY_HARNESS}" || true)
-if [ "${RCH_EXEC_REFS}" -ge 1 ] && [ "${RCH_GUARD_REFS}" -ge 2 ]; then
-  echo "PASS (rch_exec_refs=${RCH_EXEC_REFS}, guard_refs=${RCH_GUARD_REFS})"; emit_log "pass" "boundary_harness_rch" "offload_guard_present" "" "${BOUNDARY_HARNESS}" "rch_exec_refs=${RCH_EXEC_REFS};guard_refs=${RCH_GUARD_REFS}"; PASS=$((PASS+1))
+VENDORED_PHASE_REFS=$(grep -c 'vendored_error_context\|--features vendored\|vendored_error_chain_preserves' "${BOUNDARY_HARNESS}" || true)
+if [ "${RCH_EXEC_REFS}" -ge 1 ] && [ "${RCH_GUARD_REFS}" -ge 2 ] && [ "${VENDORED_PHASE_REFS}" -ge 2 ]; then
+  echo "PASS (rch_exec_refs=${RCH_EXEC_REFS}, guard_refs=${RCH_GUARD_REFS}, vendored_refs=${VENDORED_PHASE_REFS})"; emit_log "pass" "boundary_harness_rch" "offload_guard_present" "" "${BOUNDARY_HARNESS}" "rch_exec_refs=${RCH_EXEC_REFS};guard_refs=${RCH_GUARD_REFS};vendored_refs=${VENDORED_PHASE_REFS}"; PASS=$((PASS+1))
 else
-  echo "FAIL"; emit_log "fail" "boundary_harness_rch" "offload_guard_missing" "E_RCH_GUARD" "${BOUNDARY_HARNESS}" "rch_exec_refs=${RCH_EXEC_REFS};guard_refs=${RCH_GUARD_REFS}"; FAIL=$((FAIL+1))
+  echo "FAIL"; emit_log "fail" "boundary_harness_rch" "offload_guard_missing" "E_RCH_GUARD" "${BOUNDARY_HARNESS}" "rch_exec_refs=${RCH_EXEC_REFS};guard_refs=${RCH_GUARD_REFS};vendored_refs=${VENDORED_PHASE_REFS}"; FAIL=$((FAIL+1))
 fi
 
 echo ""

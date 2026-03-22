@@ -18,6 +18,35 @@ use wezterm_font::FontConfiguration;
 use wgpu::util::DeviceExt;
 
 const INDICES_PER_CELL: usize = 6;
+const QUAD_CAPACITY_GROWTH_GRANULARITY: usize = 128;
+
+fn build_quad_indices(num_quads: usize) -> Vec<u32> {
+    let mut indices = Vec::with_capacity(num_quads * INDICES_PER_CELL);
+
+    for q in 0..num_quads {
+        let idx = (q * VERTICES_PER_CELL) as u32;
+
+        // Emit two triangles to form the glyph quad
+        indices.extend_from_slice(&[
+            idx + V_TOP_LEFT as u32,
+            idx + V_TOP_RIGHT as u32,
+            idx + V_BOT_LEFT as u32,
+            idx + V_TOP_RIGHT as u32,
+            idx + V_BOT_LEFT as u32,
+            idx + V_BOT_RIGHT as u32,
+        ]);
+    }
+
+    indices
+}
+
+fn round_quad_capacity(need_quads: usize) -> usize {
+    if need_quads == 0 {
+        return 0;
+    }
+
+    need_quads.div_ceil(QUAD_CAPACITY_GROWTH_GRANULARITY) * QUAD_CAPACITY_GROWTH_GRANULARITY
+}
 
 #[derive(Clone)]
 pub enum RenderContext {
@@ -521,21 +550,7 @@ impl RenderLayer {
             num_quads,
             verts.len() * std::mem::size_of::<Vertex>()
         );
-        let mut indices = vec![];
-        indices.reserve(num_quads * INDICES_PER_CELL);
-
-        for q in 0..num_quads {
-            let idx = (q * VERTICES_PER_CELL) as u32;
-
-            // Emit two triangles to form the glyph quad
-            indices.push(idx + V_TOP_LEFT as u32);
-            indices.push(idx + V_TOP_RIGHT as u32);
-            indices.push(idx + V_BOT_LEFT as u32);
-
-            indices.push(idx + V_TOP_RIGHT as u32);
-            indices.push(idx + V_BOT_LEFT as u32);
-            indices.push(idx + V_BOT_RIGHT as u32);
-        }
+        let indices = build_quad_indices(num_quads);
 
         let buffer = TripleVertexBuffer {
             index: RefCell::new(0),
@@ -651,9 +666,9 @@ impl RenderState {
         for layer in self.layers.borrow().iter() {
             for vb_idx in 0..3 {
                 if let Some(need_quads) = layer.need_more_quads(vb_idx) {
-                    // Round up to next multiple of 128 that is >=
-                    // the number of needed quads for this frame
-                    let num_quads = (need_quads + 127) & !127;
+                    // Round up to the next allocation bucket so bursty frames
+                    // don't trigger repeated tiny reallocations.
+                    let num_quads = round_quad_capacity(need_quads);
                     layer.reallocate_quads(vb_idx, num_quads).with_context(|| {
                         format!(
                             "Failed to allocate {} quads (needed {})",
@@ -775,5 +790,70 @@ impl RenderState {
 
         *glyph_cache = new_glyph_cache;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        INDICES_PER_CELL, QUAD_CAPACITY_GROWTH_GRANULARITY, build_quad_indices, round_quad_capacity,
+    };
+    use crate::quad::{V_BOT_LEFT, V_BOT_RIGHT, V_TOP_LEFT, V_TOP_RIGHT, VERTICES_PER_CELL};
+
+    #[test]
+    fn build_quad_indices_for_zero_quads_is_empty() {
+        assert!(build_quad_indices(0).is_empty());
+    }
+
+    #[test]
+    fn build_quad_indices_for_single_quad_matches_expected_triangles() {
+        assert_eq!(
+            build_quad_indices(1),
+            vec![
+                V_TOP_LEFT as u32,
+                V_TOP_RIGHT as u32,
+                V_BOT_LEFT as u32,
+                V_TOP_RIGHT as u32,
+                V_BOT_LEFT as u32,
+                V_BOT_RIGHT as u32,
+            ]
+        );
+    }
+
+    #[test]
+    fn build_quad_indices_offset_each_quad_by_vertex_stride() {
+        let indices = build_quad_indices(3);
+        assert_eq!(indices.len(), 3 * INDICES_PER_CELL);
+
+        for (quad_idx, chunk) in indices.chunks_exact(INDICES_PER_CELL).enumerate() {
+            let base = (quad_idx * VERTICES_PER_CELL) as u32;
+            assert_eq!(
+                chunk,
+                &[
+                    base + V_TOP_LEFT as u32,
+                    base + V_TOP_RIGHT as u32,
+                    base + V_BOT_LEFT as u32,
+                    base + V_TOP_RIGHT as u32,
+                    base + V_BOT_LEFT as u32,
+                    base + V_BOT_RIGHT as u32,
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn round_quad_capacity_uses_growth_granularity() {
+        assert_eq!(round_quad_capacity(0), 0);
+        assert_eq!(round_quad_capacity(1), QUAD_CAPACITY_GROWTH_GRANULARITY);
+        assert_eq!(round_quad_capacity(127), QUAD_CAPACITY_GROWTH_GRANULARITY);
+        assert_eq!(round_quad_capacity(128), QUAD_CAPACITY_GROWTH_GRANULARITY);
+        assert_eq!(
+            round_quad_capacity(129),
+            QUAD_CAPACITY_GROWTH_GRANULARITY * 2
+        );
+        assert_eq!(
+            round_quad_capacity(257),
+            QUAD_CAPACITY_GROWTH_GRANULARITY * 3
+        );
     }
 }
