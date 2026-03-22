@@ -114,7 +114,7 @@ where
                             }
                             return Err(err).context("encoding PDU to client");
                         }
-                    };
+                    }
                     match stream.flush().await {
                         Ok(()) => {}
                         Err(err) => {

@@ -78,7 +78,7 @@ fn safely_create_sock_path(unix_dom: &UnixDomain) -> anyhow::Result<UnixListener
     // exists using the methods on Path, so instead we just unconditionally
     // remove it and see what error occurs.
     match std::fs::remove_file(sock_path) {
-        Ok(_) => {}
+        Ok(()) => {}
         Err(err) => match err.kind() {
             std::io::ErrorKind::NotFound => {}
             _ => return Err(err).context(format!("Unable to remove {}", sock_path.display())),
@@ -88,7 +88,7 @@ fn safely_create_sock_path(unix_dom: &UnixDomain) -> anyhow::Result<UnixListener
     let listener = UnixListener::bind(sock_path)
         .with_context(|| format!("Failed to bind to {}", sock_path.display()))?;
 
-    config::set_sticky_bit(&sock_path);
+    config::set_sticky_bit(sock_path);
 
     Ok(listener)
 }

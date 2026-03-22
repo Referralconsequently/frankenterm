@@ -1,6 +1,6 @@
 use crate::PKI;
 use anyhow::{Context, anyhow};
-use codec::*;
+use codec::{DecodedPdu, InputSerial, GetPaneRenderChangesResponse, Pdu, SetPalette, NotifyAlert, ErrorResponse, Ping, Pong, SetWindowWorkspace, UnitResponse, SetClientId, SetFocusedPane, GetClientList, GetClientListResponse, ListPanes, ListPanesResponse, RenameWorkspace, WriteToPane, EraseScrollbackRequest, KillPane, SendPaste, SearchScrollbackRequest, SearchScrollbackResponse, SetPaneZoomed, GetPaneDirection, GetPaneDirectionResponse, ActivatePaneDirection, Resize, SendKeyDown, SendMouseEvent, GetPaneRenderableDimensions, GetPaneRenderableDimensionsResponse, GetPaneRenderChanges, LivenessResponse, GetLines, GetLinesResponse, GetImageCell, GetImageCellResponse, GetCodecVersionResponse, CODEC_VERSION, GetTlsCredsResponse, WindowTitleChanged, TabTitleChanged, AdjustPaneSize, SwapToLayout, SetLayoutCycle, CycleStack, SelectStackPane, UpdatePaneConstraints, SpawnV2, SplitPane, SpawnResponse, MovePaneToNewTab, MovePaneToNewTabResponse};
 use config::TermConfig;
 use mux::client::ClientId;
 use mux::domain::SplitSource;
@@ -302,7 +302,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -337,7 +337,7 @@ impl SessionHandler {
                     })
                     .detach();
                 }
-                send_response(Ok(Pdu::UnitResponse(UnitResponse {})))
+                send_response(Ok(Pdu::UnitResponse(UnitResponse {})));
             }
             Pdu::SetFocusedPane(SetFocusedPane { pane_id }) => {
                 let client_id = self.client_id.clone();
@@ -377,7 +377,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -392,7 +392,7 @@ impl SessionHandler {
                             }))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -404,7 +404,7 @@ impl SessionHandler {
                             let mut tabs = vec![];
                             let mut tab_titles = vec![];
                             let mut window_titles = HashMap::new();
-                            for window_id in mux.iter_windows().into_iter() {
+                            for window_id in mux.iter_windows() {
                                 let Some(window) = mux.get_window(window_id) else {
                                     log::warn!(
                                         "ListPanes skipped stale window id {} from iter_windows",
@@ -426,7 +426,7 @@ impl SessionHandler {
                             }))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -521,7 +521,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -596,7 +596,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -622,7 +622,7 @@ impl SessionHandler {
                             }))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -642,7 +642,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -667,7 +667,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -704,7 +704,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -723,7 +723,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -772,7 +772,7 @@ impl SessionHandler {
                             ))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -797,7 +797,7 @@ impl SessionHandler {
                             }))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -826,7 +826,7 @@ impl SessionHandler {
                             }))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -866,7 +866,7 @@ impl SessionHandler {
                             }))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -881,7 +881,7 @@ impl SessionHandler {
                             executable_path,
                             config_file_path: std::env::var_os("WEZTERM_CONFIG_FILE")
                                 .map(Into::into),
-                        })))
+                        })));
                     }
                 }
             }
@@ -913,7 +913,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -931,7 +931,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -970,7 +970,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -1002,7 +1002,7 @@ impl SessionHandler {
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
-                    )
+                    );
                 })
                 .detach();
             }
@@ -1024,7 +1024,7 @@ impl SessionHandler {
                                 Ok(Pdu::UnitResponse(UnitResponse {}))
                             },
                             send_response,
-                        )
+                        );
                     }
                 })
                 .detach();
@@ -1065,7 +1065,7 @@ impl SessionHandler {
                                 Ok(Pdu::UnitResponse(UnitResponse {}))
                             },
                             send_response,
-                        )
+                        );
                     }
                 })
                 .detach();
@@ -1088,7 +1088,7 @@ impl SessionHandler {
                                 Ok(Pdu::UnitResponse(UnitResponse {}))
                             },
                             send_response,
-                        )
+                        );
                     }
                 })
                 .detach();
@@ -1135,7 +1135,7 @@ impl SessionHandler {
             | Pdu::TabAddedToWindow { .. }
             | Pdu::GetPaneRenderableDimensionsResponse { .. }
             | Pdu::ErrorResponse { .. } => {
-                send_response(Err(anyhow!("expected a request, got {:?}", decoded.pdu)))
+                send_response(Err(anyhow!("expected a request, got {:?}", decoded.pdu)));
             }
             // Catch-all for newly added PDU variants (floating panes, etc.)
             // that this server implementation doesn't handle yet.
@@ -1798,7 +1798,7 @@ mod tests {
 
         handler.process_one(DecodedPdu {
             serial: 600,
-            pdu: Pdu::GetCodecVersion(GetCodecVersion {}),
+            pdu: Pdu::GetCodecVersion(codec::GetCodecVersion {}),
         });
 
         let resp = take_response(&captured);

@@ -16,7 +16,7 @@ fn client_domains(config: &config::ConfigHandle) -> Vec<ClientDomainConfig> {
         domains.push(ClientDomainConfig::Unix(unix_dom.clone()));
     }
 
-    for ssh_dom in config.ssh_domains().into_iter() {
+    for ssh_dom in config.ssh_domains() {
         if ssh_dom.multiplexing == SshMultiplexing::WezTerm {
             domains.push(ClientDomainConfig::Ssh(ssh_dom.clone()));
         }
@@ -39,7 +39,7 @@ pub fn update_mux_domains_for_server(config: &ConfigHandle) -> anyhow::Result<()
 fn update_mux_domains_impl(config: &ConfigHandle, is_standalone_mux: bool) -> anyhow::Result<()> {
     let mux = Mux::get();
 
-    for client_config in client_domains(&config) {
+    for client_config in client_domains(config) {
         if mux.get_domain_by_name(client_config.name()).is_some() {
             continue;
         }
@@ -48,7 +48,7 @@ fn update_mux_domains_impl(config: &ConfigHandle, is_standalone_mux: bool) -> an
         mux.add_domain(&domain);
     }
 
-    for ssh_dom in config.ssh_domains().into_iter() {
+    for ssh_dom in config.ssh_domains() {
         if ssh_dom.multiplexing != SshMultiplexing::None {
             continue;
         }
@@ -97,11 +97,9 @@ fn update_mux_domains_impl(config: &ConfigHandle, is_standalone_mux: bool) -> an
                 mux.set_default_domain(&dom);
             }
         }
-    } else {
-        if let Some(name) = &config.default_domain {
-            if let Some(dom) = mux.get_domain_by_name(name) {
-                mux.set_default_domain(&dom);
-            }
+    } else if let Some(name) = &config.default_domain {
+        if let Some(dom) = mux.get_domain_by_name(name) {
+            mux.set_default_domain(&dom);
         }
     }
 

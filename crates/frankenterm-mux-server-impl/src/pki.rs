@@ -42,11 +42,9 @@ impl Pki {
         };
 
         if let Ok(iter) = dns_lookup::getaddrinfo(Some(&hostname), None, Some(hints)) {
-            for entry in iter {
-                if let Ok(entry) = entry {
-                    if let Some(canon) = entry.canonname {
-                        alt_names.push(canon);
-                    }
+            for entry in iter.flatten() {
+                if let Some(canon) = entry.canonname {
+                    alt_names.push(canon);
                 }
             }
         }
@@ -81,7 +79,7 @@ impl Pki {
         std::fs::write(&server_pem_path, signed_cert.as_bytes())
             .context(format!("saving {}", server_pem_path.display()))?;
 
-        Ok(Self { pki_dir, ca_cert })
+        Ok(Self { ca_cert, pki_dir })
     }
 
     pub fn generate_client_cert(&self) -> anyhow::Result<String> {
