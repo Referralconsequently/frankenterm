@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::mut_from_ref)]
 // let () = msg_send! is a common pattern for objc
 #![allow(clippy::let_unit_value)]
 
@@ -199,6 +201,7 @@ impl ConnectionOps for Connection {
     }
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn nsscreen_to_screen_info(screen: *mut Object) -> ScreenInfo {
     let frame = unsafe { NSScreen::frame(screen) };
     let backing_frame = unsafe { NSScreen::convertRectToBacking_(screen, frame) };

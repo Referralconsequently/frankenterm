@@ -14,7 +14,7 @@
 // Both async-smol and async-asupersync may be enabled simultaneously due to Cargo
 // workspace feature unification. When both are active, asupersync takes priority.
 
-use anyhow::{Context as _, Error, bail};
+use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
 use frankenterm_term::color::ColorPalette;
 use frankenterm_term::{Alert, ClipboardSelection, StableRowIndex, TerminalSize};
@@ -199,7 +199,8 @@ fn buffered_frame_len(buffer: &[u8]) -> anyhow::Result<Option<usize>> {
     };
 
     let raw_len = tagged_len & !COMPRESSED_MASK;
-    let payload_len: usize = raw_len.try_into()
+    let payload_len: usize = raw_len
+        .try_into()
         .map_err(|_| anyhow::anyhow!("buffered PDU length {raw_len} does not fit in usize"))?;
     let prefix_len = buffer.len().saturating_sub(slice.len());
     let total_len = prefix_len
@@ -1670,28 +1671,22 @@ mod test {
 
     #[test]
     fn pdu_is_user_input_true_variants() {
-        assert!(
-            Pdu::WriteToPane(WriteToPane {
-                pane_id: 0,
-                data: vec![]
-            })
-            .is_user_input()
-        );
-        assert!(
-            Pdu::SendPaste(SendPaste {
-                pane_id: 0,
-                data: String::new()
-            })
-            .is_user_input()
-        );
-        assert!(
-            Pdu::Resize(Resize {
-                containing_tab_id: 0,
-                pane_id: 0,
-                size: TerminalSize::default(),
-            })
-            .is_user_input()
-        );
+        assert!(Pdu::WriteToPane(WriteToPane {
+            pane_id: 0,
+            data: vec![]
+        })
+        .is_user_input());
+        assert!(Pdu::SendPaste(SendPaste {
+            pane_id: 0,
+            data: String::new()
+        })
+        .is_user_input());
+        assert!(Pdu::Resize(Resize {
+            containing_tab_id: 0,
+            pane_id: 0,
+            size: TerminalSize::default(),
+        })
+        .is_user_input());
     }
 
     #[test]
@@ -2450,14 +2445,12 @@ mod test {
 
     #[test]
     fn pdu_is_user_input_set_pane_zoomed() {
-        assert!(
-            Pdu::SetPaneZoomed(SetPaneZoomed {
-                containing_tab_id: 0,
-                pane_id: 0,
-                zoomed: true,
-            })
-            .is_user_input()
-        );
+        assert!(Pdu::SetPaneZoomed(SetPaneZoomed {
+            containing_tab_id: 0,
+            pane_id: 0,
+            zoomed: true,
+        })
+        .is_user_input());
     }
 
     #[test]

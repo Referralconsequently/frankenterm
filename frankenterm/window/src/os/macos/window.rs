@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::mut_from_ref)]
 // let () = msg_send! is a common pattern for objc
 #![allow(clippy::let_unit_value)]
 
@@ -159,6 +161,7 @@ impl GlContextPair {
     /// project (and MetalANGLE) both provide implementations.
     /// The ANGLE EGL implementation wants a CALayer descendant passed
     /// as the EGLNativeWindowType.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn create(view: id) -> anyhow::Result<Self> {
         let behavior = if cfg!(debug_assertions) {
             glium::debug::DebugCallbackBehavior::DebugMessageOnError
@@ -241,7 +244,8 @@ mod cglbits {
     }
 
     impl GlState {
-        pub fn create(view: id) -> anyhow::Result<Self> {
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn create(view: id) -> anyhow::Result<Self> {
             log::trace!("Calling NSOpenGLPixelFormat::initWithAttributes");
             let pixel_format = unsafe {
                 StrongPtr::new(NSOpenGLPixelFormat::alloc(nil).initWithAttributes_(&[
@@ -542,7 +546,7 @@ impl Window {
             // better than creating them all centered which is what we used
             // to do here.
             thread_local! {
-                static LAST_POSITION: RefCell<Option<NSPoint>> = RefCell::new(None);
+                static LAST_POSITION: RefCell<Option<NSPoint>> = const { RefCell::new(None) };
             }
 
             let frame = NSWindow::frame(*window);
@@ -583,7 +587,7 @@ impl Window {
                 last_pos.borrow_mut().replace(next_pos);
             });
 
-            window.setTitle_(*nsstring(&name));
+            window.setTitle_(*nsstring(name));
             window.setAcceptsMouseMovedEvents_(YES);
 
             let view = WindowView::init_with_frame(&inner, rect)?;
@@ -1772,7 +1776,7 @@ impl Inner {
             // We treat that the same as the dead key disabled state:
             // we want to clock through a space keypress so that we clear
             // the state and output the original keypress.
-            let generate_space = !use_dead_keys || result.text.len() == 0;
+            let generate_space = !use_dead_keys || result.text.is_empty();
 
             if generate_space {
                 // synthesize a SPACE press to
@@ -2693,9 +2697,7 @@ impl WindowView {
                             // `Acted`, we will assume that we're safe to replay
                             // that last action.
                             if is_a_repeat {
-                                if let Some(event) =
-                                    inner.ime_last_event.as_ref().map(|e| e.clone())
-                                {
+                                if let Some(event) = inner.ime_last_event.clone() {
                                     inner.events.dispatch(WindowEvent::KeyEvent(event));
                                     return;
                                 }
@@ -2929,7 +2931,7 @@ impl WindowView {
             // higher up the callstack already has a mutable
             // reference and we'd panic.
             let is_full_screen = inner.fullscreen.is_some()
-                || inner.window.as_ref().map_or(false, |window| {
+                || inner.window.as_ref().is_some_and(|window| {
                     let window = window.load();
                     let style_mask = unsafe { NSWindow::styleMask(*window) };
                     style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask)
@@ -2943,7 +2945,7 @@ impl WindowView {
             // wezterm-gui/src/termwindow/resize.rs.
             // <https://github.com/wezterm/wezterm/issues/3503>
             let is_zoomed = !is_full_screen
-                && inner.window.as_ref().map_or(false, |window| {
+                && inner.window.as_ref().is_some_and(|window| {
                     let window = window.load();
                     unsafe { msg_send![*window, isZoomed] }
                 });
@@ -3070,8 +3072,7 @@ impl WindowView {
                 let window_id = inner.window_id;
                 let max_fps = inner.config.max_fps;
                 promise::spawn::spawn(async move {
-                    promise::spawn::sleep(std::time::Duration::from_millis(1000 / max_fps as u64))
-                        .await;
+                    promise::spawn::sleep(std::time::Duration::from_millis(1000 / max_fps)).await;
                     Connection::with_window_inner(window_id, move |inner| {
                         if let Some(window_view) = WindowView::get_this(unsafe { &**inner.view }) {
                             let mut state = window_view.inner.borrow_mut();
@@ -3142,6 +3143,7 @@ impl WindowView {
         YES
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn get_this(this: &Object) -> Option<&mut Self> {
         unsafe {
             let myself: *mut c_void = *this.get_ivar(VIEW_CLS_NAME);
@@ -3161,7 +3163,7 @@ impl WindowView {
         inner.borrow_mut().view_id.replace(view_id.weak());
 
         let view = Box::into_raw(Box::new(Self {
-            inner: Rc::clone(&inner),
+            inner: Rc::clone(inner),
         }));
 
         unsafe {

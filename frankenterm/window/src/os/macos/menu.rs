@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::mut_from_ref)]
 use crate::macos::{nsstring, nsstring_to_str};
 use crate::superclass;
 pub use cocoa::appkit::NSEventModifierFlags;
@@ -206,6 +208,7 @@ impl RepresentedItem {
 }
 
 impl MenuItem {
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn with_menu_item(item: id) -> Self {
         let item = unsafe { StrongPtr::retain(item) };
         Self { item }
@@ -248,6 +251,7 @@ impl MenuItem {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn set_target(&self, target: id) {
         unsafe {
             self.item.setTarget_(target);

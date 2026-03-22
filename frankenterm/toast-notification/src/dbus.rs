@@ -2,7 +2,7 @@
 //! See <https://developer.gnome.org/notification-spec/>
 
 use crate::ToastNotification;
-use futures_util::stream::{StreamExt, abortable};
+use futures_util::stream::{abortable, StreamExt};
 use promise::spawn::block_on;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
