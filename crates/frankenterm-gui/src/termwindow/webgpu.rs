@@ -638,6 +638,20 @@ mod tests {
     }
 
     #[test]
+    fn surface_format_keeps_first_family_even_if_later_entries_have_srgb_pairs() {
+        let formats = [
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        ];
+
+        assert_eq!(
+            select_surface_format(&formats).unwrap(),
+            wgpu::TextureFormat::Rgba16Float
+        );
+    }
+
+    #[test]
     fn surface_format_rejects_empty_capabilities_list() {
         assert!(select_surface_format(&[]).is_err());
     }
@@ -666,6 +680,40 @@ mod tests {
     fn view_formats_deduplicate_when_format_has_no_srgb_pair() {
         assert_eq!(
             select_view_formats_for_format(wgpu::TextureFormat::Rgba16Float),
+            vec![wgpu::TextureFormat::Rgba16Float]
+        );
+    }
+
+    #[test]
+    fn view_formats_normalize_linear_input_to_srgb_then_linear() {
+        assert_eq!(
+            select_view_formats_for_format(wgpu::TextureFormat::Bgra8Unorm),
+            vec![
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+                wgpu::TextureFormat::Bgra8Unorm,
+            ]
+        );
+    }
+
+    #[test]
+    fn view_formats_normalize_srgb_input_to_srgb_then_linear() {
+        assert_eq!(
+            select_view_formats_for_format(wgpu::TextureFormat::Bgra8UnormSrgb),
+            vec![
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+                wgpu::TextureFormat::Bgra8Unorm,
+            ]
+        );
+    }
+
+    #[test]
+    fn surface_view_formats_deduplicate_non_pair_formats_even_with_support_flag() {
+        let mut caps = wgpu::DownlevelCapabilities::default();
+        caps.flags
+            .insert(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
+
+        assert_eq!(
+            select_surface_view_formats(wgpu::TextureFormat::Rgba16Float, &caps),
             vec![wgpu::TextureFormat::Rgba16Float]
         );
     }
@@ -716,6 +764,18 @@ mod tests {
                 dpi: 96,
             }),
             (1280, 720)
+        );
+    }
+
+    #[test]
+    fn initial_surface_extent_clamps_large_dimensions_to_u32_max() {
+        assert_eq!(
+            initial_surface_extent(Dimensions {
+                pixel_width: usize::MAX,
+                pixel_height: usize::MAX,
+                dpi: 96,
+            }),
+            (u32::MAX, u32::MAX)
         );
     }
 }

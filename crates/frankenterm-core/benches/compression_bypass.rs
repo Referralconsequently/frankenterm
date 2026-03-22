@@ -14,9 +14,9 @@ use codec::{
 };
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use frankenterm_core::config::VendoredCompressionMode;
-use frankenterm_core::runtime_compat::unix::{AsyncReadExt, AsyncWriteExt};
+use frankenterm_core::runtime_compat::unix::AsyncWriteExt;
 use frankenterm_core::runtime_compat::{
-    CompatRuntime, Runtime, RuntimeBuilder, task, timeout, unix,
+    CompatRuntime, Runtime, RuntimeBuilder, io, task, timeout, unix,
 };
 use frankenterm_core::vendored::{DirectMuxClient, DirectMuxClientConfig};
 use std::hint::black_box;
@@ -103,7 +103,7 @@ async fn serve_handshake(stream: &mut unix::UnixStream, reject_uncompressed_firs
 
     loop {
         let mut temp = vec![0u8; 4096];
-        let read = match stream.read(&mut temp).await {
+        let read = match io::read(stream, &mut temp).await {
             Ok(0) => return,
             Ok(n) => n,
             Err(_) => return,

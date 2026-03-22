@@ -15,9 +15,9 @@ use codec::{
     CODEC_VERSION, GetCodecVersionResponse, GetPaneRenderChangesResponse, Pdu, UnitResponse,
 };
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use frankenterm_core::runtime_compat::unix::{AsyncReadExt, AsyncWriteExt};
+use frankenterm_core::runtime_compat::unix::AsyncWriteExt;
 use frankenterm_core::runtime_compat::{
-    CompatRuntime, Mutex, Runtime, RuntimeBuilder, sleep, task, unix,
+    CompatRuntime, Mutex, Runtime, RuntimeBuilder, io, sleep, task, unix,
 };
 use frankenterm_core::vendored::{DirectMuxClient, DirectMuxClientConfig};
 
@@ -91,7 +91,7 @@ async fn setup_client(
         let mut read_buf = Vec::new();
         loop {
             let mut temp = vec![0u8; 8192];
-            let read = match stream.read(&mut temp).await {
+            let read = match io::read(&mut stream, &mut temp).await {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(_) => break,

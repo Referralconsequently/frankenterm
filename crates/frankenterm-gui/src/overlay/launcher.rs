@@ -214,6 +214,29 @@ impl LauncherArgs {
 
 const ROW_OVERHEAD: usize = 3;
 
+fn visible_entry_count(entry_count: usize, top_row: usize, max_items: usize) -> usize {
+    entry_count
+        .saturating_sub(top_row)
+        .min(max_items.saturating_add(1))
+}
+
+fn next_active_idx(active_idx: usize, entry_count: usize) -> usize {
+    match entry_count.checked_sub(1) {
+        Some(last_idx) => active_idx.saturating_add(1).min(last_idx),
+        None => 0,
+    }
+}
+
+fn row_to_entry_index(row: usize, top_row: usize, entry_count: usize) -> Option<usize> {
+    if row == 0 {
+        return None;
+    }
+
+    top_row
+        .checked_add(row - 1)
+        .filter(|entry_idx| *entry_idx < entry_count)
+}
+
 fn count_label(count: usize, singular: &str, plural: &str) -> String {
     if count == 1 {
         format!("1 {singular}")
@@ -460,10 +483,11 @@ impl LauncherState {
         let size = term.get_screen_size()?;
         let max_width = size.cols.saturating_sub(6);
         let max_items = size.rows.saturating_sub(ROW_OVERHEAD);
-        if max_items != self.max_items {
+        let label_count = visible_entry_count(self.filtered_entries.len(), self.top_row, max_items);
+        if max_items != self.max_items || self.labels.len() != label_count {
             self.labels = quickselect::compute_labels_for_alphabet_with_preserved_case(
                 &self.alphabet,
-                self.filtered_entries.len().min(max_items + 1),
+                label_count,
             );
             self.max_items = max_items;
         }
@@ -588,7 +612,7 @@ impl LauncherState {
     }
 
     fn move_down(&mut self) {
-        self.active_idx = (self.active_idx + 1).min(self.filtered_entries.len() - 1);
+        self.active_idx = next_active_idx(self.active_idx, self.filtered_entries.len());
         if self.active_idx > self.top_row + self.max_items {
             self.top_row = self.active_idx.saturating_sub(self.max_items);
         }
@@ -698,15 +722,19 @@ impl LauncherState {
                                 .saturating_sub(1),
                         );
                     }
-                    if y > 0 && y as usize <= self.filtered_entries.len() {
-                        self.active_idx = self.top_row + y as usize - 1;
+                    if let Some(entry_idx) =
+                        row_to_entry_index(y as usize, self.top_row, self.filtered_entries.len())
+                    {
+                        self.active_idx = entry_idx;
                     }
                 }
                 InputEvent::Mouse(MouseEvent {
                     y, mouse_buttons, ..
                 }) => {
-                    if y > 0 && y as usize <= self.filtered_entries.len() {
-                        self.active_idx = self.top_row + y as usize - 1;
+                    if let Some(entry_idx) =
+                        row_to_entry_index(y as usize, self.top_row, self.filtered_entries.len())
+                    {
+                        self.active_idx = entry_idx;
 
                         if mouse_buttons == MouseButtons::LEFT {
                             if self.launch(self.active_idx) {
@@ -854,5 +882,27 @@ mod tests {
             "Domain [connected]: open new tab in domain `local`"
         );
         assert_eq!(active_idx, Some(0));
+    }
+
+    #[test]
+    fn launcher_navigation_stays_safe_when_filter_has_no_matches() {
+        assert_eq!(next_active_idx(0, 0), 0);
+        assert_eq!(next_active_idx(3, 4), 3);
+    }
+
+    #[test]
+    fn launcher_only_generates_labels_for_visible_rows() {
+        assert_eq!(visible_entry_count(0, 0, 10), 0);
+        assert_eq!(visible_entry_count(5, 0, 10), 5);
+        assert_eq!(visible_entry_count(5, 3, 10), 2);
+        assert_eq!(visible_entry_count(12, 6, 3), 4);
+    }
+
+    #[test]
+    fn mouse_row_mapping_rejects_rows_past_visible_entries() {
+        assert_eq!(row_to_entry_index(0, 3, 5), None);
+        assert_eq!(row_to_entry_index(1, 3, 5), Some(3));
+        assert_eq!(row_to_entry_index(2, 3, 5), Some(4));
+        assert_eq!(row_to_entry_index(3, 3, 5), None);
     }
 }

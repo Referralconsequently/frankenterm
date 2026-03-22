@@ -531,9 +531,12 @@ mod tests {
         quad.set_hsv(Some(hsv));
         quad.set_is_background_image();
 
+        let expected_fg: [f32; 4] = fg.into();
+        let expected_alt: [f32; 4] = alt.into();
+
         for vertex in vertices {
-            assert_eq!(vertex.fg_color, fg.into());
-            assert_eq!(vertex.alt_color, alt.into());
+            assert_eq!(vertex.fg_color, expected_fg);
+            assert_eq!(vertex.alt_color, expected_alt);
             assert_eq!(vertex.mix_value, 0.625);
             assert_eq!(vertex.hsv, [hsv.hue, hsv.saturation, hsv.brightness]);
             assert_eq!(vertex.has_color, IS_BG_IMAGE);

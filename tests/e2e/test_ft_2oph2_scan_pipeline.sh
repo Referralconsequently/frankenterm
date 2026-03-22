@@ -16,7 +16,6 @@ else
   TARGET_DIR="/tmp/target-rch-ft-2oph2-${RUN_ID}"
 fi
 LAST_STEP_LOG=""
-RCH_LOCAL_FALLBACK_COUNT=0
 BENCH_ENOSPC=0
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib_rch_guards.sh"
@@ -83,14 +82,15 @@ run_step() {
   return "${rc}"
 }
 
-record_rch_mode() {
+ensure_rch_remote_only() {
   local decision_path="$1"
-  if grep -q "\\[RCH\\] local" "${LAST_STEP_LOG}"; then
-    RCH_LOCAL_FALLBACK_COUNT=$((RCH_LOCAL_FALLBACK_COUNT + 1))
-    emit_log "validation" "${decision_path}.rch_mode" "rch_exec_mode" "degraded" "rch_fail_open_local_fallback" "none" "$(basename "${LAST_STEP_LOG}")"
-  else
-    emit_log "validation" "${decision_path}.rch_mode" "rch_exec_mode" "passed" "rch_remote_offload" "none" "$(basename "${LAST_STEP_LOG}")"
+  local input_summary="$2"
+  if grep -Eq "${RCH_FAIL_OPEN_REGEX}" "${LAST_STEP_LOG}" 2>/dev/null; then
+    emit_log "validation" "${decision_path}" "${input_summary}" "failed" "rch_fail_open_local_fallback" "RCH-LOCAL-FALLBACK" "$(basename "${LAST_STEP_LOG}")"
+    echo "rch fell back to local execution; failing per offload-only policy" >&2
+    exit 3
   fi
+  emit_log "validation" "${decision_path}.rch_mode" "rch_exec_mode" "passed" "rch_remote_offload" "none" "$(basename "${LAST_STEP_LOG}")"
 }
 
 run_rch_expect_success() {
@@ -100,11 +100,11 @@ run_rch_expect_success() {
   shift 3
 
   emit_log "validation" "${decision_path}" "${input_summary}" "running" "none" "none" "$(basename "${STDOUT_FILE}")"
-  if run_step "${label}" env CARGO_TARGET_DIR="${TARGET_DIR}" rch exec -- "$@"; then
-    record_rch_mode "${decision_path}"
+  if run_step "${label}" run_rch exec -- env CARGO_TARGET_DIR="${TARGET_DIR}" "$@"; then
+    ensure_rch_remote_only "${decision_path}" "${input_summary}"
     emit_log "validation" "${decision_path}" "${input_summary}" "passed" "command_succeeded" "none" "$(basename "${LAST_STEP_LOG}")"
   else
-    record_rch_mode "${decision_path}"
+    ensure_rch_remote_only "${decision_path}" "${input_summary}"
     emit_log "validation" "${decision_path}" "${input_summary}" "failed" "command_failed" "CARGO-FAIL" "$(basename "${LAST_STEP_LOG}")"
     exit 1
   fi
@@ -122,13 +122,13 @@ run_rch_expect_success_or_enospc_degraded() {
   fi
 
   emit_log "validation" "${decision_path}" "${input_summary}" "running" "none" "none" "$(basename "${STDOUT_FILE}")"
-  if run_step "${label}" env CARGO_TARGET_DIR="${TARGET_DIR}" rch exec -- "$@"; then
-    record_rch_mode "${decision_path}"
+  if run_step "${label}" run_rch exec -- env CARGO_TARGET_DIR="${TARGET_DIR}" "$@"; then
+    ensure_rch_remote_only "${decision_path}" "${input_summary}"
     emit_log "validation" "${decision_path}" "${input_summary}" "passed" "command_succeeded" "none" "$(basename "${LAST_STEP_LOG}")"
     return 0
   fi
 
-  record_rch_mode "${decision_path}"
+  ensure_rch_remote_only "${decision_path}" "${input_summary}"
   if rg -q "No space left on device" "${LAST_STEP_LOG}"; then
     BENCH_ENOSPC=1
     emit_log "validation" "${decision_path}" "${input_summary}" "degraded" "disk_full_enospc" "ENOSPC" "$(basename "${LAST_STEP_LOG}")"
@@ -143,6 +143,7 @@ emit_log "preflight" "startup" "scenario_start" "started" "none" "none" "$(basen
 : > "${STDOUT_FILE}"
 
 require_cmd jq
+require_cmd rg
 require_cmd rch
 require_cmd cargo
 
@@ -225,8 +226,8 @@ run_rch_expect_success_or_enospc_degraded \
   "cargo bench -p frankenterm-core --bench scan_pipeline --no-run" \
   cargo bench -p frankenterm-core --bench scan_pipeline --no-run
 
-if [[ "${RCH_LOCAL_FALLBACK_COUNT}" -gt 0 ]]; then
-  emit_log "summary" "scenario_complete" "scenario_complete_with_local_fallback" "degraded" "rch_fail_open_local_fallback" "none" "$(basename "${STDOUT_FILE}")"
+if [[ "${BENCH_ENOSPC}" -eq 1 ]]; then
+  emit_log "summary" "scenario_complete" "scenario_complete_with_benchmark_enospc" "degraded" "benchmark_skipped_due_enospc" "ENOSPC" "$(basename "${STDOUT_FILE}")"
 else
   emit_log "summary" "scenario_complete" "scenario_complete_remote_offload" "passed" "all_checks_passed" "none" "$(basename "${STDOUT_FILE}")"
 fi

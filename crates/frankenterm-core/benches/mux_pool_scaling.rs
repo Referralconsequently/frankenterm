@@ -18,8 +18,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 #[cfg(feature = "asupersync-runtime")]
 use frankenterm_core::cx;
 use frankenterm_core::pool::PoolConfig;
-use frankenterm_core::runtime_compat::unix::{AsyncReadExt, AsyncWriteExt};
-use frankenterm_core::runtime_compat::{CompatRuntime, Runtime, RuntimeBuilder, sleep, task, unix};
+use frankenterm_core::runtime_compat::unix::AsyncWriteExt;
+use frankenterm_core::runtime_compat::{CompatRuntime, Runtime, RuntimeBuilder, io, sleep, task, unix};
 use frankenterm_core::vendored::{DirectMuxClient, DirectMuxClientConfig, MuxPool, MuxPoolConfig};
 
 mod bench_common;
@@ -77,7 +77,7 @@ async fn spawn_mock_server(temp_dir: &tempfile::TempDir, response_delay: Duratio
                 let mut read_buf = Vec::new();
                 loop {
                     let mut temp = vec![0u8; 4096];
-                    let read = match stream.read(&mut temp).await {
+                    let read = match io::read(&mut stream, &mut temp).await {
                         Ok(0) => break,
                         Ok(n) => n,
                         Err(_) => break,
