@@ -4404,7 +4404,8 @@ mod tests {
     fn mpsc_queue_depth_computation_is_correct() {
         // Validates queue depth accounting for a fixed-capacity channel.
         let (tx, _rx) = mpsc::channel::<u8>(16);
-        let max_cap = 16usize;
+        #[allow(unused_variables)]
+            let max_cap = 16usize;
         assert_eq!(max_cap, 16);
 
         // Empty queue: depth should be 0
@@ -4416,6 +4417,7 @@ mod tests {
     fn mpsc_queue_depth_increases_with_sends() {
         run_async_test(async {
             let (tx, mut rx) = mpsc::channel::<u8>(16);
+            #[allow(unused_variables)]
             let max_cap = 16usize;
 
             // Send some items
@@ -4423,12 +4425,18 @@ mod tests {
             send_mpsc(&tx, 2).await;
             send_mpsc(&tx, 3).await;
 
+            #[cfg(not(feature = "asupersync-runtime"))]
             let depth = max_cap - tx.capacity();
+            #[cfg(feature = "asupersync-runtime")]
+            let depth = rx.len();
             assert_eq!(depth, 3);
 
             // Drain one item, depth should decrease
             let _ = recv_mpsc(&mut rx).await;
+            #[cfg(not(feature = "asupersync-runtime"))]
             let depth = max_cap - tx.capacity();
+            #[cfg(feature = "asupersync-runtime")]
+            let depth = rx.len();
             assert_eq!(depth, 2);
         });
     }

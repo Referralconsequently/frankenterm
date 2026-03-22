@@ -5385,7 +5385,7 @@ mod tests {
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let _env = CassToolTestEnv::install(
+        let env = CassToolTestEnv::install(
             r#"printf '%s' '{"query":"agent context","count":1,"hits":[{"source_path":"/tmp/session.md","line_number":42,"agent":"codex","content":"needle hit"}]}'"#,
         );
         let tool = WaCassSearchTool;
@@ -5450,7 +5450,7 @@ mod tests {
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let _env = CassToolTestEnv::install(
+        let env = CassToolTestEnv::install(
             r#"printf '%s' '{"source_path":"/tmp/session.md","line_number":42,"match_line":{"line_number":42,"content":"needle hit","role":"assistant"},"context_before":[{"line_number":41,"content":"before","role":"user"}],"context_after":[{"line_number":43,"content":"after","role":"assistant"}]}'"#,
         );
         let tool = WaCassViewTool;
@@ -5489,7 +5489,7 @@ mod tests {
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let _env = CassToolTestEnv::install(
+        let env = CassToolTestEnv::install(
             r#"printf '%s' '{"healthy":true,"index_path":"/tmp/.cass/index","total_sessions":150,"stale":false}'"#,
         );
         let tool = WaCassStatusTool;
@@ -5522,7 +5522,7 @@ mod tests {
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let _env = CassToolTestEnv::install(
+        let env = CassToolTestEnv::install(
             r#"printf '%s\n' 'cass exploded' >&2
 exit 17"#,
         );

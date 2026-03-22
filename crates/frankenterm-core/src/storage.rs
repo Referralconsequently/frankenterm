@@ -23130,7 +23130,8 @@ mod backpressure_integration_tests {
             // - Verify send times out (reserve with timeout)
             use std::time::Duration;
 
-            let (tx, _rx) = mpsc::channel::<u8>(2);
+            let (tx, rx) = mpsc::channel::<u8>(2);
+            #[allow(unused_variables)]
             let max_cap = 2usize;
 
             // Fill the channel
@@ -23143,7 +23144,10 @@ mod backpressure_integration_tests {
             assert!(result.is_err(), "Should timeout when channel is full");
 
             // Verify depth
+            #[cfg(not(feature = "asupersync-runtime"))]
             let depth = max_cap - tx.capacity();
+            #[cfg(feature = "asupersync-runtime")]
+            let depth = rx.len();
             assert_eq!(depth, 2, "Queue should be at capacity");
         });
     }
@@ -23154,6 +23158,7 @@ mod backpressure_integration_tests {
             use std::time::Duration;
 
             let (tx, mut rx) = mpsc::channel::<u8>(4);
+            #[allow(unused_variables)]
             let max_cap = 4usize;
 
             // Fill partially
@@ -23161,7 +23166,10 @@ mod backpressure_integration_tests {
             send_mpsc(&tx, 2).await;
             send_mpsc(&tx, 3).await;
 
+            #[cfg(not(feature = "asupersync-runtime"))]
             let depth_before = max_cap - tx.capacity();
+            #[cfg(feature = "asupersync-runtime")]
+            let depth_before = rx.len();
             assert_eq!(depth_before, 3);
 
             // Consume all items
@@ -23172,7 +23180,10 @@ mod backpressure_integration_tests {
             // Small yield for channel state to update
             crate::runtime_compat::sleep(Duration::from_millis(1)).await;
 
+            #[cfg(not(feature = "asupersync-runtime"))]
             let depth_after = max_cap - tx.capacity();
+            #[cfg(feature = "asupersync-runtime")]
+            let depth_after = rx.len();
             assert_eq!(depth_after, 0, "Queue should drain when consumer resumes");
         });
     }

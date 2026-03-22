@@ -1094,7 +1094,7 @@ pub mod process {
 
             super::spawn_blocking(move || cmd.output())
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                .map_err(std::io::Error::other)?
         }
     }
 

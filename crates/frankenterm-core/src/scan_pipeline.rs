@@ -278,19 +278,18 @@ fn update_trigger_overlap_buffer(overlap: &mut Vec<u8>, bytes: &[u8], max_overla
 
     let tail_from_bytes = bytes.len().min(max_overlap);
     let keep_from_overlap = max_overlap.saturating_sub(tail_from_bytes);
-    let mut next = Vec::with_capacity(max_overlap);
 
     if keep_from_overlap > 0 && !overlap.is_empty() {
         let overlap_start = overlap.len().saturating_sub(keep_from_overlap);
-        next.extend_from_slice(&overlap[overlap_start..]);
+        overlap.drain(..overlap_start);
+    } else {
+        overlap.clear();
     }
 
     if tail_from_bytes > 0 {
         let byte_start = bytes.len() - tail_from_bytes;
-        next.extend_from_slice(&bytes[byte_start..]);
+        overlap.extend_from_slice(&bytes[byte_start..]);
     }
-
-    *overlap = next;
 }
 
 // =============================================================================
