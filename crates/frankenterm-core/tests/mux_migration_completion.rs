@@ -390,6 +390,46 @@ fn simulated_network_recovery_after_transient_fault_delivers_new_data() {
     });
 }
 
+#[test]
+fn simulated_network_read_error_then_recovery_preserves_buffered_data() {
+    let rt = RuntimeFixture::current_thread();
+    rt.block_on(async {
+        let cx = healthy_cx();
+        let (a, b) = mock_unix_stream_pair();
+
+        a.write(&cx, b"pending-after-read-fault")
+            .await
+            .expect("seed pending payload");
+
+        let read_fault = SimulatedNetwork::new(
+            b.clone(),
+            SimulatedNetworkConfig {
+                read_error_rate: 1.0,
+                ..SimulatedNetworkConfig::healthy()
+            },
+            99,
+        );
+
+        let result = read_fault.read(&cx, 4096).await;
+        assert!(
+            result.is_err(),
+            "forced transient read error should surface"
+        );
+        assert_eq!(read_fault.errors_injected(), 1);
+        assert_eq!(
+            b.bytes_read(),
+            0,
+            "fault injection must not consume buffered bytes before recovery"
+        );
+
+        let recovered = SimulatedNetwork::new(b, SimulatedNetworkConfig::healthy(), 100);
+        let payload = recovered.read(&cx, 4096).await.expect("recovery read");
+        assert_eq!(payload, b"pending-after-read-fault");
+        assert_eq!(recovered.errors_injected(), 0);
+        assert_eq!(recovered.drops_injected(), 0);
+    });
+}
+
 // ===========================================================================
 // Section 5: Pool + MuxClient composition
 //

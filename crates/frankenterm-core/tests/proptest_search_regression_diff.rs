@@ -5,7 +5,7 @@
 //! `ReplayGateConfig`, and `ReplayGateVerdict`.
 
 use frankenterm_core::search::regression_diff::{
-    DiffArtifact, ReplayGateConfig, ReplayGateVerdict, RegressionScenario, ScenarioOutcome,
+    DiffArtifact, RegressionScenario, ReplayGateConfig, ReplayGateVerdict, ScenarioOutcome,
 };
 use frankenterm_core::search::schema_gate::SchemaGateResult;
 use proptest::prelude::*;
@@ -24,15 +24,13 @@ fn arb_regression_scenario() -> impl Strategy<Value = RegressionScenario> {
         1e-6_f32..0.1,
     )
         .prop_map(
-            |(name, lexical, semantic, top_k, tau_tolerance, score_tolerance)| {
-                RegressionScenario {
-                    name,
-                    lexical,
-                    semantic,
-                    top_k,
-                    tau_tolerance,
-                    score_tolerance,
-                }
+            |(name, lexical, semantic, top_k, tau_tolerance, score_tolerance)| RegressionScenario {
+                name,
+                lexical,
+                semantic,
+                top_k,
+                tau_tolerance,
+                score_tolerance,
             },
         )
 }
@@ -100,13 +98,15 @@ fn arb_schema_gate_result() -> impl Strategy<Value = SchemaGateResult> {
         proptest::collection::vec("[a-z_]{3,15}", 0..3),
         "[a-zA-Z ]{5,40}",
     )
-        .prop_map(|(safe, missing_fields, added_fields, summary)| SchemaGateResult {
-            safe,
-            missing_fields,
-            type_mismatches: vec![],
-            added_fields,
-            summary,
-        })
+        .prop_map(
+            |(safe, missing_fields, added_fields, summary)| SchemaGateResult {
+                safe,
+                missing_fields,
+                type_mismatches: vec![],
+                added_fields,
+                summary,
+            },
+        )
 }
 
 fn arb_replay_gate_verdict() -> impl Strategy<Value = ReplayGateVerdict> {

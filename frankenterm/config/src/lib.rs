@@ -955,9 +955,9 @@ mod tests {
 
     #[test]
     fn toml_to_dynamic_float() {
-        let val = toml::Value::Float(3.14);
+        let val = toml::Value::Float(3.5);
         let dyn_val = toml_to_dynamic(&val);
-        assert_eq!(dyn_val, 3.14f64.to_dynamic());
+        assert_eq!(dyn_val, 3.5f64.to_dynamic());
     }
 
     #[test]
@@ -992,7 +992,7 @@ mod tests {
                 let key = Value::String("name".to_string());
                 assert_eq!(obj.get(&key), Some(&Value::String("test".to_string())));
             }
-            other => panic!("expected Object, got {other:?}"),
+            other => panic!("expected Object, got {:?}", other),
         }
     }
 
@@ -1009,7 +1009,7 @@ mod tests {
                 let key_0 = 0isize.to_dynamic();
                 assert_eq!(obj.get(&key_0), Some(&Value::String("red".to_string())));
             }
-            other => panic!("expected Object, got {other:?}"),
+            other => panic!("expected Object, got {:?}", other),
         }
     }
 
@@ -1051,7 +1051,7 @@ mod tests {
         let dyn_val = json_to_dynamic(&val);
         match dyn_val {
             Value::Array(arr) => assert_eq!(arr.len(), 3),
-            other => panic!("expected Array, got {other:?}"),
+            other => panic!("expected Array, got {:?}", other),
         }
     }
 
@@ -1064,7 +1064,7 @@ mod tests {
                 let key_0 = 0isize.to_dynamic();
                 assert_eq!(obj.get(&key_0), Some(&Value::String("red".to_string())));
             }
-            other => panic!("expected Object with numeric keys, got {other:?}"),
+            other => panic!("expected Object with numeric keys, got {:?}", other),
         }
     }
 
@@ -1077,7 +1077,7 @@ mod tests {
                 let key = Value::String("color".to_string());
                 assert_eq!(obj.get(&key), Some(&Value::String("red".to_string())));
             }
-            other => panic!("expected Object with string keys, got {other:?}"),
+            other => panic!("expected Object with string keys, got {:?}", other),
         }
     }
 

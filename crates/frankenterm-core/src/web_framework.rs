@@ -19,7 +19,19 @@ pub(crate) use fastapi::prelude::{App, Method, Request, RequestContext, Response
 #[allow(unused_imports)]
 pub(crate) use fastapi::{ResponseBody, ServerConfig, ServerError, TcpServer};
 
-pub(crate) type FrameworkServerJoinResult =
+#[doc(hidden)]
+pub use fastapi::ResponseBody as FrameworkResponseBody;
+#[doc(hidden)]
+pub use fastapi::core::{Body as FrameworkRequestBody, TestClient as FrameworkWebTestClient};
+#[doc(hidden)]
+pub use fastapi::prelude::{
+    App as FrameworkApp, Method as FrameworkMethod, Request as FrameworkRequest,
+    RequestContext as FrameworkRequestContext, Response as FrameworkResponse,
+    StatusCode as FrameworkStatusCode,
+};
+
+#[doc(hidden)]
+pub type FrameworkServerJoinResult =
     std::result::Result<std::result::Result<(), ServerError>, task::JoinError>;
 
 /// Framework-owned runtime state for the feature-gated web server.
@@ -27,14 +39,16 @@ pub(crate) type FrameworkServerJoinResult =
 /// This keeps `fastapi` server/app internals inside the framework seam so the
 /// outer `web` module can evolve toward a replacement implementation without
 /// carrying transport/runtime details in its primary control surface.
-pub(crate) struct FrameworkWebRuntime {
+#[doc(hidden)]
+pub struct FrameworkWebRuntime {
     app: Arc<App>,
     server: Arc<TcpServer>,
     join: task::JoinHandle<std::result::Result<(), ServerError>>,
 }
 
 impl FrameworkWebRuntime {
-    pub(crate) async fn start(bind_addr: String, app: App) -> Result<(SocketAddr, Self)> {
+    #[doc(hidden)]
+    pub async fn start(bind_addr: String, app: App) -> Result<(SocketAddr, Self)> {
         match app.run_startup_hooks().await {
             StartupOutcome::Success => {}
             StartupOutcome::PartialSuccess { warnings } => {
@@ -68,17 +82,20 @@ impl FrameworkWebRuntime {
         Ok((local_addr, Self { app, server, join }))
     }
 
-    pub(crate) fn signal_shutdown(&self) {
+    #[doc(hidden)]
+    pub fn signal_shutdown(&self) {
         self.server.shutdown();
     }
 
-    pub(crate) fn join_handle_mut(
+    #[doc(hidden)]
+    pub fn join_handle_mut(
         &mut self,
     ) -> &mut task::JoinHandle<std::result::Result<(), ServerError>> {
         &mut self.join
     }
 
-    pub(crate) async fn finish(self, result: FrameworkServerJoinResult) -> Result<()> {
+    #[doc(hidden)]
+    pub async fn finish(self, result: FrameworkServerJoinResult) -> Result<()> {
         match result {
             Ok(Ok(())) => {}
             Ok(Err(ServerError::Shutdown)) => {}
@@ -102,10 +119,7 @@ impl FrameworkWebRuntime {
 // ── Helper functions ─────────────────────────────────────────────────────
 
 /// Build a JSON response with the given status code.
-pub(crate) fn json_response_with_status<T: serde::Serialize>(
-    status: StatusCode,
-    payload: &T,
-) -> Response {
+pub fn json_response_with_status<T: serde::Serialize>(status: StatusCode, payload: &T) -> Response {
     let body = serde_json::to_vec(payload).unwrap_or_default();
     Response::with_status(status)
         .header("content-type", b"application/json".to_vec())
@@ -113,7 +127,7 @@ pub(crate) fn json_response_with_status<T: serde::Serialize>(
 }
 
 /// Build an SSE streaming response with standard headers.
-pub(crate) fn sse_stream_response<S>(stream: S) -> Response
+pub fn sse_stream_response<S>(stream: S) -> Response
 where
     S: asupersync::stream::Stream<Item = Vec<u8>> + Send + 'static,
 {

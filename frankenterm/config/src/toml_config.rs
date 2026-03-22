@@ -436,7 +436,7 @@ family = "JetBrains Mono"
         assert_eq!(cfg.scrollback_lines, 50000);
         assert!((cfg.font_size - 16.0).abs() < 0.01);
         assert_eq!(cfg.color_scheme.as_deref(), Some("Builtin Dark"));
-        assert_eq!(cfg.enable_scroll_bar, true);
+        assert!(cfg.enable_scroll_bar);
         assert_eq!(cfg.initial_rows, 40);
         assert_eq!(cfg.initial_cols, 120);
     }

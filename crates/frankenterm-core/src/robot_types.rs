@@ -184,10 +184,9 @@ impl ErrorCode {
             | "robot.require_approval"
             | "robot.rate_limited"
             | "robot.approval_error" => ErrorCategory::Policy,
-            "robot.timeout"
-            | "robot.cass_timeout"
-            | "robot.cass_error"
-            | "robot.caut_error" => ErrorCategory::Network,
+            "robot.timeout" | "robot.cass_timeout" | "robot.cass_error" | "robot.caut_error" => {
+                ErrorCategory::Network
+            }
             "robot.assignment_not_found" => ErrorCategory::Workflow,
             code if code.starts_with("robot.workflow_")
                 || code.starts_with("robot.mission_")

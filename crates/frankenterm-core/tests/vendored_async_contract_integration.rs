@@ -153,6 +153,28 @@ fn compliance_with_mismatched_contract_id_is_non_compliant() {
     );
 }
 
+#[test]
+fn audit_report_mismatched_only_evidence_is_uncovered() {
+    let contract = standard_contracts().into_iter().next().unwrap();
+    let contract_id = contract.contract_id.clone();
+    let mut report = ContractAuditReport::new("mismatched-only", 4000);
+    let evidence = vec![ContractEvidence {
+        contract_id: "ABC-CAN-001".into(),
+        test_name: "wrong_contract".into(),
+        passed: true,
+        evidence_type: EvidenceType::StaticAnalysis,
+        detail: "mismatch".into(),
+    }];
+
+    report.add_compliance(ContractCompliance::from_evidence(contract, evidence));
+    report.finalize();
+
+    assert_eq!(report.uncovered_contracts, vec![contract_id]);
+    assert!(!report.overall_compliant);
+    assert_eq!(report.failing_contracts().len(), 1);
+    assert_eq!(report.failing_contracts()[0].matching_evidence_count(), 0);
+}
+
 // =============================================================================
 // Audit Report Assembly
 // =============================================================================
@@ -368,9 +390,10 @@ fn error_mapping_includes_vendored_to_core() {
         .filter(|c| c.category == ContractCategory::ErrorMapping)
         .collect();
     assert_eq!(err.len(), 2);
-    assert!(err
-        .iter()
-        .any(|c| c.direction == BoundaryDirection::VendoredToCore));
+    assert!(
+        err.iter()
+            .any(|c| c.direction == BoundaryDirection::VendoredToCore)
+    );
 }
 
 #[test]

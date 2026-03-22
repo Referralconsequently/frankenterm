@@ -8,7 +8,9 @@
 
 #![cfg(feature = "semantic-search")]
 
-use frankenterm_core::search::daemon::{DaemonRequest, DaemonResponse, EmbedRequest, EmbedResponse};
+use frankenterm_core::search::daemon::{
+    DaemonRequest, DaemonResponse, EmbedRequest, EmbedResponse,
+};
 use proptest::prelude::*;
 
 // =========================================================================

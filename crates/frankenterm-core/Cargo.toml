@@ -183,6 +183,11 @@ name = "cache_gc"
 harness = false
 
 [[bench]]
+name = "framework_throughput"
+harness = false
+required-features = ["mcp", "web"]
+
+[[bench]]
 name = "dashboard_aggregation"
 harness = false
 required-features = ["tui"]

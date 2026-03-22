@@ -316,11 +316,7 @@ impl CapacityGovernor {
 
         // Check for active operator overrides first.
         self.overrides.retain(|o| o.is_active(now_ms));
-        if let Some(ovr) = self
-            .overrides
-            .iter()
-            .find(|o| o.applies_to(category))
-        {
+        if let Some(ovr) = self.overrides.iter().find(|o| o.applies_to(category)) {
             let original = self.compute_decision(category, signals);
             let decision = GovernorDecision::Override {
                 operator: ovr.operator.clone(),

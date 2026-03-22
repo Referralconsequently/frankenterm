@@ -2521,8 +2521,8 @@ mod tests {
     fn dropped_file_quoting_posix_quotes_spaces() {
         let result = DroppedFileQuoting::Posix.escape("hello world");
         // shlex should quote strings with spaces
-        assert!(result.contains("hello"), "expected hello in {result}");
-        assert!(result.contains("world"), "expected world in {result}");
+        assert!(result.contains("hello"), "expected hello in {}", result);
+        assert!(result.contains("world"), "expected world in {}", result);
     }
 
     #[test]

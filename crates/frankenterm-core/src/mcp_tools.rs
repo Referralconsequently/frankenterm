@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 #[cfg(all(test, unix))]
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 #[allow(unused_imports)]
 use crate::mcp_framework::{
@@ -4384,6 +4384,8 @@ mod tests {
     #[cfg(unix)]
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
+    #[cfg(unix)]
+    use super::set_cass_test_binary_override;
     use super::{
         ActionKind, ActorKind, CompatRuntime, CompatRuntimeBuilder, Config, Content, McpContext,
         PaneCapabilities, PaneFilterConfig, PolicySurface, StorageHandle, Tool, ToolHandler,
@@ -4399,10 +4401,8 @@ mod tests {
         mcp_workflow_run_policy_input, serialize_mcp_audit_decision_context,
     };
     #[cfg(unix)]
-    use super::set_cass_test_binary_override;
-    use crate::mcp_error::MCP_ERR_INVALID_ARGS;
-    #[cfg(unix)]
     use crate::mcp_error::MCP_ERR_CASS;
+    use crate::mcp_error::MCP_ERR_INVALID_ARGS;
     use crate::plan::{
         MISSION_TX_SCHEMA_VERSION, MissionActorRole, MissionKillSwitchLevel, MissionTxContract,
         MissionTxState, StepAction, TxCommitStepInput, TxCompensation, TxId, TxIntent, TxOutcome,
@@ -5378,11 +5378,14 @@ mod tests {
     #[test]
     fn cass_search_tool_executes_cass_with_expected_args() {
         #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let env = CassToolTestEnv::install(
+        let _env = CassToolTestEnv::install(
             r#"printf '%s' '{"query":"agent context","count":1,"hits":[{"source_path":"/tmp/session.md","line_number":42,"agent":"codex","content":"needle hit"}]}'"#,
         );
         let tool = WaCassSearchTool;
@@ -5405,28 +5408,34 @@ mod tests {
             .expect("cass search call"),
         );
 
-        assert_eq!(env.args(), vec![
-            "search",
-            "agent context",
-            "--robot",
-            "--limit",
-            "5",
-            "--offset",
-            "2",
-            "--agent",
-            "codex",
-            "--workspace",
-            "/tmp/ws",
-            "--days",
-            "7",
-            "--fields",
-            "minimal",
-            "--max-tokens",
-            "128",
-        ]);
+        assert_eq!(
+            env.args(),
+            vec![
+                "search",
+                "agent context",
+                "--robot",
+                "--limit",
+                "5",
+                "--offset",
+                "2",
+                "--agent",
+                "codex",
+                "--workspace",
+                "/tmp/ws",
+                "--days",
+                "7",
+                "--fields",
+                "minimal",
+                "--max-tokens",
+                "128",
+            ]
+        );
         assert_eq!(envelope["ok"], true);
         assert_eq!(envelope["data"]["count"], 1);
-        assert_eq!(envelope["data"]["hits"][0]["source_path"], "/tmp/session.md");
+        assert_eq!(
+            envelope["data"]["hits"][0]["source_path"],
+            "/tmp/session.md"
+        );
         assert_eq!(envelope["data"]["hits"][0]["line_number"], 42);
     }
 
@@ -5434,11 +5443,14 @@ mod tests {
     #[test]
     fn cass_view_tool_executes_cass_with_expected_args() {
         #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let env = CassToolTestEnv::install(
+        let _env = CassToolTestEnv::install(
             r#"printf '%s' '{"source_path":"/tmp/session.md","line_number":42,"match_line":{"line_number":42,"content":"needle hit","role":"assistant"},"context_before":[{"line_number":41,"content":"before","role":"user"}],"context_after":[{"line_number":43,"content":"after","role":"assistant"}]}'"#,
         );
         let tool = WaCassViewTool;
@@ -5470,11 +5482,14 @@ mod tests {
     #[test]
     fn cass_status_tool_executes_cass_with_expected_args() {
         #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let env = CassToolTestEnv::install(
+        let _env = CassToolTestEnv::install(
             r#"printf '%s' '{"healthy":true,"index_path":"/tmp/.cass/index","total_sessions":150,"stale":false}'"#,
         );
         let tool = WaCassStatusTool;
@@ -5500,11 +5515,14 @@ mod tests {
     #[test]
     fn cass_status_tool_maps_nonzero_exit_to_mcp_error() {
         #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let env = CassToolTestEnv::install(
+        let _env = CassToolTestEnv::install(
             r#"printf '%s\n' 'cass exploded' >&2
 exit 17"#,
         );

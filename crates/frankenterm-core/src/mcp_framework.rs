@@ -227,12 +227,12 @@ fn build_loader(settings: &McpClientConfig) -> FrameworkConfigLoader {
                 loader = loader.with_path(path.clone());
             }
             return loader;
-        } else {
-            // If default paths are disabled and no custom paths are provided,
-            // return a loader pointing to a nonexistent path to ensure it finds nothing,
-            // rather than panicking. (The caller should ideally guard against this).
-            return FrameworkConfigLoader::from_path("/dev/null");
         }
+
+        // If default paths are disabled and no custom paths are provided,
+        // return a loader pointing to a nonexistent path to ensure it finds nothing,
+        // rather than panicking. (The caller should ideally guard against this).
+        return FrameworkConfigLoader::from_path("/dev/null");
     };
 
     for path in settings.discovery_paths.iter().rev() {

@@ -587,7 +587,15 @@ fn arb_cass_view_result() -> impl Strategy<Value = CassViewResult> {
         proptest::option::of("/[a-z/]{3,20}"),
     )
         .prop_map(
-            |(source_path, line_number, context_before, match_line, context_after, agent, workspace)| {
+            |(
+                source_path,
+                line_number,
+                context_before,
+                match_line,
+                context_after,
+                agent,
+                workspace,
+            )| {
                 CassViewResult {
                     source_path,
                     line_number,
@@ -980,7 +988,6 @@ fn search_result_empty_hits_count_consistency() {
 mod cass_export_tests {
     use super::*;
     // Removed unused import
-
 
     fn arb_export_query() -> impl Strategy<Value = CassExportQuery> {
         (

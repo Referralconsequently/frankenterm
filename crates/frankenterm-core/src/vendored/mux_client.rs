@@ -1162,7 +1162,7 @@ impl DirectMuxClient {
                 }
                 self.render_change_snapshots
                     .get(&pane_id)
-                    .map(|cached| Self::idle_render_snapshot(cached))
+                    .map(Self::idle_render_snapshot)
                     .ok_or_else(|| DirectMuxError::UnexpectedResponse {
                         expected: format!(
                             "GetPaneRenderChangesResponse or cached render snapshot for pane {pane_id}"

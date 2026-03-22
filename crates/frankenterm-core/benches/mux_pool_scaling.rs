@@ -19,7 +19,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use frankenterm_core::cx;
 use frankenterm_core::pool::PoolConfig;
 use frankenterm_core::runtime_compat::unix::AsyncWriteExt;
-use frankenterm_core::runtime_compat::{CompatRuntime, Runtime, RuntimeBuilder, io, sleep, task, unix};
+use frankenterm_core::runtime_compat::{
+    CompatRuntime, Runtime, RuntimeBuilder, io, sleep, task, unix,
+};
 use frankenterm_core::vendored::{DirectMuxClient, DirectMuxClientConfig, MuxPool, MuxPoolConfig};
 
 mod bench_common;

@@ -2956,8 +2956,8 @@ mod tests {
             g1_charset: CharSet::Uk,
         };
         let sc2 = sc.clone();
-        assert_eq!(sc2.wrap_next, true);
-        assert_eq!(sc2.dec_origin_mode, true);
+        assert!(sc2.wrap_next);
+        assert!(sc2.dec_origin_mode);
         assert_eq!(sc2.g0_charset, CharSet::DecLineDrawing);
         assert_eq!(sc2.g1_charset, CharSet::Uk);
     }

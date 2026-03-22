@@ -362,7 +362,7 @@ mod runtime_behavior_tests {
         runtime::block_on(async {
             match rx.recv().await {
                 Err(runtime::channel::RecvError) => {} // expected
-                Ok(v) => panic!("expected RecvError, got Ok({v})"),
+                Ok(v) => panic!("expected RecvError, got Ok({:?})", v),
             }
         });
     }

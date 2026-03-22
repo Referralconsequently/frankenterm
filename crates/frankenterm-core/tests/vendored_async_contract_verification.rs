@@ -22,11 +22,12 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use frankenterm_core::{
-    runtime_compat::{SurfaceDisposition, SURFACE_CONTRACT_V1},
+    runtime_compat::{SURFACE_CONTRACT_V1, SurfaceDisposition},
     vendored_async_contracts::{
-        compatibility_mapped_contract_ids, compatibility_unmapped_verifiable_contract_ids,
-        standard_compatibility_mappings, standard_contracts, AsyncBoundaryContract,
-        BoundaryDirection, ContractCategory, ContractCompliance, ContractEvidence, EvidenceType,
+        AsyncBoundaryContract, BoundaryDirection, ContractAuditReport, ContractCategory,
+        ContractCompliance, ContractEvidence, EvidenceType, compatibility_mapped_contract_ids,
+        compatibility_unmapped_verifiable_contract_ids, standard_compatibility_mappings,
+        standard_contracts,
     },
 };
 
@@ -604,6 +605,30 @@ fn v22b_compliance_rejects_mismatched_contract_ids() {
     );
 
     emit_contract_log("v22b", "infra", "mismatched_contract_id", "pass");
+}
+
+/// V22c: mismatched-only evidence keeps the audit entry uncovered.
+#[test]
+fn v22c_audit_report_marks_mismatched_only_evidence_uncovered() {
+    let contract = collect_contracts().into_iter().next().unwrap();
+    let contract_id = contract.contract_id.clone();
+    let mut report = ContractAuditReport::new("mismatched-only", 4_000);
+    let evidence = vec![ContractEvidence {
+        contract_id: "ABC-CAN-001".into(),
+        test_name: "test_mismatch_only".into(),
+        passed: true,
+        evidence_type: EvidenceType::StaticAnalysis,
+        detail: "wrong contract".into(),
+    }];
+
+    report.add_compliance(ContractCompliance::from_evidence(contract, evidence));
+    report.finalize();
+
+    assert_eq!(report.uncovered_contracts, vec![contract_id]);
+    assert_eq!(report.failing_contracts().len(), 1);
+    assert_eq!(report.failing_contracts()[0].matching_evidence_count(), 0);
+
+    emit_contract_log("v22c", "infra", "mismatched_only_uncovered", "pass");
 }
 
 // =============================================================================

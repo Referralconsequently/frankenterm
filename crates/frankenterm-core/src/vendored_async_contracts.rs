@@ -299,6 +299,16 @@ impl ContractCompliance {
             coverage,
         }
     }
+
+    /// Count evidence entries that actually target this contract.
+    #[must_use]
+    pub fn matching_evidence_count(&self) -> usize {
+        let contract_id = self.contract.contract_id.as_str();
+        self.evidence
+            .iter()
+            .filter(|e| e.contract_id == contract_id)
+            .count()
+    }
 }
 
 // =============================================================================
@@ -529,7 +539,7 @@ impl ContractAuditReport {
         self.uncovered_contracts = self
             .contracts
             .iter()
-            .filter(|c| c.evidence.is_empty())
+            .filter(|c| c.matching_evidence_count() == 0)
             .map(|c| c.contract.contract_id.clone())
             .collect();
     }
@@ -587,10 +597,10 @@ impl ContractAuditReport {
             lines.push(format!("  Failing contracts ({}):", failing_count));
             for c in self.failing_contracts() {
                 lines.push(format!(
-                    "    - {} ({:?}): {} evidence item(s)",
+                    "    - {} ({:?}): {} matching evidence item(s)",
                     c.contract.contract_id,
                     c.contract.category,
-                    c.evidence.len()
+                    c.matching_evidence_count()
                 ));
             }
         }
@@ -1069,6 +1079,35 @@ mod tests {
         // Should not be overall compliant because uncovered contracts have
         // zero evidence (compliant=false).
         assert!(!report.overall_compliant);
+    }
+
+    #[test]
+    fn audit_report_mismatched_only_evidence_counts_as_uncovered() {
+        let mut report = ContractAuditReport::new("audit-mismatched-001", 0);
+        let contract = find_contract("ABC-OWN-001");
+        let evidence = vec![make_evidence("ABC-CAN-001", "wrong-contract", true)];
+
+        report.add_compliance(ContractCompliance::from_evidence(
+            contract.clone(),
+            evidence,
+        ));
+        report.finalize();
+
+        assert_eq!(
+            report.uncovered_contracts,
+            vec![contract.contract_id.clone()],
+            "mismatched-only evidence must leave the target contract uncovered"
+        );
+        assert!(!report.overall_compliant);
+        assert_eq!(
+            report.failing_contracts()[0].matching_evidence_count(),
+            0,
+            "failing summary should report zero matching evidence for mismatched-only inputs"
+        );
+        assert!(
+            report.summary().contains("1 uncovered"),
+            "summary should include the uncovered contract count"
+        );
     }
 
     #[test]

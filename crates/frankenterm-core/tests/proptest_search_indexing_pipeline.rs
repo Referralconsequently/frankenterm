@@ -3,7 +3,9 @@
 //! Covers serde roundtrip, Clone, and PartialEq for `PaneWatermark`,
 //! `PipelineState`, and `PipelineSkipReason`.
 
-use frankenterm_core::search::indexing_pipeline::{PaneWatermark, PipelineSkipReason, PipelineState};
+use frankenterm_core::search::indexing_pipeline::{
+    PaneWatermark, PipelineSkipReason, PipelineState,
+};
 use proptest::prelude::*;
 
 // =========================================================================
