@@ -22,7 +22,7 @@ mod windows {
     use std::io::Error as IoError;
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
     use winapi::um::memoryapi::{
-        CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
+        CreateFileMappingW, FILE_MAP_ALL_ACCESS, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
     };
     use winapi::um::synchapi::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
     use winapi::um::winbase::{INFINITE, WAIT_OBJECT_0};
@@ -287,7 +287,7 @@ mod unix {
                     // Something to fill in later as/when that question arises!
                 }
                 let x11 = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
-                return format!("x11-{}-{}", x11, class_name);
+                format!("x11-{}-{}", x11, class_name)
             }
             #[cfg(target_os = "macos")]
             {

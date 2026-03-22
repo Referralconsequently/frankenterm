@@ -248,6 +248,7 @@ fn build_fallback_list() -> Vec<ParsedFont> {
     })
 }
 
+#[allow(unexpected_cfgs)]
 fn build_fallback_list_impl() -> anyhow::Result<Vec<ParsedFont>> {
     let menlo =
         new_from_name("Menlo", 0.0).map_err(|_| anyhow::anyhow!("failed to get Menlo font"))?;

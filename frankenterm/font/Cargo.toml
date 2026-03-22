@@ -56,3 +56,6 @@ objc.workspace = true
 [dev-dependencies]
 env_logger.workspace = true
 k9.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(cargo_clippy)'] }
