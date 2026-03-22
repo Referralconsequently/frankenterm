@@ -14,7 +14,7 @@
 // Both async-smol and async-asupersync may be enabled simultaneously due to Cargo
 // workspace feature unification. When both are active, asupersync takes priority.
 
-use anyhow::{bail, Context as _, Error};
+use anyhow::{Context as _, Error, bail};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
 use frankenterm_term::color::ColorPalette;
 use frankenterm_term::{Alert, ClipboardSelection, StableRowIndex, TerminalSize};
@@ -178,6 +178,39 @@ struct Decoded {
     serial: u64,
     data: Vec<u8>,
     is_compressed: bool,
+}
+
+fn buffered_frame_len(buffer: &[u8]) -> anyhow::Result<Option<usize>> {
+    let mut slice = buffer;
+    let tagged_len = match leb128::read::unsigned(&mut slice) {
+        Ok(len) => len,
+        Err(leb128::read::Error::IoError(err))
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(leb128::read::Error::IoError(err)) => {
+            return Err(anyhow::Error::new(err).context("reading buffered PDU length"));
+        }
+        Err(leb128::read::Error::Overflow) => anyhow::bail!("buffered PDU length leb128 overflow"),
+    };
+
+    let raw_len = tagged_len & !COMPRESSED_MASK;
+    let payload_len: usize = raw_len.try_into()
+        .map_err(|_| anyhow::anyhow!("buffered PDU length {raw_len} does not fit in usize"))?;
+    let prefix_len = buffer.len().saturating_sub(slice.len());
+    let total_len = prefix_len
+        .checked_add(payload_len)
+        .context("buffered PDU length overflow")?;
+
+    if buffer.len() < total_len {
+        return Ok(None);
+    }
+
+    Ok(Some(total_len))
 }
 
 /// Decode a frame.
@@ -592,6 +625,10 @@ impl Pdu {
     }
 
     pub fn stream_decode(buffer: &mut Vec<u8>) -> anyhow::Result<Option<DecodedPdu>> {
+        if buffered_frame_len(buffer)?.is_none() {
+            return Ok(None);
+        }
+
         let mut cursor = Cursor::new(buffer.as_slice());
         match Self::decode(&mut cursor) {
             Ok(decoded) => {
@@ -616,9 +653,8 @@ impl Pdu {
                         }
                         _ => {}
                     }
-                } else {
-                    log::error!("not an ioerror in stream_decode: {:?}", err);
                 }
+                log::error!("not an ioerror in stream_decode: {:?}", err);
                 Err(err)
             }
         }
@@ -1037,7 +1073,11 @@ pub struct GetPaneRenderableDimensionsResponse {
     pub pane_id: PaneId,
     pub cursor_position: StableCursorPosition,
     pub dimensions: RenderableDimensions,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // NOTE: skip_serializing_if removed — varbincode is a positional binary format
+    // where skipping fields misaligns all subsequent field positions. The `default`
+    // attribute alone handles backward compatibility for data serialized before this
+    // field existed (deserializer hits EOF → uses default).
+    #[serde(default)]
     pub tiered_scrollback_status: Option<PaneTieredScrollbackStatus>,
 }
 
@@ -1053,7 +1093,12 @@ pub struct GetPaneRenderChangesResponse {
     pub mouse_grabbed: bool,
     pub cursor_position: StableCursorPosition,
     pub dimensions: RenderableDimensions,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // NOTE: skip_serializing_if removed — varbincode is a positional binary format
+    // where skipping fields misaligns all subsequent field positions. When
+    // tiered_scrollback_status is None and skip_serializing_if is active, the None
+    // tag byte is not written, causing dirty_lines/title/etc. to shift position and
+    // produce "failed to fill whole buffer" codec errors during deserialization.
+    #[serde(default)]
     pub tiered_scrollback_status: Option<PaneTieredScrollbackStatus>,
     pub dirty_lines: Vec<Range<StableRowIndex>>,
     pub title: String,
@@ -1625,22 +1670,28 @@ mod test {
 
     #[test]
     fn pdu_is_user_input_true_variants() {
-        assert!(Pdu::WriteToPane(WriteToPane {
-            pane_id: 0,
-            data: vec![]
-        })
-        .is_user_input());
-        assert!(Pdu::SendPaste(SendPaste {
-            pane_id: 0,
-            data: String::new()
-        })
-        .is_user_input());
-        assert!(Pdu::Resize(Resize {
-            containing_tab_id: 0,
-            pane_id: 0,
-            size: TerminalSize::default(),
-        })
-        .is_user_input());
+        assert!(
+            Pdu::WriteToPane(WriteToPane {
+                pane_id: 0,
+                data: vec![]
+            })
+            .is_user_input()
+        );
+        assert!(
+            Pdu::SendPaste(SendPaste {
+                pane_id: 0,
+                data: String::new()
+            })
+            .is_user_input()
+        );
+        assert!(
+            Pdu::Resize(Resize {
+                containing_tab_id: 0,
+                pane_id: 0,
+                size: TerminalSize::default(),
+            })
+            .is_user_input()
+        );
     }
 
     #[test]
@@ -1839,6 +1890,38 @@ mod test {
         assert!(result.is_none());
         // Buffer should be preserved for future reads
         assert_eq!(buffer, vec![2u8]);
+    }
+
+    #[test]
+    fn stream_decode_partial_compressed_frame() {
+        let mut encoded = Vec::new();
+        let pdu = Pdu::WriteToPane(WriteToPane {
+            pane_id: 1,
+            data: vec![b'A'; 1024],
+        });
+        pdu.encode_with_mode(&mut encoded, 42, CompressionMode::Always)
+            .expect("encode compressed frame");
+
+        let split = (encoded.len() / 2).max(1).min(encoded.len() - 1);
+        let mut partial = encoded[..split].to_vec();
+        let result = Pdu::stream_decode(&mut partial).expect("partial compressed decode");
+        assert!(
+            result.is_none(),
+            "partial compressed frame should not decode"
+        );
+        assert_eq!(
+            partial,
+            encoded[..split],
+            "partial compressed bytes should remain buffered"
+        );
+
+        partial.extend_from_slice(&encoded[split..]);
+        let decoded = Pdu::stream_decode(&mut partial)
+            .expect("complete compressed decode")
+            .expect("compressed frame should decode");
+        assert_eq!(decoded.serial, 42);
+        assert_eq!(decoded.pdu, pdu);
+        assert!(partial.is_empty(), "full frame should be consumed");
     }
 
     #[test]
@@ -2367,12 +2450,14 @@ mod test {
 
     #[test]
     fn pdu_is_user_input_set_pane_zoomed() {
-        assert!(Pdu::SetPaneZoomed(SetPaneZoomed {
-            containing_tab_id: 0,
-            pane_id: 0,
-            zoomed: true,
-        })
-        .is_user_input());
+        assert!(
+            Pdu::SetPaneZoomed(SetPaneZoomed {
+                containing_tab_id: 0,
+                pane_id: 0,
+                zoomed: true,
+            })
+            .is_user_input()
+        );
     }
 
     #[test]
@@ -2513,6 +2598,51 @@ mod test {
         let decoded = Pdu::decode(encoded.as_slice()).unwrap();
         assert_eq!(decoded.serial, 0x53);
         assert_eq!(decoded.pdu, pdu);
+    }
+
+    #[test]
+    fn get_pane_render_changes_response_roundtrip_none_tiered_scrollback() {
+        // Regression test for ft-1qbjk: when tiered_scrollback_status is None,
+        // varbincode positional format must still roundtrip correctly. Previously,
+        // skip_serializing_if caused the None tag byte to be omitted, misaligning
+        // all subsequent fields and producing "failed to fill whole buffer" errors.
+        let pdu = Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
+            pane_id: 7,
+            mouse_grabbed: false,
+            cursor_position: StableCursorPosition::default(),
+            dimensions: RenderableDimensions {
+                cols: 80,
+                viewport_rows: 24,
+                scrollback_rows: 0,
+                physical_top: 0,
+                scrollback_top: 0,
+                dpi: 96,
+                pixel_width: 0,
+                pixel_height: 0,
+                reverse_video: false,
+            },
+            tiered_scrollback_status: None,
+            dirty_lines: Vec::new(),
+            title: "pane-7".to_string(),
+            working_dir: None,
+            bonus_lines: SerializedLines::default(),
+            input_serial: None,
+            seqno: 7,
+        });
+
+        let mut encoded = Vec::new();
+        pdu.encode(&mut encoded, 0x55).unwrap();
+        let decoded = Pdu::decode(encoded.as_slice()).unwrap();
+        assert_eq!(decoded.serial, 0x55);
+        assert_eq!(decoded.pdu, pdu);
+
+        // Also verify stream_decode works (which is what the mux_pool mock server uses)
+        let mut buf = encoded.clone();
+        let stream_decoded = Pdu::stream_decode(&mut buf)
+            .unwrap()
+            .expect("stream_decode should succeed");
+        assert_eq!(stream_decoded.serial, 0x55);
+        assert_eq!(stream_decoded.pdu, pdu);
     }
 
     #[test]
