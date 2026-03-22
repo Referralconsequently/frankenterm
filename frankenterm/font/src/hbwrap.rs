@@ -1,5 +1,4 @@
 //! Higher level harfbuzz bindings
-use freetype;
 
 pub use harfbuzz::*;
 
@@ -888,7 +887,7 @@ impl DrawOp {
 }
 
 impl ColorLine {
-    pub fn new_from_hb(line: *mut hb_color_line_t) -> Self {
+    pub unsafe fn new_from_hb(line: *mut hb_color_line_t) -> Self {
         let num_stops = unsafe {
             hb_color_line_get_color_stops(line, 0, std::ptr::null_mut(), std::ptr::null_mut())
         };

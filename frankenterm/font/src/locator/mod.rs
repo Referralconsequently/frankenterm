@@ -31,7 +31,7 @@ impl Display for FontOrigin {
     }
 }
 
-#[derive(Clone, Hash)]
+#[derive(Clone)]
 pub enum FontDataSource {
     OnDisk(PathBuf),
     BuiltIn {
@@ -68,12 +68,31 @@ impl FontDataSource {
                 Ok(Cow::Owned(data))
             }
             Self::BuiltIn { data, .. } => Ok(Cow::Borrowed(data)),
-            Self::Memory { data, .. } => Ok(Cow::Borrowed(&*data)),
+            Self::Memory { data, .. } => Ok(Cow::Borrowed(data)),
         }
     }
 }
 
 impl Eq for FontDataSource {}
+
+impl std::hash::Hash for FontDataSource {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::OnDisk(path) => {
+                0_u8.hash(state);
+                path.hash(state);
+            }
+            Self::BuiltIn { name, .. } => {
+                1_u8.hash(state);
+                name.hash(state);
+            }
+            Self::Memory { name, .. } => {
+                2_u8.hash(state);
+                name.hash(state);
+            }
+        }
+    }
+}
 
 impl PartialEq for FontDataSource {
     fn eq(&self, other: &Self) -> bool {
@@ -144,12 +163,7 @@ impl std::hash::Hash for FontDataHandle {
 
 impl PartialOrd for FontDataHandle {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (&self.source, self.index, self.variation, &self.origin).partial_cmp(&(
-            &other.source,
-            other.index,
-            other.variation,
-            &other.origin,
-        ))
+        Some(self.cmp(other))
     }
 }
 
