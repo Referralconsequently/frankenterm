@@ -11044,6 +11044,29 @@ async fn emit_recorder_backend_lifecycle_event(
 ) -> anyhow::Result<i64> {
     use anyhow::Context as _;
 
+    // Ensure the sentinel system pane (pane_id=0) exists so that the foreign
+    // key constraint on events.pane_id is satisfied for system-level events.
+    let now = now_epoch_ms();
+    let system_pane = frankenterm_core::storage::PaneRecord {
+        pane_id: 0,
+        pane_uuid: None,
+        domain: "system".to_string(),
+        window_id: None,
+        tab_id: None,
+        title: Some("system".to_string()),
+        cwd: None,
+        tty_name: None,
+        first_seen_at: now,
+        last_seen_at: now,
+        observed: false,
+        ignore_reason: Some("system_sentinel".to_string()),
+        last_decision_at: None,
+    };
+    storage
+        .upsert_pane(system_pane)
+        .await
+        .context("failed to upsert system sentinel pane for lifecycle marker")?;
+
     let event = frankenterm_core::storage::StoredEvent {
         id: 0,
         pane_id: 0,
@@ -11055,7 +11078,7 @@ async fn emit_recorder_backend_lifecycle_event(
         extracted: Some(recorder_backend_lifecycle_payload(selection)),
         matched_text: None,
         segment_id: None,
-        detected_at: now_epoch_ms(),
+        detected_at: now,
         dedupe_key: None,
         handled_at: None,
         handled_by_workflow_id: None,

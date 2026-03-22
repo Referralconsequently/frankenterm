@@ -1020,11 +1020,101 @@ pub mod unix {
 
 /// Async process primitives for the active runtime.
 ///
-/// NOTE: Still re-exports tokio::process::Command. Migrating to
-/// asupersync::process::Command requires updating 29 call sites
-/// that use `.output().await` (asupersync's output() is sync).
+/// When the asupersync runtime is active, provides a thin wrapper around
+/// `std::process::Command` that runs `.output()` on a blocking thread via
+/// `spawn_blocking`, avoiding the "no reactor running" panic that occurs
+/// when `tokio::process::Command` is used outside a Tokio context.
+#[cfg(not(feature = "asupersync-runtime"))]
 pub mod process {
     pub use tokio::process::Command;
+}
+
+#[cfg(feature = "asupersync-runtime")]
+pub mod process {
+    use std::ffi::OsStr;
+    use std::process::Output;
+
+    /// Async-compatible process command wrapper backed by `std::process::Command`.
+    ///
+    /// Mirrors the subset of `tokio::process::Command` used by callers:
+    /// `new`, `args`, `arg`, `env`, `kill_on_drop`, and async `output`.
+    pub struct Command {
+        inner: std::process::Command,
+    }
+
+    impl Command {
+        pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
+            Self {
+                inner: std::process::Command::new(program),
+            }
+        }
+
+        pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
+            self.inner.arg(arg);
+            self
+        }
+
+        pub fn args<I, S>(&mut self, args: I) -> &mut Self
+        where
+            I: IntoIterator<Item = S>,
+            S: AsRef<OsStr>,
+        {
+            self.inner.args(args);
+            self
+        }
+
+        pub fn env<K, V>(&mut self, key: K, val: V) -> &mut Self
+        where
+            K: AsRef<OsStr>,
+            V: AsRef<OsStr>,
+        {
+            self.inner.env(key, val);
+            self
+        }
+
+        /// No-op for compatibility. `std::process::Command` does not support
+        /// `kill_on_drop`; callers already guard with timeouts.
+        pub fn kill_on_drop(&mut self, _kill: bool) -> &mut Self {
+            self
+        }
+
+        /// Executes the command and collects its output, running the blocking
+        /// I/O on the runtime's blocking thread pool.
+        pub async fn output(&mut self) -> std::io::Result<Output> {
+            // Build a fresh std::process::Command to move into the closure
+            // (std::process::Command is not Send, so we serialize the config).
+            let program = self.get_program();
+            let args = self.get_args();
+            let envs = self.get_envs();
+
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(args);
+            for (k, v) in envs {
+                cmd.env(k, v);
+            }
+
+            super::spawn_blocking(move || cmd.output())
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        }
+    }
+
+    impl Command {
+        fn get_program(&self) -> std::ffi::OsString {
+            self.inner.get_program().to_os_string()
+        }
+
+        fn get_args(&self) -> Vec<std::ffi::OsString> {
+            self.inner.get_args().map(|a| a.to_os_string()).collect()
+        }
+
+        fn get_envs(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+            self.inner
+                .get_envs()
+                .filter_map(|(k, v)| v.map(|v| (k.to_os_string(), v.to_os_string())))
+                .collect()
+        }
+    }
 }
 
 /// Async I/O traits for the active runtime.
