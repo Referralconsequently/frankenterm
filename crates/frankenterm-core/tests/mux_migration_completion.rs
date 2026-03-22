@@ -137,6 +137,69 @@ fn pool_release_succeeds_even_after_timeout() {
     });
 }
 
+#[test]
+fn pool_timeout_cascade_then_recovery_restores_capacity() {
+    let rt = RuntimeFixture::current_thread();
+    rt.block_on(async {
+        let cx = healthy_cx();
+        let pool = MockPool::new(1);
+        let client = MockMuxClient::new();
+
+        client
+            .set_pane_content(&cx, 7, "steady-state".to_string())
+            .await
+            .expect("set content");
+
+        let held_conn = pool.acquire(&cx).await.expect("primary acquire");
+        let first = client.get_pane_text(&cx, 7).await.expect("first read");
+        assert_eq!(first, "steady-state");
+        assert_eq!(
+            pool.available_permits(),
+            0,
+            "primary checkout holds the only slot"
+        );
+
+        let timed_out = timeout_cx();
+        let blocked = pool.acquire(&timed_out).await;
+        assert!(blocked.is_err(), "timed-out nested acquire should fail");
+        assert_eq!(
+            pool.available_permits(),
+            0,
+            "timed-out acquire must not leak or restore a permit while the primary checkout is held"
+        );
+        assert_eq!(
+            client.request_count(),
+            1,
+            "timeout should fail before issuing an extra mux request"
+        );
+
+        pool.release(&cx, held_conn).await.expect("release primary");
+        assert_eq!(
+            pool.available_permits(),
+            1,
+            "release must restore the only permit"
+        );
+
+        let recovered_conn = pool.acquire(&cx).await.expect("recovery acquire");
+        let second = client.get_pane_text(&cx, 7).await.expect("second read");
+        assert_eq!(second, "steady-state");
+        pool.release(&cx, recovered_conn)
+            .await
+            .expect("release recovery");
+
+        assert_eq!(
+            client.request_count(),
+            2,
+            "healthy retry should complete the next read"
+        );
+        assert_eq!(
+            pool.available_permits(),
+            1,
+            "recovery path must leave the pool balanced"
+        );
+    });
+}
+
 // ===========================================================================
 // Section 3: MockMuxClient integration with Cx
 //
@@ -284,6 +347,46 @@ fn simulated_network_healthy_passes_all_data() {
 
         let received = b.read(&cx, 65536).await.expect("read");
         assert!(!received.is_empty(), "all data should arrive");
+    });
+}
+
+#[test]
+fn simulated_network_recovery_after_transient_fault_delivers_new_data() {
+    let rt = RuntimeFixture::current_thread();
+    rt.block_on(async {
+        let cx = healthy_cx();
+        let (a, b) = mock_unix_stream_pair();
+
+        let hostile = SimulatedNetwork::new(a.clone(), SimulatedNetworkConfig::hostile(), 42);
+        let mut saw_fault = false;
+        for attempt in 0..32u32 {
+            let payload = format!("fault-{attempt}");
+            let _ = hostile.write(&cx, payload.as_bytes()).await;
+            if hostile.errors_injected() + hostile.drops_injected() > 0 {
+                saw_fault = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_fault,
+            "hostile network profile should deterministically inject at least one transient fault"
+        );
+
+        let recovered = SimulatedNetwork::new(a.clone(), SimulatedNetworkConfig::healthy(), 7);
+        recovered
+            .write(&cx, b"recovered-payload")
+            .await
+            .expect("recovery write");
+        let received = b.read(&cx, 65536).await.expect("recovery read");
+        let received_text = String::from_utf8(received).expect("payload should remain utf-8");
+
+        assert!(
+            received_text.contains("recovered-payload"),
+            "healthy retry should deliver new data after transient faults: {received_text:?}"
+        );
+        assert_eq!(recovered.errors_injected(), 0);
+        assert_eq!(recovered.drops_injected(), 0);
     });
 }
 

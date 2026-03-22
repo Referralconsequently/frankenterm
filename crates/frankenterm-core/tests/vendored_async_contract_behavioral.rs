@@ -11,11 +11,12 @@
 //   B08–B09: Task lifecycle tracking (ABC-TL-001, ABC-TL-002)
 //   B10–B12: Semaphore backpressure (ABC-BP-001)
 //   B13–B15: Task ownership and cancellation (ABC-OWN-001, ABC-CAN-002)
-//   B16–B18: Error mapping chain (ABC-ERR-001)
+//   B16–B18c: Error mapping chain (ABC-ERR-001, ABC-ERR-002 spot checks)
 //   B19–B20: Sync primitive boundary behavior (ABC-OWN-002)
 //   B21–B23: Cross-layer integration scenarios
 // =============================================================================
 
+use std::error::Error as StdError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -25,6 +26,11 @@ use frankenterm_core::runtime_compat::{
 };
 use frankenterm_core::vendored_async_contracts::{
     ContractAuditReport, ContractCompliance, ContractEvidence, EvidenceType, standard_contracts,
+};
+#[cfg(all(feature = "vendored", unix))]
+use frankenterm_core::{
+    pool::PoolError,
+    vendored::{DirectMuxError, MuxPoolError},
 };
 
 // =============================================================================
@@ -52,6 +58,17 @@ fn emit_behavioral_log(scenario_id: &str, contract_id: &str, check: &str, outcom
         "outcome": outcome,
     });
     eprintln!("{payload}");
+}
+
+#[cfg(all(feature = "vendored", unix))]
+fn collect_error_chain_messages(err: &dyn StdError) -> Vec<String> {
+    let mut chain = vec![err.to_string()];
+    let mut current = err.source();
+    while let Some(source) = current {
+        chain.push(source.to_string());
+        current = source.source();
+    }
+    chain
 }
 
 // =============================================================================
@@ -441,7 +458,7 @@ fn b15_multiple_tasks_independent_ownership() {
 }
 
 // =============================================================================
-// B16–B18: Error mapping chain (ABC-ERR-001)
+// B16–B18c: Error mapping chain (ABC-ERR-001, ABC-ERR-002 spot checks)
 // =============================================================================
 
 /// B16: ABC-ERR-001 — Send to dropped receiver yields error.
@@ -497,6 +514,84 @@ fn b18_broadcast_recv_after_close_error() {
 
         emit_behavioral_log("b18", "ABC-ERR-001", "broadcast_close_error", "pass");
     });
+}
+
+/// B18b: ABC-ERR-002 — vendored mux wrapper preserves I/O source chain.
+#[cfg(all(feature = "vendored", unix))]
+#[test]
+fn b18b_vendored_error_chain_preserves_mux_io_source() {
+    let err = MuxPoolError::from(DirectMuxError::Io(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "vendored socket write failed",
+    )));
+
+    let chain = collect_error_chain_messages(&err);
+    assert_eq!(
+        chain.len(),
+        3,
+        "mux I/O wrapper should preserve two source levels"
+    );
+    assert!(
+        chain[0].contains("mux:"),
+        "top-level context should retain mux wrapper"
+    );
+    assert!(
+        chain[1].contains("io error: vendored socket write failed"),
+        "middle layer should retain direct mux context: {chain:?}"
+    );
+    assert_eq!(chain[2], "vendored socket write failed");
+
+    let direct_source = err
+        .source()
+        .expect("mux pool error should expose direct mux source");
+    let io_source = direct_source
+        .source()
+        .expect("direct mux error should expose underlying io source");
+    assert!(
+        io_source.source().is_none(),
+        "I/O root cause should terminate the source chain"
+    );
+
+    emit_behavioral_log(
+        "b18b",
+        "ABC-ERR-002",
+        "vendored_error_chain_preserves_mux_io_source",
+        "pass",
+    );
+}
+
+/// B18c: ABC-ERR-002 — pool wrapper preserves lower-level acquire context.
+#[cfg(all(feature = "vendored", unix))]
+#[test]
+fn b18c_vendored_error_chain_preserves_pool_source() {
+    let err = MuxPoolError::from(PoolError::AcquireTimeout);
+
+    let chain = collect_error_chain_messages(&err);
+    assert_eq!(
+        chain.len(),
+        2,
+        "pool wrapper should preserve the inner pool error"
+    );
+    assert!(
+        chain[0].contains("pool:"),
+        "top-level context should retain pool wrapper"
+    );
+    assert_eq!(chain[1], "connection pool acquire timeout");
+
+    let pool_source = err
+        .source()
+        .expect("mux pool error should expose pool source");
+    assert!(
+        pool_source.source().is_none(),
+        "pool timeout should remain a leaf error without losing wrapper context"
+    );
+
+    emit_behavioral_log(
+        "b18c",
+        "ABC-ERR-002",
+        "vendored_error_chain_preserves_pool_source",
+        "pass",
+    );
 }
 
 // =============================================================================
@@ -603,7 +698,9 @@ fn b21_full_audit_report_with_behavioral_evidence() {
             .map(|(_, test_name)| ContractEvidence {
                 contract_id: id.to_owned(),
                 test_name: test_name.to_string(),
-                passed: id != "ABC-ERR-002", // ERR-002 is non-verifiable
+                // ERR-002 still requires manual review for broader context/span fidelity
+                // even though vendored feature spot checks exercise source-chain wrapping.
+                passed: id != "ABC-ERR-002",
                 evidence_type: if id == "ABC-ERR-002" {
                     EvidenceType::CodeReview
                 } else {
