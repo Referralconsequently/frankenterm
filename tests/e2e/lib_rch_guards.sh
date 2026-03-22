@@ -14,7 +14,7 @@
 #   rch_init()                 - Set up variables (call once at start)
 #   ensure_rch_ready()         - Preflight: probe workers + smoke cargo check
 #   run_rch_cargo_logged()     - Timeout-wrapped rch cargo with stall/fallback detection
-#   check_rch_fallback()       - Fatal if rch fell back to local execution
+#   check_rch_fallback()       - Fatal if rch entered a fail-open/off-policy path
 #   run_rch()                  - TMPDIR-safe rch wrapper
 #   resolve_timeout_bin()      - Find timeout or gtimeout
 
@@ -22,7 +22,7 @@
 [[ -n "${_LIB_RCH_GUARDS_LOADED:-}" ]] && return 0
 _LIB_RCH_GUARDS_LOADED=1
 
-RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
+RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket|Dependency planner fail-open|proceeding with primary-root-only sync|Path dependency topology policy failed'
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 RCH_SMOKE_TIMEOUT_SECS="${RCH_SMOKE_TIMEOUT_SECS:-600}"
 RCH_SKIP_SMOKE_PREFLIGHT="${RCH_SKIP_SMOKE_PREFLIGHT:-0}"
@@ -60,7 +60,7 @@ probe_has_reachable_workers() {
 check_rch_fallback() {
     local output_file="$1"
     if grep -Eq "${RCH_FAIL_OPEN_REGEX}" "${output_file}" 2>/dev/null; then
-        rch_fatal "rch fell back to local execution; refusing offload policy violation. See ${output_file}"
+        rch_fatal "rch entered a fail-open or off-policy execution path; refusing offload policy violation. See ${output_file}"
     fi
 }
 

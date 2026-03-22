@@ -15,92 +15,16 @@ mkdir -p "${LOG_DIR}"
 
 RUN_ID="$(date +"%Y%m%d_%H%M%S")"
 RCH_TARGET_DIR="target/rch-e2e-replay-interface-parity-${RUN_ID}"
-RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-RCH_PROBE_LOG="${LOG_DIR}/replay_interface_parity_${RUN_ID}.probe.log"
-RCH_SMOKE_LOG="${LOG_DIR}/replay_interface_parity_${RUN_ID}.smoke.log"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
-TIMEOUT_BIN=""
 PASS_COUNT=0
 FAIL_COUNT=0
 
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS: $1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1"; }
-fatal() { echo "FATAL: $1" >&2; exit 1; }
 
-run_rch() {
-    TMPDIR=/tmp rch "$@"
-}
-
-resolve_timeout_bin() {
-    if command -v timeout >/dev/null 2>&1; then
-        TIMEOUT_BIN="timeout"
-    elif command -v gtimeout >/dev/null 2>&1; then
-        TIMEOUT_BIN="gtimeout"
-    else
-        TIMEOUT_BIN=""
-    fi
-}
-
-probe_has_reachable_workers() {
-    grep -Eiq '"status"[[:space:]]*:[[:space:]]*"(ok|healthy|reachable)"' "$1"
-}
-
-check_rch_fallback() {
-    local output_file="$1"
-    if grep -Eq "${RCH_FAIL_OPEN_REGEX}" "${output_file}" 2>/dev/null; then
-        fatal "rch fell back to local execution; refusing offload policy violation. See ${output_file}"
-    fi
-}
-
-run_rch_cargo_logged() {
-    local output_file="$1"
-    shift
-
-    set +e
-    (
-        cd "${REPO_ROOT}"
-        env TMPDIR=/tmp "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${RCH_STEP_TIMEOUT_SECS}" \
-            rch exec -- env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo "$@"
-    ) >"${output_file}" 2>&1
-    local rc=$?
-    set -e
-
-    check_rch_fallback "${output_file}"
-    if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
-        local queue_log="${output_file%.log}.rch_queue_timeout.log"
-        if ! run_rch queue >"${queue_log}" 2>&1; then
-            queue_log="${output_file}"
-        fi
-        fatal "RCH-REMOTE-STALL: rch remote command timed out after ${RCH_STEP_TIMEOUT_SECS}s; refusing stalled remote execution. See ${queue_log}"
-    fi
-    return "${rc}"
-}
-
-ensure_rch_ready() {
-    if ! command -v rch >/dev/null 2>&1; then
-        fatal "rch is required for this replay e2e harness; refusing local cargo execution."
-    fi
-    resolve_timeout_bin
-    if [[ -z "${TIMEOUT_BIN}" ]]; then
-        fatal "timeout or gtimeout is required to fail closed on stalled remote execution."
-    fi
-
-    set +e
-    run_rch --json workers probe --all >"${RCH_PROBE_LOG}" 2>&1
-    local probe_rc=$?
-    set -e
-    if [[ ${probe_rc} -ne 0 ]] || ! probe_has_reachable_workers "${RCH_PROBE_LOG}"; then
-        fatal "rch workers are unavailable; refusing local cargo execution. See ${RCH_PROBE_LOG}"
-    fi
-
-    set +e
-    run_rch_cargo_logged "${RCH_SMOKE_LOG}" check --help
-    local smoke_rc=$?
-    set -e
-    if [[ ${smoke_rc} -ne 0 ]]; then
-        fatal "rch remote smoke preflight failed; refusing local cargo execution. See ${RCH_SMOKE_LOG}"
-    fi
-}
+# shellcheck source=tests/e2e/lib_rch_guards.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib_rch_guards.sh"
+rch_init "${LOG_DIR}" "${RUN_ID}" "replay_interface_parity" "${REPO_ROOT}"
 
 echo "=== Replay Interface Parity E2E ==="
 ensure_rch_ready
@@ -110,7 +34,7 @@ echo ""
 echo "--- Scenario 1: Interface Contract Tests ---"
 
 scenario1_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario1.log"
-if run_rch_cargo_logged "${scenario1_log}" test -p frankenterm-core --test replay_interface_contract \
+if run_rch_cargo_logged "${scenario1_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test replay_interface_contract \
     && grep -q "test result: ok" "${scenario1_log}"; then
     pass "Interface contract tests (42 tests)"
 else
@@ -122,7 +46,7 @@ echo ""
 echo "--- Scenario 2: Property-Based Tests ---"
 
 scenario2_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario2.log"
-if run_rch_cargo_logged "${scenario2_log}" test -p frankenterm-core --test proptest_replay_mcp \
+if run_rch_cargo_logged "${scenario2_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test proptest_replay_mcp \
     && grep -q "test result: ok" "${scenario2_log}"; then
     pass "MCP property tests (15 tests)"
 else
@@ -130,7 +54,7 @@ else
 fi
 
 scenario3_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario3.log"
-if run_rch_cargo_logged "${scenario3_log}" test -p frankenterm-core --test proptest_replay_robot \
+if run_rch_cargo_logged "${scenario3_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test proptest_replay_robot \
     && grep -q "test result: ok" "${scenario3_log}"; then
     pass "Robot property tests (20 tests)"
 else
@@ -143,7 +67,7 @@ echo "--- Scenario 3: Smoke Tests ---"
 
 # S-01: Exit code constants are defined
 scenario4_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario4.log"
-if run_rch_cargo_logged "${scenario4_log}" test -p frankenterm-core --test replay_interface_contract ic33_smoke_exit_code_pass \
+if run_rch_cargo_logged "${scenario4_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test replay_interface_contract ic33_smoke_exit_code_pass \
     && grep -q "ok" "${scenario4_log}"; then
     pass "S-01: Exit code pass=0"
 else
@@ -152,7 +76,7 @@ fi
 
 # S-02: Default output mode
 scenario5_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario5.log"
-if run_rch_cargo_logged "${scenario5_log}" test -p frankenterm-core --test replay_interface_contract ic34_smoke_default_output_mode \
+if run_rch_cargo_logged "${scenario5_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test replay_interface_contract ic34_smoke_default_output_mode \
     && grep -q "ok" "${scenario5_log}"; then
     pass "S-02: Default output mode=Human"
 else
@@ -161,7 +85,7 @@ fi
 
 # S-03: Minimal artifact inspect
 scenario6_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario6.log"
-if run_rch_cargo_logged "${scenario6_log}" test -p frankenterm-core --test replay_interface_contract ic35_smoke_inspect_minimal \
+if run_rch_cargo_logged "${scenario6_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test replay_interface_contract ic35_smoke_inspect_minimal \
     && grep -q "ok" "${scenario6_log}"; then
     pass "S-03: Minimal artifact inspect"
 else
@@ -170,7 +94,7 @@ fi
 
 # S-04: Identical diff produces zero divergences
 scenario7_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario7.log"
-if run_rch_cargo_logged "${scenario7_log}" test -p frankenterm-core --test replay_interface_contract ic36_smoke_diff_identical \
+if run_rch_cargo_logged "${scenario7_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test replay_interface_contract ic36_smoke_diff_identical \
     && grep -q "ok" "${scenario7_log}"; then
     pass "S-04: Identical diff = zero divergences"
 else
@@ -179,7 +103,7 @@ fi
 
 # S-05: Empty artifact list is valid
 scenario8_log="${LOG_DIR}/replay_interface_parity_${RUN_ID}.scenario8.log"
-if run_rch_cargo_logged "${scenario8_log}" test -p frankenterm-core --test replay_interface_contract ic37_smoke_empty_artifact_list \
+if run_rch_cargo_logged "${scenario8_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test replay_interface_contract ic37_smoke_empty_artifact_list \
     && grep -q "ok" "${scenario8_log}"; then
     pass "S-05: Empty artifact list valid"
 else

@@ -15,92 +15,16 @@ mkdir -p "${LOG_DIR}"
 
 RUN_ID="$(date +"%Y%m%d_%H%M%S")"
 RCH_TARGET_DIR="target/rch-e2e-replay-provenance-${RUN_ID}"
-RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-RCH_PROBE_LOG="${LOG_DIR}/replay_provenance_${RUN_ID}.probe.log"
-RCH_SMOKE_LOG="${LOG_DIR}/replay_provenance_${RUN_ID}.smoke.log"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
-TIMEOUT_BIN=""
 PASS_COUNT=0
 FAIL_COUNT=0
 
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS: $1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1"; }
-fatal() { echo "FATAL: $1" >&2; exit 1; }
 
-run_rch() {
-    TMPDIR=/tmp rch "$@"
-}
-
-resolve_timeout_bin() {
-    if command -v timeout >/dev/null 2>&1; then
-        TIMEOUT_BIN="timeout"
-    elif command -v gtimeout >/dev/null 2>&1; then
-        TIMEOUT_BIN="gtimeout"
-    else
-        TIMEOUT_BIN=""
-    fi
-}
-
-probe_has_reachable_workers() {
-    grep -Eiq '"status"[[:space:]]*:[[:space:]]*"(ok|healthy|reachable)"' "$1"
-}
-
-check_rch_fallback() {
-    local output_file="$1"
-    if grep -Eq "${RCH_FAIL_OPEN_REGEX}" "${output_file}" 2>/dev/null; then
-        fatal "rch fell back to local execution; refusing offload policy violation. See ${output_file}"
-    fi
-}
-
-run_rch_cargo_logged() {
-    local output_file="$1"
-    shift
-
-    set +e
-    (
-        cd "${REPO_ROOT}"
-        env TMPDIR=/tmp "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${RCH_STEP_TIMEOUT_SECS}" \
-            rch exec -- env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo "$@"
-    ) >"${output_file}" 2>&1
-    local rc=$?
-    set -e
-
-    check_rch_fallback "${output_file}"
-    if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
-        local queue_log="${output_file%.log}.rch_queue_timeout.log"
-        if ! run_rch queue >"${queue_log}" 2>&1; then
-            queue_log="${output_file}"
-        fi
-        fatal "RCH-REMOTE-STALL: rch remote command timed out after ${RCH_STEP_TIMEOUT_SECS}s; refusing stalled remote execution. See ${queue_log}"
-    fi
-    return "${rc}"
-}
-
-ensure_rch_ready() {
-    if ! command -v rch >/dev/null 2>&1; then
-        fatal "rch is required for this replay e2e harness; refusing local cargo execution."
-    fi
-    resolve_timeout_bin
-    if [[ -z "${TIMEOUT_BIN}" ]]; then
-        fatal "timeout or gtimeout is required to fail closed on stalled remote execution."
-    fi
-
-    set +e
-    run_rch --json workers probe --all >"${RCH_PROBE_LOG}" 2>&1
-    local probe_rc=$?
-    set -e
-    if [[ ${probe_rc} -ne 0 ]] || ! probe_has_reachable_workers "${RCH_PROBE_LOG}"; then
-        fatal "rch workers are unavailable; refusing local cargo execution. See ${RCH_PROBE_LOG}"
-    fi
-
-    set +e
-    run_rch_cargo_logged "${RCH_SMOKE_LOG}" check --help
-    local smoke_rc=$?
-    set -e
-    if [[ ${smoke_rc} -ne 0 ]]; then
-        fatal "rch remote smoke preflight failed; refusing local cargo execution. See ${RCH_SMOKE_LOG}"
-    fi
-}
+# shellcheck source=tests/e2e/lib_rch_guards.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib_rch_guards.sh"
+rch_init "${LOG_DIR}" "${RUN_ID}" "replay_provenance" "${REPO_ROOT}"
 
 echo "=== Replay Provenance Logs E2E ==="
 ensure_rch_ready
@@ -110,7 +34,7 @@ echo ""
 echo "--- Scenario 1: Provenance Chain Integrity ---"
 
 scenario1_log="${LOG_DIR}/replay_provenance_${RUN_ID}.scenario1.log"
-if run_rch_cargo_logged "${scenario1_log}" test -p frankenterm-core --lib -- replay_provenance::tests::chain \
+if run_rch_cargo_logged "${scenario1_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --lib -- replay_provenance::tests::chain \
     && grep -q "ok" "${scenario1_log}"; then
     pass "Provenance chain integrity"
     echo '{"test":"replay_provenance","scenario":1,"check":"chain_integrity","status":"pass"}'
@@ -123,7 +47,7 @@ echo ""
 echo "--- Scenario 2: Verbosity Levels ---"
 
 scenario2_log="${LOG_DIR}/replay_provenance_${RUN_ID}.scenario2.log"
-if run_rch_cargo_logged "${scenario2_log}" test -p frankenterm-core --lib -- replay_provenance::tests::verbosity \
+if run_rch_cargo_logged "${scenario2_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --lib -- replay_provenance::tests::verbosity \
     && grep -q "ok" "${scenario2_log}"; then
     pass "Verbosity level control"
     echo '{"test":"replay_provenance","scenario":2,"check":"verbosity","status":"pass"}'
@@ -136,7 +60,7 @@ echo ""
 echo "--- Scenario 3: Trace Serde Roundtrip ---"
 
 scenario3_log="${LOG_DIR}/replay_provenance_${RUN_ID}.scenario3.log"
-if run_rch_cargo_logged "${scenario3_log}" test -p frankenterm-core --lib -- replay_provenance::tests::trace_serde_roundtrip \
+if run_rch_cargo_logged "${scenario3_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --lib -- replay_provenance::tests::trace_serde_roundtrip \
     && grep -q "ok" "${scenario3_log}"; then
     pass "Trace serde roundtrip"
     echo '{"test":"replay_provenance","scenario":3,"check":"serde","status":"pass"}'
@@ -149,7 +73,7 @@ echo ""
 echo "--- Scenario 4: Full Unit Test Suite ---"
 
 scenario4_log="${LOG_DIR}/replay_provenance_${RUN_ID}.scenario4.log"
-if run_rch_cargo_logged "${scenario4_log}" test -p frankenterm-core --lib replay_provenance \
+if run_rch_cargo_logged "${scenario4_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --lib replay_provenance \
     && grep -q "test result: ok" "${scenario4_log}"; then
     pass "All provenance unit tests (34 tests)"
 else
@@ -161,7 +85,7 @@ echo ""
 echo "--- Scenario 5: Property Tests ---"
 
 scenario5_log="${LOG_DIR}/replay_provenance_${RUN_ID}.scenario5.log"
-if run_rch_cargo_logged "${scenario5_log}" test -p frankenterm-core --test proptest_replay_provenance \
+if run_rch_cargo_logged "${scenario5_log}" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo test -p frankenterm-core --test proptest_replay_provenance \
     && grep -q "test result: ok" "${scenario5_log}"; then
     pass "All provenance property tests (23 tests)"
 else
