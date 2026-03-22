@@ -6,6 +6,7 @@
 #   2. Emitted JSONL artifacts conform to ADR-0012 (10 required fields)
 #   3. Reason/error codes serialize as snake_case strings
 #   4. Cross-format parity: Rust-emitted events structurally match shell-emitted events
+#   5. Shared rch guard library covers the current fail-open warning surface
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -24,7 +25,7 @@ TOTAL=0
 
 # ── rch infrastructure ──────────────────────────────────────────────────────
 RCH_TARGET_DIR="target/rch-e2e-unified-harness-${RUN_ID}"
-RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
+RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket|Dependency planner fail-open|proceeding with primary-root-only sync|Path dependency topology policy failed'
 RCH_PROBE_LOG="${LOG_DIR}/unified_harness_${RUN_ID}.probe.log"
 RCH_SMOKE_LOG="${LOG_DIR}/unified_harness_${RUN_ID}.smoke.log"
 
@@ -36,7 +37,7 @@ probe_has_reachable_workers() { grep -Eiq '"status"[[:space:]]*:[[:space:]]*"(ok
 check_rch_fallback() {
     local output_file="$1"
     if grep -Eq "${RCH_FAIL_OPEN_REGEX}" "${output_file}" 2>/dev/null; then
-        fatal "rch fell back to local execution; refusing offload policy violation. See ${output_file}"
+        fatal "rch entered a fail-open or off-policy execution path; refusing offload policy violation. See ${output_file}"
     fi
 }
 
@@ -179,6 +180,27 @@ if [ "$PARITY_OK" = "true" ]; then
   record_result "cross_format_parity" "true"
 else
   record_result "cross_format_parity" "false" "invariant_violation" "assertion_failed" "parity mismatch"
+fi
+
+# Scenario 5: Shared rch guard library covers fail-open warning surface
+echo ""; echo "--- Scenario 5: Shared rch guard coverage ---"
+GUARD_LIB="${ROOT_DIR}/tests/e2e/lib_rch_guards.sh"
+GUARD_SURFACE_OK="true"
+for token in \
+  "Dependency planner fail-open" \
+  "proceeding with primary-root-only sync" \
+  "Path dependency topology policy failed" \
+  "check_rch_fallback" \
+  "run_rch_cargo_logged"; do
+  if ! grep -q "${token}" "${GUARD_LIB}" 2>/dev/null; then
+    echo "    Shared guard missing token: ${token}"
+    GUARD_SURFACE_OK="false"
+  fi
+done
+if [ "${GUARD_SURFACE_OK}" = "true" ]; then
+  record_result "shared_rch_guard_coverage" "true"
+else
+  record_result "shared_rch_guard_coverage" "false" "precondition_failed" "config" "shared guard missing fail-open coverage"
 fi
 
 # Summary
