@@ -674,6 +674,37 @@ impl Reconnectable {
         path.as_deref().unwrap_or("wezterm").to_string()
     }
 
+    fn build_ssh_proxy_command(
+        remote_wezterm_path: &Option<String>,
+        override_proxy_command: Option<&str>,
+        initial: bool,
+    ) -> String {
+        if let Some(cmd) = override_proxy_command {
+            cmd.to_string()
+        } else {
+            let proxy_bin = Self::wezterm_bin_path(remote_wezterm_path);
+            if initial {
+                format!("{proxy_bin} cli --prefer-mux proxy")
+            } else {
+                format!("{proxy_bin} cli --prefer-mux --no-auto-start proxy")
+            }
+        }
+    }
+
+    fn build_tls_creds_command(remote_wezterm_path: &Option<String>) -> String {
+        format!(
+            "{} cli tlscreds",
+            Self::wezterm_bin_path(remote_wezterm_path)
+        )
+    }
+
+    fn should_retry_tls_bootstrap_after_reuse_error(err: &anyhow::Error) -> bool {
+        match err.root_cause().downcast_ref::<std::io::Error>() {
+            Some(ioerr) => ioerr.kind() == std::io::ErrorKind::ConnectionRefused,
+            None => true,
+        }
+    }
+
     fn ssh_connect(
         &mut self,
         ssh_dom: SshDomain,
@@ -683,15 +714,11 @@ impl Reconnectable {
         let ssh_config = mux::ssh::ssh_domain_to_ssh_config(&ssh_dom)?;
 
         let sess = ssh_connect_with_ui(ssh_config, ui)?;
-        let proxy_bin = Self::wezterm_bin_path(&ssh_dom.remote_wezterm_path);
-
-        let cmd = if let Some(cmd) = ssh_dom.override_proxy_command.clone() {
-            cmd
-        } else if initial {
-            format!("{} cli --prefer-mux proxy", proxy_bin)
-        } else {
-            format!("{} cli --prefer-mux --no-auto-start proxy", proxy_bin)
-        };
+        let cmd = Self::build_ssh_proxy_command(
+            &ssh_dom.remote_wezterm_path,
+            ssh_dom.override_proxy_command.as_deref(),
+            initial,
+        );
         ui.output_str(&format!("Running: {}\n", cmd));
         log::debug!("going to run {}", cmd);
 
@@ -834,19 +861,11 @@ impl Reconnectable {
                     return Ok(());
                 }
                 Err(err) => {
-                    if let Some(ioerr) = err.root_cause().downcast_ref::<std::io::Error>() {
-                        match ioerr.kind() {
-                            std::io::ErrorKind::ConnectionRefused => {
-                                // Server isn't up yet; let's proceed with bootstrap
-                            }
-                            _ => {
-                                // If it is an IO error that implies that we had an issue
-                                // reaching or otherwise talking to the remote host.
-                                // Re-attempting the SSH bootstrap most likely will not
-                                // succeed so we let this bubble up.
-                                return Err(err);
-                            }
-                        }
+                    if !Self::should_retry_tls_bootstrap_after_reuse_error(&err) {
+                        // Transport-level IO failures other than connection-refused
+                        // mean we had trouble reaching or otherwise talking to the
+                        // remote host. Re-running the SSH bootstrap is unlikely to help.
+                        return Err(err);
                     }
                     ui.output_str(&format!(
                         "Failed to reuse creds: {:?}\nWill retry bootstrap via SSH\n",
@@ -882,10 +901,7 @@ impl Reconnectable {
                 let creds = ui.run_and_log_error(|| {
                     // The `tlscreds` command will start the server if needed and then
                     // obtain client credentials that we can use for tls.
-                    let cmd = format!(
-                        "{} cli tlscreds",
-                        Self::wezterm_bin_path(&tls_client.remote_wezterm_path)
-                    );
+                    let cmd = Self::build_tls_creds_command(&tls_client.remote_wezterm_path);
 
                     ui.output_str(&format!("Running: {}\n", cmd));
                     let mut exec = smol::block_on(sess.exec(&cmd, None))
@@ -1177,7 +1193,7 @@ impl Client {
                 };
                 ui.output_str(&err.to_string());
                 log::error!("{:?}", err);
-                return Err(err.into());
+                Err(err.into())
             }
             Err(err) => {
                 log::trace!("{:?}", err);
@@ -1392,4 +1408,68 @@ impl Client {
         GetPaneDirectionResponse
     );
     rpc!(adjust_pane_size, AdjustPaneSize, UnitResponse);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wezterm_bin_path_defaults_to_wezterm() {
+        assert_eq!(Reconnectable::wezterm_bin_path(&None), "wezterm");
+    }
+
+    #[test]
+    fn ssh_proxy_command_uses_override_verbatim() {
+        let cmd = Reconnectable::build_ssh_proxy_command(
+            &Some("/opt/wezterm".to_string()),
+            Some("custom proxy --flag"),
+            true,
+        );
+        assert_eq!(cmd, "custom proxy --flag");
+    }
+
+    #[test]
+    fn ssh_proxy_command_uses_initial_proxy_launch_by_default() {
+        let cmd =
+            Reconnectable::build_ssh_proxy_command(&Some("/opt/wezterm".to_string()), None, true);
+        assert_eq!(cmd, "/opt/wezterm cli --prefer-mux proxy");
+    }
+
+    #[test]
+    fn ssh_proxy_command_disables_auto_start_on_reconnect() {
+        let cmd = Reconnectable::build_ssh_proxy_command(&None, None, false);
+        assert_eq!(cmd, "wezterm cli --prefer-mux --no-auto-start proxy");
+    }
+
+    #[test]
+    fn tls_creds_command_uses_remote_wezterm_path_when_present() {
+        let cmd = Reconnectable::build_tls_creds_command(&Some("/usr/bin/wezterm".to_string()));
+        assert_eq!(cmd, "/usr/bin/wezterm cli tlscreds");
+    }
+
+    #[test]
+    fn tls_bootstrap_retry_only_on_connection_refused() {
+        let err = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        ));
+        assert!(Reconnectable::should_retry_tls_bootstrap_after_reuse_error(
+            &err
+        ));
+    }
+
+    #[test]
+    fn tls_bootstrap_retry_rejects_other_transport_failures() {
+        let err = anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"));
+        assert!(!Reconnectable::should_retry_tls_bootstrap_after_reuse_error(&err));
+    }
+
+    #[test]
+    fn tls_bootstrap_retry_preserves_non_io_fallback_behavior() {
+        let err = anyhow!("boom");
+        assert!(Reconnectable::should_retry_tls_bootstrap_after_reuse_error(
+            &err
+        ));
+    }
 }

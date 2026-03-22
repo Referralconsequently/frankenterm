@@ -1185,6 +1185,81 @@ impl Drop for KillOnDropChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{self, ErrorKind};
+
+    struct PartialWriter {
+        max_write: usize,
+        written: Vec<u8>,
+    }
+
+    impl PartialWriter {
+        fn new(max_write: usize) -> Self {
+            Self {
+                max_write,
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl Write for PartialWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let len = self.max_write.min(buf.len());
+            self.written.extend_from_slice(&buf[..len]);
+            Ok(len)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct WouldBlockWriter;
+
+    impl Write for WouldBlockWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(ErrorKind::WouldBlock))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ErrorWriter;
+
+    impl Write for ErrorWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct WouldBlockReader;
+
+    impl Read for WouldBlockReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from(ErrorKind::WouldBlock))
+        }
+    }
+
+    struct ErrorReader;
+
+    impl Read for ErrorReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from(ErrorKind::ConnectionReset))
+        }
+    }
+
+    struct PanicOnRead;
+
+    impl Read for PanicOnRead {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            panic!("reader should not be called when backpressure is active");
+        }
+    }
 
     #[test]
     fn poll_delay_backoff_caps() {
@@ -1206,5 +1281,91 @@ mod tests {
 
         let got: Vec<u8> = buf.into_iter().collect();
         assert_eq!(got, vec![1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn write_from_buf_drains_only_written_prefix() {
+        let mut writer = PartialWriter::new(2);
+        let mut buf = VecDeque::from(vec![1_u8, 2, 3, 4]);
+
+        write_from_buf(&mut writer, &mut buf).expect("partial write should succeed");
+
+        assert_eq!(writer.written, vec![1, 2]);
+        let got: Vec<u8> = buf.into_iter().collect();
+        assert_eq!(got, vec![3, 4]);
+    }
+
+    #[test]
+    fn write_from_buf_preserves_buffer_on_would_block() {
+        let mut writer = WouldBlockWriter;
+        let mut buf = VecDeque::from(vec![1_u8, 2, 3]);
+
+        write_from_buf(&mut writer, &mut buf).expect("WouldBlock should be retried later");
+
+        let got: Vec<u8> = buf.into_iter().collect();
+        assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn write_from_buf_propagates_non_would_block_errors() {
+        let mut writer = ErrorWriter;
+        let mut buf = VecDeque::from(vec![1_u8, 2, 3]);
+
+        let err = write_from_buf(&mut writer, &mut buf)
+            .expect_err("non-WouldBlock write failures should surface");
+
+        assert_eq!(err.kind(), ErrorKind::BrokenPipe);
+        let got: Vec<u8> = buf.into_iter().collect();
+        assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn read_into_buf_preserves_buffer_on_would_block() {
+        let mut reader = WouldBlockReader;
+        let mut buf = VecDeque::from(vec![1_u8, 2, 3]);
+
+        read_into_buf(&mut reader, &mut buf).expect("WouldBlock should be retried later");
+
+        let got: Vec<u8> = buf.into_iter().collect();
+        assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn read_into_buf_propagates_non_would_block_errors_without_growing() {
+        let mut reader = ErrorReader;
+        let mut buf = VecDeque::from(vec![1_u8, 2, 3]);
+
+        let err = read_into_buf(&mut reader, &mut buf)
+            .expect_err("unexpected read errors should surface");
+
+        assert_eq!(err.kind(), ErrorKind::ConnectionReset);
+        let got: Vec<u8> = buf.into_iter().collect();
+        assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn read_into_buf_returns_unexpected_eof_without_mutating_prefix() {
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+        let mut buf = VecDeque::from(vec![1_u8, 2, 3]);
+
+        let err = read_into_buf(&mut reader, &mut buf)
+            .expect_err("zero-byte read should be treated as EOF");
+
+        assert_eq!(err.kind(), ErrorKind::UnexpectedEof);
+        let got: Vec<u8> = buf.into_iter().collect();
+        assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn read_into_buf_applies_backpressure_at_max_capacity() {
+        let mut reader = PanicOnRead;
+        let mut buf = VecDeque::with_capacity(MAX_DESCRIPTOR_BUF_SIZE);
+        buf.resize(MAX_DESCRIPTOR_BUF_SIZE, 7_u8);
+
+        read_into_buf(&mut reader, &mut buf).expect("full buffers should pause reads");
+
+        assert_eq!(buf.len(), MAX_DESCRIPTOR_BUF_SIZE);
+        assert_eq!(buf.front(), Some(&7_u8));
+        assert_eq!(buf.back(), Some(&7_u8));
     }
 }
