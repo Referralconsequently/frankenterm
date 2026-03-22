@@ -32,8 +32,8 @@ fn build_quad_indices(num_quads: usize) -> Vec<u32> {
             idx + V_TOP_RIGHT as u32,
             idx + V_BOT_LEFT as u32,
             idx + V_TOP_RIGHT as u32,
-            idx + V_BOT_LEFT as u32,
             idx + V_BOT_RIGHT as u32,
+            idx + V_BOT_LEFT as u32,
         ]);
     }
 
@@ -814,8 +814,8 @@ mod tests {
                 V_TOP_RIGHT as u32,
                 V_BOT_LEFT as u32,
                 V_TOP_RIGHT as u32,
-                V_BOT_LEFT as u32,
                 V_BOT_RIGHT as u32,
+                V_BOT_LEFT as u32,
             ]
         );
     }
