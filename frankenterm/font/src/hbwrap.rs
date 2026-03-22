@@ -887,6 +887,9 @@ impl DrawOp {
 }
 
 impl ColorLine {
+    /// # Safety
+    /// `line` must be a valid pointer to a `hb_color_line_t` and ownership
+    /// of the underlying memory is transferred to the returned `ColorLine`.
     pub unsafe fn new_from_hb(line: *mut hb_color_line_t) -> Self {
         let num_stops = unsafe {
             hb_color_line_get_color_stops(line, 0, std::ptr::null_mut(), std::ptr::null_mut())

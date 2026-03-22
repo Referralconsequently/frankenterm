@@ -84,6 +84,7 @@ pub enum DrawOp {
     ClosePath,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn paint_linear_gradient(
     context: &Context,
     x0: f64,
@@ -123,6 +124,7 @@ pub fn paint_linear_gradient(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn paint_radial_gradient(
     context: &Context,
     x0: f64,

@@ -202,6 +202,7 @@ impl HarfbuzzShaper {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_shape(
         &self,
         mut font_idx: FallbackIdx,

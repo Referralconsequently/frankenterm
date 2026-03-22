@@ -156,6 +156,7 @@ impl LoadedFont {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn shape<F: FnOnce() + Send + 'static, FS: FnOnce(&mut Vec<char>)>(
         &self,
         text: &str,
@@ -178,6 +179,7 @@ impl LoadedFont {
         Ok(res)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn shape_impl<F: FnOnce() + Send + 'static, FS: FnOnce(&mut Vec<char>)>(
         &self,
         text: &str,
