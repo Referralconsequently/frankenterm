@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# test_agent_detection_graceful.sh — E2E: Graceful degradation with agent-detection feature off (ft-dr6zv.2.5)
+#
+# Validates:
+# - Integration tests compile and pass WITHOUT the agent-detection feature
+# - Correlator still works for pattern/title/process detection
+# - Feature flag check returns false when disabled
+# - No panics or crashes
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="${SCRIPT_DIR}/logs"
+LOG_FILE="${LOG_DIR}/test_agent_detection_graceful_$(date +%Y%m%dT%H%M%S).jsonl"
+PASS=0
+FAIL=0
+
+mkdir -p "$LOG_DIR"
+
+log_json() {
+    local test_name="$1" phase="$2" result="$3" detail="$4"
+    local ts_ms
+    ts_ms=$(python3 -c "import time; print(int(time.time()*1000))" 2>/dev/null || date +%s000)
+    printf '{"test_name":"%s","phase":"%s","timestamp_ms":%s,"result":"%s","detail":"%s"}\n' \
+        "$test_name" "$phase" "$ts_ms" "$result" "$detail" >> "$LOG_FILE"
+}
+
+# ---- Test 1: Integration tests pass without agent-detection feature ----
+echo "=== Test 1: Integration tests without agent-detection feature ==="
+log_json "integration_no_feature" "detect" "running" "Building without agent-detection feature"
+
+# The integration_agent_detection tests should work with --no-default-features
+# because they test the correlator (not filesystem detection)
+if rch exec -- cargo test -p frankenterm-core integration_agent_detection --no-default-features -- --nocapture 2>&1; then
+    log_json "integration_no_feature" "assert" "pass" "Integration tests pass without agent-detection feature"
+    PASS=$((PASS + 1))
+else
+    log_json "integration_no_feature" "assert" "fail" "Integration tests failed without agent-detection feature"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---- Test 2: Enrichment tests pass without agent-detection feature ----
+echo "=== Test 2: Enrichment tests without agent-detection feature ==="
+log_json "enrichment_no_feature" "detect" "running" "Testing enrichment without feature flag"
+
+if rch exec -- cargo test -p frankenterm-core integration_agent_detection_enrichment --no-default-features -- --nocapture 2>&1; then
+    log_json "enrichment_no_feature" "assert" "pass" "Enrichment tests pass without agent-detection feature"
+    PASS=$((PASS + 1))
+else
+    log_json "enrichment_no_feature" "assert" "fail" "Enrichment tests failed"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---- Test 3: Autoconfig tests pass without agent-detection feature ----
+echo "=== Test 3: Autoconfig tests without agent-detection feature ==="
+log_json "autoconfig_no_feature" "detect" "running" "Testing autoconfig without feature flag"
+
+if rch exec -- cargo test -p frankenterm-core integration_agent_autoconfig --no-default-features -- --nocapture 2>&1; then
+    log_json "autoconfig_no_feature" "assert" "pass" "Autoconfig tests pass without agent-detection feature"
+    PASS=$((PASS + 1))
+else
+    log_json "autoconfig_no_feature" "assert" "fail" "Autoconfig tests failed"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---- Test 4: Feature flag function returns correct value ----
+echo "=== Test 4: Feature flag consistency ==="
+log_json "feature_flag" "detect" "running" "Verifying feature flag behavior"
+
+if rch exec -- cargo test -p frankenterm-core filesystem_detection_available --no-default-features -- --nocapture 2>&1; then
+    log_json "feature_flag" "assert" "pass" "Feature flag test passes"
+    PASS=$((PASS + 1))
+else
+    log_json "feature_flag" "assert" "fail" "Feature flag test failed"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---- Summary ----
+echo ""
+echo "=== Graceful Degradation E2E Summary ==="
+echo "  Pass: $PASS"
+echo "  Fail: $FAIL"
+echo "  Log:  $LOG_FILE"
+
+log_json "summary" "teardown" "$([ $FAIL -eq 0 ] && echo pass || echo fail)" "Pass=$PASS Fail=$FAIL"
+
+[ "$FAIL" -eq 0 ]
