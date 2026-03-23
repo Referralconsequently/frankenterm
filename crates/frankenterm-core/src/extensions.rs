@@ -101,10 +101,7 @@ pub fn resolve_extensions_dir(config_path: Option<&Path>) -> PathBuf {
         }
     }
 
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("ft")
-        .join("extensions")
+    crate::config::default_config_dir().join("extensions")
 }
 
 // ---------------------------------------------------------------------------

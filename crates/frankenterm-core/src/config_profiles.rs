@@ -62,10 +62,7 @@ pub fn resolve_profiles_dir(config_path: Option<&Path>) -> PathBuf {
         }
     }
 
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("ft")
-        .join("profiles")
+    crate::config::default_config_dir().join("profiles")
 }
 
 pub fn list_profiles(profiles_dir: &Path) -> crate::Result<Vec<ConfigProfileSummary>> {

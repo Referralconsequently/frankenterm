@@ -97,10 +97,7 @@ pub fn resolve_rulesets_dir(config_path: Option<&Path>) -> PathBuf {
         }
     }
 
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("ft")
-        .join("rulesets")
+    crate::config::default_config_dir().join("rulesets")
 }
 
 pub fn list_profiles(rulesets_dir: &Path) -> crate::Result<Vec<RulesetProfileSummary>> {

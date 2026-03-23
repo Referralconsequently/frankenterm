@@ -3562,6 +3562,12 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     None
 }
 
+/// Resolve the default ft config directory even when platform helpers are unavailable.
+#[must_use]
+pub fn default_config_dir() -> PathBuf {
+    dirs_config_path().unwrap_or_else(relative_fallback_config_dir)
+}
+
 impl Config {
     /// Load configuration from default locations
     ///
@@ -4070,6 +4076,10 @@ fn dirs_config_path() -> Option<std::path::PathBuf> {
             .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
             .map(|p| p.join("ft"))
     }
+}
+
+fn relative_fallback_config_dir() -> PathBuf {
+    PathBuf::from(".config").join("ft")
 }
 
 /// Expand ~ to home directory
@@ -6146,6 +6156,21 @@ retention_tiers = []
     fn resolve_path_relative_becomes_absolute() {
         let result = resolve_path(Path::new("relative/path")).unwrap();
         assert!(result.is_absolute());
+    }
+
+    #[test]
+    fn default_config_dir_always_targets_ft_without_literal_tilde() {
+        let path = default_config_dir();
+        assert!(path.ends_with("ft"));
+        assert!(!path.to_string_lossy().contains('~'));
+    }
+
+    #[test]
+    fn relative_fallback_config_dir_is_safe_literal_path() {
+        assert_eq!(
+            relative_fallback_config_dir(),
+            PathBuf::from(".config").join("ft")
+        );
     }
 
     // =========================================================================
