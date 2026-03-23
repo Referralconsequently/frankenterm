@@ -439,10 +439,9 @@ fn expiry_ms(expiry_secs: u64) -> i64 {
 }
 
 fn now_ms() -> i64 {
-    #[allow(clippy::cast_possible_truncation)]
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]
