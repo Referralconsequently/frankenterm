@@ -9,7 +9,10 @@
 use frankenterm_core::backpressure::BackpressureTier;
 use frankenterm_core::fleet_memory_controller::{
     FleetMemoryAction, FleetMemoryConfig, FleetMemoryController, FleetPressureTier,
-    PressureSignals,
+    PaneScrollbackInfo, PressureSignals,
+};
+use frankenterm_core::fleet_scrollback_coordinator::{
+    CoordinatorConfig, FleetScrollbackCoordinator,
 };
 use frankenterm_core::memory_budget::BudgetLevel;
 use frankenterm_core::memory_pressure::MemoryPressureTier;
@@ -190,21 +193,38 @@ fn evict_warm_scrollback_clears_warm_tier() {
 
     // Fill hot + overflow to warm
     for i in 0..500 {
-        scrollback.push_line(format!("Line {i}: some content that takes up space in the buffer"));
+        scrollback.push_line(format!(
+            "Line {i}: some content that takes up space in the buffer"
+        ));
     }
 
     let snap_before = scrollback.snapshot();
-    assert!(snap_before.warm_pages > 0, "Should have warm pages after overflow");
+    assert!(
+        snap_before.warm_pages > 0,
+        "Should have warm pages after overflow"
+    );
     assert!(snap_before.warm_bytes > 0, "Should have warm bytes");
 
     // Simulate EvictWarmScrollback action
     scrollback.evict_all_warm();
 
     let snap_after = scrollback.snapshot();
-    assert_eq!(snap_after.warm_pages, 0, "Warm pages should be zero after eviction");
-    assert_eq!(snap_after.warm_bytes, 0, "Warm bytes should be zero after eviction");
-    assert!(snap_after.cold_pages > 0, "Cold pages should increase after eviction");
-    assert_eq!(snap_after.hot_lines, snap_before.hot_lines, "Hot lines should be unchanged");
+    assert_eq!(
+        snap_after.warm_pages, 0,
+        "Warm pages should be zero after eviction"
+    );
+    assert_eq!(
+        snap_after.warm_bytes, 0,
+        "Warm bytes should be zero after eviction"
+    );
+    assert!(
+        snap_after.cold_pages > 0,
+        "Cold pages should increase after eviction"
+    );
+    assert_eq!(
+        snap_after.hot_lines, snap_before.hot_lines,
+        "Hot lines should be unchanged"
+    );
 }
 
 #[test]
@@ -269,7 +289,9 @@ fn enforce_warm_cap_respects_byte_limit() {
 
     // Push enough to overflow warm cap
     for i in 0..1000 {
-        scrollback.push_line(format!("Line {i}: data that will overflow the warm tier cap"));
+        scrollback.push_line(format!(
+            "Line {i}: data that will overflow the warm tier cap"
+        ));
     }
 
     let snap = scrollback.snapshot();
@@ -364,9 +386,9 @@ fn memory_budget_over_budget_escalates_fleet_tier() {
 fn worst_of_semantics_takes_most_severe_signal() {
     let mut ctrl = FleetMemoryController::new(FleetMemoryConfig::default());
     let signals = PressureSignals {
-        backpressure: BackpressureTier::Green,     // Normal
-        memory_pressure: MemoryPressureTier::Red,  // Emergency
-        worst_budget: BudgetLevel::Normal,          // Normal
+        backpressure: BackpressureTier::Green,    // Normal
+        memory_pressure: MemoryPressureTier::Red, // Emergency
+        worst_budget: BudgetLevel::Normal,        // Normal
         pane_count: 50,
         paused_pane_count: 0,
     };
@@ -380,4 +402,230 @@ fn worst_of_semantics_takes_most_severe_signal() {
         FleetPressureTier::Emergency,
         "Worst-of should pick Emergency from Red memory pressure"
     );
+}
+
+// ---------------------------------------------------------------------------
+// FleetScrollbackCoordinator integration tests
+// ---------------------------------------------------------------------------
+
+fn make_pane_map(
+    count: usize,
+    lines_per_pane: usize,
+) -> std::collections::HashMap<u64, TieredScrollback> {
+    let config = ScrollbackConfig {
+        hot_lines: 100,
+        page_size: 50,
+        warm_max_bytes: 10 * 1024 * 1024, // 10 MB per pane
+        ..ScrollbackConfig::default()
+    };
+    let mut map = std::collections::HashMap::new();
+    for i in 0..count {
+        let mut sb = TieredScrollback::new(config.clone());
+        for j in 0..lines_per_pane {
+            sb.push_line(format!("pane-{i} line-{j}: agent output content"));
+        }
+        map.insert(i as u64, sb);
+    }
+    map
+}
+
+fn pane_infos(map: &std::collections::HashMap<u64, TieredScrollback>) -> Vec<PaneScrollbackInfo> {
+    map.iter()
+        .map(|(&id, sb)| {
+            let snap = sb.snapshot();
+            PaneScrollbackInfo {
+                pane_id: id,
+                activity_counter: snap.activity_counter,
+                warm_bytes: snap.warm_bytes,
+                warm_pages: snap.warm_pages,
+                estimated_memory_bytes: sb.estimated_memory_bytes(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn coordinator_200_pane_emergency_evicts_all_warm() {
+    let mut coord = FleetScrollbackCoordinator::new(
+        CoordinatorConfig {
+            emergency_evict_all: true,
+            min_fleet_warm_bytes_for_eviction: 0,
+            ..CoordinatorConfig::default()
+        },
+        FleetMemoryConfig {
+            escalation_threshold: 1,
+            deescalation_threshold: 1,
+            ..FleetMemoryConfig::default()
+        },
+    );
+
+    let mut panes = make_pane_map(200, 500);
+
+    // Verify we have warm data across the fleet
+    let total_warm_before: usize = panes.values().map(|sb| sb.snapshot().warm_bytes).sum();
+    assert!(
+        total_warm_before > 0,
+        "Fleet should have warm data before eviction"
+    );
+
+    let signals = PressureSignals {
+        backpressure: BackpressureTier::Black,
+        memory_pressure: MemoryPressureTier::Red,
+        worst_budget: BudgetLevel::OverBudget,
+        pane_count: 200,
+        paused_pane_count: 0,
+    };
+
+    let infos = pane_infos(&panes);
+    let result = coord.evaluate(&signals, &infos, &mut panes);
+
+    assert_eq!(result.compound_tier, FleetPressureTier::Emergency);
+
+    // All warm data should be gone
+    let total_warm_after: usize = panes.values().map(|sb| sb.snapshot().warm_bytes).sum();
+    assert_eq!(total_warm_after, 0, "Emergency should clear all warm data");
+
+    // Hot lines should be preserved
+    for sb in panes.values() {
+        assert!(sb.hot_len() > 0, "Hot tier should be preserved");
+    }
+
+    // Cold tier should have received evicted data
+    let total_cold: u64 = panes.values().map(|sb| sb.cold_line_count()).sum();
+    assert!(
+        total_cold > 0,
+        "Cold tier should have received evicted data"
+    );
+
+    // Telemetry should reflect the emergency cleanup
+    assert!(coord.telemetry().emergency_cleanups > 0);
+    assert!(coord.telemetry().pages_evicted > 0);
+}
+
+#[test]
+fn coordinator_200_pane_critical_partial_eviction() {
+    let mut coord = FleetScrollbackCoordinator::new(
+        CoordinatorConfig {
+            min_fleet_warm_bytes_for_eviction: 0,
+            max_targets_per_cycle: 200, // allow targeting all panes
+            ..CoordinatorConfig::default()
+        },
+        FleetMemoryConfig {
+            escalation_threshold: 1,
+            deescalation_threshold: 1,
+            ..FleetMemoryConfig::default()
+        },
+    );
+
+    let mut panes = make_pane_map(200, 500);
+
+    let signals = PressureSignals {
+        backpressure: BackpressureTier::Red,
+        memory_pressure: MemoryPressureTier::Orange,
+        worst_budget: BudgetLevel::Normal,
+        pane_count: 200,
+        paused_pane_count: 0,
+    };
+
+    let infos = pane_infos(&panes);
+    let total_warm_before: usize = infos.iter().map(|i| i.warm_bytes).sum();
+
+    let result = coord.evaluate(&signals, &infos, &mut panes);
+
+    assert_eq!(result.compound_tier, FleetPressureTier::Critical);
+
+    // Should have produced an eviction plan
+    assert!(
+        result.eviction_plan.is_some(),
+        "Critical tier should produce an eviction plan"
+    );
+
+    // Some warm data should be evicted but not necessarily all
+    let total_warm_after: usize = panes.values().map(|sb| sb.snapshot().warm_bytes).sum();
+    assert!(
+        total_warm_after < total_warm_before,
+        "Warm bytes should decrease: before={total_warm_before}, after={total_warm_after}"
+    );
+
+    // Hot tier should be preserved for all panes
+    for sb in panes.values() {
+        assert!(sb.hot_len() > 0, "Hot tier should be preserved");
+    }
+
+    assert_eq!(coord.telemetry().emergency_cleanups, 0);
+    assert!(coord.telemetry().plans_produced > 0);
+}
+
+#[test]
+fn coordinator_normal_pressure_no_eviction() {
+    let mut coord = FleetScrollbackCoordinator::default();
+    let mut panes = make_pane_map(50, 300);
+
+    let signals = FleetScrollbackCoordinator::default_signals(50);
+    let infos = pane_infos(&panes);
+
+    let result = coord.evaluate(&signals, &infos, &mut panes);
+
+    assert_eq!(result.compound_tier, FleetPressureTier::Normal);
+    assert!(result.eviction_plan.is_none());
+    assert_eq!(result.pages_evicted, 0);
+
+    // Warm data should be untouched
+    let total_warm: usize = panes.values().map(|sb| sb.snapshot().warm_bytes).sum();
+    assert!(total_warm > 0, "Warm data should be preserved under normal");
+}
+
+#[test]
+fn coordinator_memory_stays_under_1gb_at_200_panes() {
+    // This is the key acceptance criterion from ft-1memj.19:
+    // 200 panes with 100k lines each should use < 1 GB.
+    //
+    // Here we use a smaller scale (200 panes x 5000 lines) to validate
+    // the tiered model keeps memory bounded.
+    let config = ScrollbackConfig {
+        hot_lines: 500, // smaller hot for test speed
+        page_size: 100,
+        warm_max_bytes: 2 * 1024 * 1024, // 2 MB warm cap per pane
+        ..ScrollbackConfig::default()
+    };
+
+    let mut panes = std::collections::HashMap::new();
+    for i in 0..200u64 {
+        let mut sb = TieredScrollback::new(config.clone());
+        for j in 0..5000 {
+            sb.push_line(format!("pane-{i} line-{j}: agent session output"));
+        }
+        panes.insert(i, sb);
+    }
+
+    // Calculate total memory footprint
+    let total_memory: usize = panes.values().map(|sb| sb.estimated_memory_bytes()).sum();
+    let total_memory_mb = total_memory / (1024 * 1024);
+
+    // With 500 hot lines * ~40 bytes avg * 200 panes = ~4 MB hot
+    // With 2 MB warm cap * 200 panes = ~400 MB warm max
+    // Total should be well under 1 GB
+    assert!(
+        total_memory_mb < 1024,
+        "Total memory should be under 1 GB: {total_memory_mb} MB"
+    );
+
+    // Verify each pane has capped warm tier
+    for sb in panes.values() {
+        let snap = sb.snapshot();
+        assert!(
+            snap.warm_bytes <= 2 * 1024 * 1024,
+            "Per-pane warm should be under 2 MB cap: {} bytes",
+            snap.warm_bytes
+        );
+    }
+
+    // Verify data is not lost — total line count across tiers = 5000
+    for sb in panes.values() {
+        assert_eq!(
+            sb.total_line_count(),
+            5000,
+            "All lines should be accounted for across tiers"
+        );
+    }
 }
