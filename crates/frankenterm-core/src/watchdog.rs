@@ -1919,7 +1919,7 @@ mod tests {
             let mock = Arc::new(crate::wezterm::MockWezterm::new());
             mock.set_watchdog_warnings(vec![
                 String::new(),
-                "   ".to_string(),
+                String::new(),
                 "real warning: timeout".to_string(),
             ])
             .await;

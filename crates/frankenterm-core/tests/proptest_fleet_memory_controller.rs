@@ -196,12 +196,10 @@ proptest! {
 
     #[test]
     fn proptest_fleet_tier_as_u8_is_monotonic(a in arb_fleet_pressure_tier(), b in arb_fleet_pressure_tier()) {
-        if a < b {
-            prop_assert!(a.as_u8() < b.as_u8());
-        } else if a > b {
-            prop_assert!(a.as_u8() > b.as_u8());
-        } else {
-            prop_assert_eq!(a.as_u8(), b.as_u8());
+        match a.cmp(&b) {
+            std::cmp::Ordering::Less => prop_assert!(a.as_u8() < b.as_u8()),
+            std::cmp::Ordering::Greater => prop_assert!(a.as_u8() > b.as_u8()),
+            std::cmp::Ordering::Equal => prop_assert_eq!(a.as_u8(), b.as_u8()),
         }
     }
 

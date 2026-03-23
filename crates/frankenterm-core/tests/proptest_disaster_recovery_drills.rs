@@ -156,12 +156,10 @@ proptest! {
         let target = RtoTarget::new(Duration::from_secs(target_secs), "test");
         let actual = Duration::from_secs(actual_secs);
         let delta = target.delta(actual);
-        if actual_secs > target_secs {
-            prop_assert!(delta > 0);
-        } else if actual_secs < target_secs {
-            prop_assert!(delta < 0);
-        } else {
-            prop_assert_eq!(delta, 0);
+        match actual_secs.cmp(&target_secs) {
+            std::cmp::Ordering::Greater => prop_assert!(delta > 0),
+            std::cmp::Ordering::Less => prop_assert!(delta < 0),
+            std::cmp::Ordering::Equal => prop_assert_eq!(delta, 0),
         }
     }
 

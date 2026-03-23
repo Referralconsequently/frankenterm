@@ -494,12 +494,10 @@ proptest! {
 
     #[test]
     fn proptest_beta_stage_rank_is_monotonic(a in arb_beta_stage(), b in arb_beta_stage()) {
-        if a < b {
-            prop_assert!(a.rank() < b.rank());
-        } else if a > b {
-            prop_assert!(a.rank() > b.rank());
-        } else {
-            prop_assert_eq!(a.rank(), b.rank());
+        match a.cmp(&b) {
+            std::cmp::Ordering::Less => prop_assert!(a.rank() < b.rank()),
+            std::cmp::Ordering::Greater => prop_assert!(a.rank() > b.rank()),
+            std::cmp::Ordering::Equal => prop_assert_eq!(a.rank(), b.rank()),
         }
     }
 
