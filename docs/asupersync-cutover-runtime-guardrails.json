@@ -40,7 +40,7 @@
   },
   "forbidden_token_ceilings": {
     "tokio::": 281,
-    "smol::": 53,
+    "smol::": 50,
     "async_io::": 10
   },
   "strict_zero_modules": [
