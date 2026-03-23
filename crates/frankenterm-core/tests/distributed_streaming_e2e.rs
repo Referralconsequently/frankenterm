@@ -125,7 +125,7 @@ impl DistributedBridge {
                 self.pane_seq_by_pane
                     .entry(gap.pane_id)
                     .and_modify(|current| {
-                        *current = (*current).max(gap.seq_after.saturating_sub(1))
+                        *current = (*current).max(gap.seq_after.saturating_sub(1));
                     })
                     .or_insert_with(|| gap.seq_after.saturating_sub(1));
                 let reason = format!(

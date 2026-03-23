@@ -253,7 +253,7 @@ proptest! {
             console.ingest(trace);
         }
         prop_assert_eq!(console.telemetry().traces_ingested, inserts as u64);
-        let expected_evictions = if inserts > capacity { inserts - capacity } else { 0 };
+        let expected_evictions = inserts.saturating_sub(capacity);
         prop_assert_eq!(console.telemetry().traces_evicted, expected_evictions as u64);
     }
 }

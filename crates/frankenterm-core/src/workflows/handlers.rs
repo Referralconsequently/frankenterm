@@ -6198,13 +6198,13 @@ mod tests {
 
     #[test]
     fn handle_on_error_format_cass_hint_basic() {
-        let hit = CassSearchHit {
+        let hit_record = CassSearchHit {
             content: Some("Fix: use rch exec -- cargo test instead of direct cargo".to_string()),
             source_path: Some("/tmp/session.jsonl".to_string()),
             line_number: Some(42),
             ..Default::default()
         };
-        let hint = HandleOnErrorCassSearch::format_cass_hint(&hit);
+        let hint = HandleOnErrorCassSearch::format_cass_hint(&hit_record);
         assert!(hint.is_some());
         let h = hint.unwrap();
         assert!(h.contains("/tmp/session.jsonl:42"));
@@ -6213,13 +6213,13 @@ mod tests {
 
     #[test]
     fn handle_on_error_format_cass_hint_empty_content_returns_none() {
-        let hit = CassSearchHit {
+        let hit_record = CassSearchHit {
             content: Some(String::new()),
             source_path: Some("/tmp/session.jsonl".to_string()),
             line_number: Some(1),
             ..Default::default()
         };
-        assert!(HandleOnErrorCassSearch::format_cass_hint(&hit).is_none());
+        assert!(HandleOnErrorCassSearch::format_cass_hint(&hit_record).is_none());
     }
 
     #[test]

@@ -817,7 +817,7 @@ mod integration_enrichment {
         // Installed inventory should be populated from filesystem cache
         // (may or may not find agents depending on test machine)
         // The key invariant is that the field exists and is a valid Vec
-        let _installed = &inventory.installed;
+        //let _installed = &inventory.installed;
     }
 
     #[test]

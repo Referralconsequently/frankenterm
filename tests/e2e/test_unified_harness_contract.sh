@@ -6,7 +6,7 @@
 #   2. Emitted JSONL artifacts conform to ADR-0012 (10 required fields)
 #   3. Reason/error codes serialize as snake_case strings
 #   4. Cross-format parity: Rust-emitted events structurally match shell-emitted events
-#   5. Shared rch guard library covers the current fail-open warning surface
+#   5. Shared rch guard library covers the current local-fallback warning surface
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -25,7 +25,7 @@ TOTAL=0
 
 # ── rch infrastructure ──────────────────────────────────────────────────────
 RCH_TARGET_DIR="target/rch-e2e-unified-harness-${RUN_ID}"
-RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket|Dependency planner fail-open|proceeding with primary-root-only sync|Path dependency topology policy failed'
+RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
 RCH_PROBE_LOG="${LOG_DIR}/unified_harness_${RUN_ID}.probe.log"
 RCH_SMOKE_LOG="${LOG_DIR}/unified_harness_${RUN_ID}.smoke.log"
 
@@ -182,25 +182,41 @@ else
   record_result "cross_format_parity" "false" "invariant_violation" "assertion_failed" "parity mismatch"
 fi
 
-# Scenario 5: Shared rch guard library covers fail-open warning surface
+# Scenario 5: Shared rch guard library covers local-fallback warning surface
 echo ""; echo "--- Scenario 5: Shared rch guard coverage ---"
 GUARD_LIB="${ROOT_DIR}/tests/e2e/lib_rch_guards.sh"
+BAD_GUARD_LOG="${ARTIFACT_DIR}/shared_guard_fail_open_${RUN_ID}.log"
+GOOD_GUARD_LOG="${ARTIFACT_DIR}/shared_guard_clean_${RUN_ID}.log"
+BAD_GUARD_ERR="${ARTIFACT_DIR}/shared_guard_fail_open_${RUN_ID}.stderr.log"
+GOOD_GUARD_ERR="${ARTIFACT_DIR}/shared_guard_clean_${RUN_ID}.stderr.log"
+printf '%s\n' '[RCH] local: Remote execution failed: ssh transport unavailable; running locally' > "${BAD_GUARD_LOG}"
+printf '%s\n' 'INFO rch::hook: Starting remote compilation pipeline for frankenterm' > "${GOOD_GUARD_LOG}"
+
+set +e
+(check_rch_fallback "${BAD_GUARD_LOG}") >/dev/null 2>"${BAD_GUARD_ERR}"
+BAD_GUARD_RC=$?
+(check_rch_fallback "${GOOD_GUARD_LOG}") >/dev/null 2>"${GOOD_GUARD_ERR}"
+GOOD_GUARD_RC=$?
+set -e
+
 GUARD_SURFACE_OK="true"
 for token in \
-  "Dependency planner fail-open" \
-  "proceeding with primary-root-only sync" \
-  "Path dependency topology policy failed" \
+  "\\[RCH\\]\\[\\[:space:\\]\\]\\+local" \
+  "Remote execution failed: .*running locally" \
+  "Failed to connect to ubuntu@" \
+  "too long for Unix domain socket" \
   "check_rch_fallback" \
   "run_rch_cargo_logged"; do
-  if ! grep -q "${token}" "${GUARD_LIB}" 2>/dev/null; then
+  if ! grep -Eq "${token}" "${GUARD_LIB}" 2>/dev/null; then
     echo "    Shared guard missing token: ${token}"
     GUARD_SURFACE_OK="false"
   fi
 done
-if [ "${GUARD_SURFACE_OK}" = "true" ]; then
+if [ "${BAD_GUARD_RC}" -ne 0 ] && [ "${GOOD_GUARD_RC}" -eq 0 ] && [ "${GUARD_SURFACE_OK}" = "true" ]; then
   record_result "shared_rch_guard_coverage" "true"
 else
-  record_result "shared_rch_guard_coverage" "false" "precondition_failed" "config" "shared guard missing fail-open coverage"
+  echo "    bad_guard_rc=${BAD_GUARD_RC} good_guard_rc=${GOOD_GUARD_RC}"
+  record_result "shared_rch_guard_coverage" "false" "precondition_failed" "config" "shared guard missing local-fallback coverage"
 fi
 
 # Summary

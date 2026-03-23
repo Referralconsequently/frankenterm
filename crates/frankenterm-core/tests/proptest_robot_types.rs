@@ -335,7 +335,7 @@ proptest! {
     /// ErrorCode: parse rejects invalid segments.
     #[test]
     fn prop_code_parse_rejects_invalid_segment(invalid in prop_oneof![
-        Just("".to_string()),
+        Just(String::new()),
         "[A-Z][a-z0-9_]{0,7}".prop_map(|s| s),
         "[a-z0-9_]{1,6}-[a-z0-9_]{1,6}".prop_map(|s| s),
     ]) {

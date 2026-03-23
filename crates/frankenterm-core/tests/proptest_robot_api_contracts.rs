@@ -323,7 +323,7 @@ proptest! {
         // pass_rate sanity
         if total > 0 {
             let rate = exec.pass_rate();
-            prop_assert!(rate >= 0.0 && rate <= 1.0,
+            prop_assert!((0.0..=1.0).contains(&rate),
                 "pass_rate {:.4} should be in [0, 1]", rate);
             let expected = passed as f64 / total as f64;
             prop_assert!((rate - expected).abs() < 1e-10);
@@ -341,19 +341,19 @@ proptest! {
         let mut exec = ContractExecution::new("matrix", "run-1", 0);
 
         for i in 0..n_blocking_pass {
-            let mut r = CheckResult::pass(&format!("BP-{i}"), ApiSurface::GetText, CheckCategory::SchemaStability);
+            let mut r = CheckResult::pass(format!("BP-{i}"), ApiSurface::GetText, CheckCategory::SchemaStability);
             r.blocking = true;
             exec.record(r);
         }
 
         for i in 0..n_blocking_fail {
-            let mut r = CheckResult::fail(&format!("BF-{i}"), ApiSurface::SendText, CheckCategory::Determinism, "fail");
+            let mut r = CheckResult::fail(format!("BF-{i}"), ApiSurface::SendText, CheckCategory::Determinism, "fail");
             r.blocking = true;
             exec.record(r);
         }
 
         for i in 0..n_advisory_fail {
-            let mut r = CheckResult::fail(&format!("AF-{i}"), ApiSurface::Events, CheckCategory::ReplayCorrectness, "advisory fail");
+            let mut r = CheckResult::fail(format!("AF-{i}"), ApiSurface::Events, CheckCategory::ReplayCorrectness, "advisory fail");
             r.blocking = false;
             exec.record(r);
         }
@@ -406,18 +406,18 @@ proptest! {
         let mut exec = ContractExecution::new("matrix", "run-1", 0);
 
         for i in 0..n_pass {
-            let r = CheckResult::pass(&format!("P-{i}"), ApiSurface::GetText, CheckCategory::SchemaStability);
+            let r = CheckResult::pass(format!("P-{i}"), ApiSurface::GetText, CheckCategory::SchemaStability);
             exec.record(r);
         }
 
         for i in 0..n_blocking_fail {
-            let mut r = CheckResult::fail(&format!("BF-{i}"), ApiSurface::SendText, CheckCategory::Determinism, "fail");
+            let mut r = CheckResult::fail(format!("BF-{i}"), ApiSurface::SendText, CheckCategory::Determinism, "fail");
             r.blocking = true;
             exec.record(r);
         }
 
         for i in 0..n_advisory_fail {
-            let mut r = CheckResult::fail(&format!("AF-{i}"), ApiSurface::Events, CheckCategory::ReplayCorrectness, "advisory");
+            let mut r = CheckResult::fail(format!("AF-{i}"), ApiSurface::Events, CheckCategory::ReplayCorrectness, "advisory");
             r.blocking = false;
             exec.record(r);
         }
@@ -456,10 +456,10 @@ proptest! {
 
         let mut exec = ContractExecution::new("matrix", "run-1", 0);
         for i in 0..n_pass {
-            exec.record(CheckResult::pass(&format!("P-{i}"), ApiSurface::GetText, CheckCategory::SchemaStability));
+            exec.record(CheckResult::pass(format!("P-{i}"), ApiSurface::GetText, CheckCategory::SchemaStability));
         }
         for i in 0..n_fail {
-            exec.record(CheckResult::fail(&format!("F-{i}"), ApiSurface::SendText, CheckCategory::Determinism, "err"));
+            exec.record(CheckResult::fail(format!("F-{i}"), ApiSurface::SendText, CheckCategory::Determinism, "err"));
         }
         exec.complete(1000);
 

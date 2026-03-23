@@ -369,7 +369,7 @@ proptest! {
         let mut contract = make_contract(num_steps);
 
         // Before execution
-        let pre_state = contract.lifecycle_state.clone();
+        let pre_state = contract.lifecycle_state;
         let pre_outcome = contract.outcome.clone();
         prop_assert_eq!(pre_state, MissionTxState::Planned);
         prop_assert_eq!(pre_outcome, TxOutcome::Pending);
@@ -378,7 +378,7 @@ proptest! {
 
         // After execution, contract must match result
         prop_assert_eq!(
-            contract.lifecycle_state.clone(), result.final_state,
+            contract.lifecycle_state, result.final_state,
             "contract lifecycle_state must match result.final_state"
         );
         prop_assert_eq!(

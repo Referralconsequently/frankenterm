@@ -172,13 +172,13 @@ proptest! {
         let mut exec = RehearsalExecution::new("suite", "run-1", "test", 0);
 
         for i in 0..n_pass {
-            exec.record(ScenarioResult::pass(&format!("p-{i}"), ScenarioCategory::ParityCheck, 100));
+            exec.record(ScenarioResult::pass(format!("p-{i}"), ScenarioCategory::ParityCheck, 100));
         }
         for i in 0..n_fail {
-            exec.record(ScenarioResult::fail(&format!("f-{i}"), ScenarioCategory::ShadowComparison, 100, "err"));
+            exec.record(ScenarioResult::fail(format!("f-{i}"), ScenarioCategory::ShadowComparison, 100, "err"));
         }
         for i in 0..n_skip {
-            exec.record(ScenarioResult::skipped(&format!("s-{i}"), ScenarioCategory::ImporterValidation, "skipped"));
+            exec.record(ScenarioResult::skipped(format!("s-{i}"), ScenarioCategory::ImporterValidation, "skipped"));
         }
 
         exec.complete(1000);
@@ -203,15 +203,15 @@ proptest! {
 
         let mut exec = RehearsalExecution::new("suite", "run-1", "test", 0);
         for i in 0..n_pass {
-            exec.record(ScenarioResult::pass(&format!("p-{i}"), ScenarioCategory::ParityCheck, 100));
+            exec.record(ScenarioResult::pass(format!("p-{i}"), ScenarioCategory::ParityCheck, 100));
         }
         for i in 0..n_fail {
-            exec.record(ScenarioResult::fail(&format!("f-{i}"), ScenarioCategory::ShadowComparison, 100, "err"));
+            exec.record(ScenarioResult::fail(format!("f-{i}"), ScenarioCategory::ShadowComparison, 100, "err"));
         }
         exec.complete(1000);
 
         let rate = exec.pass_rate();
-        prop_assert!(rate >= 0.0 && rate <= 1.0, "pass_rate should be in [0,1]: {}", rate);
+        prop_assert!((0.0..=1.0).contains(&rate), "pass_rate should be in [0,1]: {}", rate);
 
         let expected = n_pass as f64 / total as f64;
         prop_assert!((rate - expected).abs() < 1e-10);
@@ -319,23 +319,23 @@ proptest! {
 
         for i in 0..n_pass {
             let cat = ScenarioCategory::ParityCheck; // blocking by default
-            suite.add_scenario(RehearsalScenario::new(&format!("p-{i}"), cat, "pass test"));
-            exec.record(ScenarioResult::pass(&format!("p-{i}"), cat, 100));
+            suite.add_scenario(RehearsalScenario::new(format!("p-{i}"), cat, "pass test"));
+            exec.record(ScenarioResult::pass(format!("p-{i}"), cat, 100));
         }
 
         for i in 0..n_blocking_fail {
             let cat = ScenarioCategory::CutoverCheckpoint; // blocking
-            suite.add_scenario(RehearsalScenario::new(&format!("bf-{i}"), cat, "blocking fail"));
-            exec.record(ScenarioResult::fail(&format!("bf-{i}"), cat, 100, "err"));
+            suite.add_scenario(RehearsalScenario::new(format!("bf-{i}"), cat, "blocking fail"));
+            exec.record(ScenarioResult::fail(format!("bf-{i}"), cat, 100, "err"));
         }
 
         for i in 0..n_advisory_fail {
             let cat = ScenarioCategory::ImporterValidation;
             suite.add_scenario(
-                RehearsalScenario::new(&format!("af-{i}"), cat, "advisory fail")
+                RehearsalScenario::new(format!("af-{i}"), cat, "advisory fail")
                     .with_severity(ScenarioSeverity::Info),
             );
-            exec.record(ScenarioResult::fail(&format!("af-{i}"), cat, 100, "minor"));
+            exec.record(ScenarioResult::fail(format!("af-{i}"), cat, 100, "minor"));
         }
 
         exec.complete(1000);

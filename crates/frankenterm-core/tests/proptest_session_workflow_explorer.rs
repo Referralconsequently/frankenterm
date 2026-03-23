@@ -360,7 +360,7 @@ proptest! {
     fn query_time_range_filters(ts in 0u64..3000) {
         let e = make_event(1, ts, None, EventCategory::Output, EventSeverity::Info, EventSource::Recording, "test", false, None);
         let q = TimelineQuery::time_range(1000, 2000, 100);
-        if ts >= 1000 && ts < 2000 {
+        if (1000..2000).contains(&ts) {
             prop_assert!(q.matches(&e));
         } else {
             prop_assert!(!q.matches(&e));

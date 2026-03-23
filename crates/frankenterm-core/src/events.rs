@@ -1691,9 +1691,9 @@ mod tests {
     fn oldest_lag_uses_oldest_buffered_timestamp() {
         let now = Instant::now();
         let times = Mutex::new(VecDeque::from([
-            now - Duration::from_millis(30),
-            now - Duration::from_millis(20),
-            now - Duration::from_millis(10),
+            now.checked_sub(Duration::from_millis(30)).unwrap(),
+            now.checked_sub(Duration::from_millis(20)).unwrap(),
+            now.checked_sub(Duration::from_millis(10)).unwrap(),
         ]));
 
         let lag_one = EventBus::oldest_lag_ms(&times, 1).unwrap();

@@ -11784,7 +11784,6 @@ dependencies = [
  "downcast-rs 1.2.1",
  "euclid",
  "filedescriptor 0.8.3",
- "flume",
  "frankenterm-bidi",
  "frankenterm-color-types",
  "frankenterm-input-types",

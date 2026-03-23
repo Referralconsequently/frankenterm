@@ -765,20 +765,14 @@ mod tests {
         assert!(normal.iter().all(|a| *a == FleetMemoryAction::None));
         // Elevated includes throttling
         assert!(
-            elevated
-                .iter()
-                .any(|a| *a == FleetMemoryAction::ThrottlePolling)
+            elevated.contains(&FleetMemoryAction::ThrottlePolling)
         );
         // Critical includes everything Elevated has plus more
         assert!(
-            critical
-                .iter()
-                .any(|a| *a == FleetMemoryAction::ThrottlePolling)
+            critical.contains(&FleetMemoryAction::ThrottlePolling)
         );
         assert!(
-            critical
-                .iter()
-                .any(|a| *a == FleetMemoryAction::PauseIdlePanes)
+            critical.contains(&FleetMemoryAction::PauseIdlePanes)
         );
     }
 

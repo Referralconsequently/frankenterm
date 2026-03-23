@@ -214,7 +214,7 @@ proptest! {
         });
 
         let rate = gate.pass_rate();
-        prop_assert!(rate >= 0.0 && rate <= 1.0, "pass_rate should be in [0,1]: {}", rate);
+        prop_assert!((0.0..=1.0).contains(&rate), "pass_rate should be in [0,1]: {}", rate);
 
         let expected = passed as f64 / total as f64;
         prop_assert!((rate - expected).abs() < 1e-10);

@@ -1163,7 +1163,7 @@ mod tests {
                 EventCategory::Output,
                 EventSeverity::Info,
                 EventSource::Recording,
-                Some(i as u64),
+                Some(i),
                 1000 + i,
             );
             explorer.ingest(e);

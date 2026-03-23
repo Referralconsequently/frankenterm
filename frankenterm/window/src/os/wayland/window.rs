@@ -14,8 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use config::ConfigHandle;
-use flume::{bounded, Sender};
-use promise::{Future, Promise};
+use promise::{BrokenPromise, Future, Promise};
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
     WaylandWindowHandle, WindowHandle,
@@ -28,20 +27,20 @@ use smithay_client_toolkit::reexports::csd_frame::{
 };
 use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
 use smithay_client_toolkit::seat::pointer::CursorIcon;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::xdg::XdgSurface;
 use smithay_client_toolkit::shell::xdg::fallback_frame::FallbackFrame;
 use smithay_client_toolkit::shell::xdg::window::{
     DecorationMode, Window as XdgWindow, WindowConfigure, WindowDecorations as Decorations,
     WindowHandler,
 };
-use smithay_client_toolkit::shell::xdg::XdgSurface;
-use smithay_client_toolkit::shell::WaylandSurface;
 use wayland_client::protocol::wl_callback::WlCallback;
 use wayland_client::protocol::wl_keyboard::{Event as WlKeyboardEvent, KeyState};
 use wayland_client::protocol::wl_pointer::{ButtonState, WlPointer};
 use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection as WConnection, Dispatch, Proxy, QueueHandle};
-use wayland_egl::{is_available as egl_is_available, WlEglSurface};
+use wayland_egl::{WlEglSurface, is_available as egl_is_available};
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur::OrgKdeKwinBlur;
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager;
 use wezterm_font::FontConfiguration;
@@ -183,6 +182,49 @@ enum WaylandWindowEvent {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct WaylandWindow(usize);
 
+struct PendingFirstConfigure {
+    promise: Option<Promise<()>>,
+}
+
+impl PendingFirstConfigure {
+    fn new() -> (Self, Future<()>) {
+        let mut promise = Promise::new();
+        let future = promise
+            .get_future()
+            .expect("pending first-configure promise should create a future");
+        (
+            Self {
+                promise: Some(promise),
+            },
+            future,
+        )
+    }
+
+    fn resolve(&mut self) {
+        if let Some(mut promise) = self.promise.take() {
+            promise.ok(());
+        }
+    }
+}
+
+impl Drop for PendingFirstConfigure {
+    fn drop(&mut self) {
+        if let Some(mut promise) = self.promise.take() {
+            promise.err(BrokenPromise {}.into());
+        }
+    }
+}
+
+fn new_pending_first_configure() -> (PendingFirstConfigure, Future<()>) {
+    PendingFirstConfigure::new()
+}
+
+fn resolve_pending_first_configure(pending_first_configure: &mut Option<PendingFirstConfigure>) {
+    if let Some(mut notify) = pending_first_configure.take() {
+        notify.resolve();
+    }
+}
+
 impl WaylandWindow {
     pub async fn new_window<F>(
         class_name: &str,
@@ -211,7 +253,7 @@ impl WaylandWindow {
         let window_id = conn.next_window_id();
         let pending_event = Arc::new(Mutex::new(PendingEvent::default()));
 
-        let (pending_first_configure, wait_configure) = bounded(1);
+        let (pending_first_configure, wait_configure) = new_pending_first_configure();
 
         let qh = conn.event_queue.borrow().handle();
 
@@ -346,7 +388,7 @@ impl WaylandWindow {
             windows.borrow_mut().insert(window_id, inner.clone());
         };
 
-        wait_configure.recv_async().await?;
+        wait_configure.await?;
 
         Ok(window_handle)
     }
@@ -581,7 +623,7 @@ pub struct WaylandWindowInner {
     pub(super) key_repeat: Option<(u32, Arc<Mutex<KeyRepeatState>>)>,
     pub(super) pending_event: Arc<Mutex<PendingEvent>>,
     pub(super) pending_mouse: Arc<Mutex<PendingMouse>>,
-    pending_first_configure: Option<Sender<()>>,
+    pending_first_configure: Option<PendingFirstConfigure>,
     frame_callback: Option<WlCallback>,
     invalidated: bool,
     // font_config: Rc<FontConfiguration>,
@@ -954,10 +996,8 @@ impl WaylandWindowInner {
         }
         if pending.had_configure_event && self.window.is_some() {
             log::debug!("Had configured an event");
-            if let Some(notify) = self.pending_first_configure.take() {
-                // Allow window creation to complete
-                notify.try_send(()).ok();
-            }
+            // Allow window creation to complete.
+            resolve_pending_first_configure(&mut self.pending_first_configure);
         }
     }
 
@@ -1280,6 +1320,74 @@ impl WaylandWindowInner {
                 kde_blur.release();
             }
             kde_blur.commit();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{new_pending_first_configure, resolve_pending_first_configure};
+    use promise::BrokenPromise;
+    use std::future::Future as StdFuture;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    #[test]
+    fn pending_first_configure_future_resolves_after_notification() {
+        let (promise, mut future) = new_pending_first_configure();
+        let mut pending_first_configure = Some(promise);
+        let waker = Waker::noop().clone();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            StdFuture::poll(Pin::new(&mut future), &mut cx),
+            Poll::Pending
+        ));
+
+        resolve_pending_first_configure(&mut pending_first_configure);
+
+        assert!(pending_first_configure.is_none());
+        assert!(matches!(
+            StdFuture::poll(Pin::new(&mut future), &mut cx),
+            Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn pending_first_configure_resolution_is_idempotent() {
+        let (promise, mut future) = new_pending_first_configure();
+        let mut pending_first_configure = Some(promise);
+        let waker = Waker::noop().clone();
+        let mut cx = Context::from_waker(&waker);
+
+        resolve_pending_first_configure(&mut pending_first_configure);
+        resolve_pending_first_configure(&mut pending_first_configure);
+
+        assert!(pending_first_configure.is_none());
+        assert!(matches!(
+            StdFuture::poll(Pin::new(&mut future), &mut cx),
+            Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn pending_first_configure_drop_reports_broken_promise() {
+        let (promise, mut future) = new_pending_first_configure();
+        let waker = Waker::noop().clone();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            StdFuture::poll(Pin::new(&mut future), &mut cx),
+            Poll::Pending
+        ));
+
+        drop(promise);
+
+        match StdFuture::poll(Pin::new(&mut future), &mut cx) {
+            Poll::Ready(Err(err)) => {
+                assert!(err.downcast_ref::<BrokenPromise>().is_some());
+            }
+            other => panic!("expected Ready(Err(BrokenPromise)), got {other:?}"),
         }
     }
 }

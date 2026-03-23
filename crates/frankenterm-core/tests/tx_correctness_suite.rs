@@ -19,7 +19,6 @@ use frankenterm_core::plan::{
     execute_commit_phase, execute_compensation_phase, reconstruct_tx_resume_state,
     validate_tx_idempotency,
 };
-use serde_json;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

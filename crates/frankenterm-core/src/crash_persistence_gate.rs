@@ -566,7 +566,7 @@ mod tests {
         let scenarios = standard_recovery_scenarios();
         let results: Vec<ScenarioResult> = scenarios
             .iter()
-            .map(|s| passing_scenario_result(s))
+            .map(passing_scenario_result)
             .collect();
         let report = PersistenceGateReport::evaluate(results);
         assert_eq!(report.verdict, PersistenceGateVerdict::Pass);
@@ -578,7 +578,7 @@ mod tests {
         let scenarios = standard_recovery_scenarios();
         let mut results: Vec<ScenarioResult> = scenarios
             .iter()
-            .map(|s| passing_scenario_result(s))
+            .map(passing_scenario_result)
             .collect();
 
         // Simulate data loss in sigkill scenario.
@@ -602,7 +602,7 @@ mod tests {
         let scenarios = standard_recovery_scenarios();
         let mut results: Vec<ScenarioResult> = scenarios
             .iter()
-            .map(|s| passing_scenario_result(s))
+            .map(passing_scenario_result)
             .collect();
 
         // Fail a scenario but only on non-data-loss invariant.
@@ -666,7 +666,7 @@ mod tests {
         let scenarios = standard_recovery_scenarios();
         let mut results: Vec<ScenarioResult> = scenarios
             .iter()
-            .map(|s| passing_scenario_result(s))
+            .map(passing_scenario_result)
             .collect();
         results[0].recovery_time_ms = 5000;
         let report = PersistenceGateReport::evaluate(results);
@@ -703,7 +703,7 @@ mod tests {
         let scenarios = standard_recovery_scenarios();
         let results: Vec<ScenarioResult> = scenarios
             .iter()
-            .map(|s| passing_scenario_result(s))
+            .map(passing_scenario_result)
             .collect();
         let report = PersistenceGateReport::evaluate(results);
         let summary = report.render_summary();
@@ -716,7 +716,7 @@ mod tests {
         let scenarios = standard_recovery_scenarios();
         let mut results: Vec<ScenarioResult> = scenarios
             .iter()
-            .map(|s| passing_scenario_result(s))
+            .map(passing_scenario_result)
             .collect();
         if let Some(r) = results
             .iter_mut()
@@ -737,7 +737,7 @@ mod tests {
         let scenarios = standard_recovery_scenarios();
         let results: Vec<ScenarioResult> = scenarios
             .iter()
-            .map(|s| passing_scenario_result(s))
+            .map(passing_scenario_result)
             .collect();
         let report = PersistenceGateReport::evaluate(results);
         let json = serde_json::to_string(&report).expect("serialize");

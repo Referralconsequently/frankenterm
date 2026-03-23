@@ -1,10 +1,10 @@
 use crate::sshd::*;
 use frankenterm_ssh::runtime::block_on;
 use frankenterm_ssh::ExecResult;
-use portable_pty::Child;
+use portable_pty::{Child, ChildKiller};
 use rstest::*;
 use std::io::Read;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn read_all(mut reader: impl Read) -> String {
     let mut output = String::new();
@@ -27,6 +27,22 @@ fn collect_exec_result(result: ExecResult) -> (String, String, u32) {
     let status = child.wait().expect("exec wait failed");
 
     (stdout, stderr, status.exit_code())
+}
+
+fn wait_for_exit(child: &mut impl Child, timeout: Duration) -> u32 {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if let Some(status) = child.try_wait().expect("exec try_wait failed") {
+            return status.exit_code();
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for killed exec to exit"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn log_exec_outcome(scenario_id: &str, command: &str, stdout: &str, stderr: &str, exit_code: u32) {
@@ -113,6 +129,63 @@ fn exec_should_recover_after_non_zero_exit_on_same_session(#[future] session: Se
 
         assert_eq!(stdout, "recovered-output");
         assert!(stderr.is_empty(), "unexpected stderr from recovery exec");
+        assert_eq!(exit_code, 0);
+    })
+}
+
+#[rstest]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
+#[cfg_attr(not(feature = "libssh-rs"), ignore)]
+fn exec_should_terminate_after_kill_and_allow_followup_exec(#[future] session: SessionWithSshd) {
+    if !sshd_available() {
+        return;
+    }
+    block_on(async {
+        let session: SessionWithSshd = session.await;
+        let command = "sleep 30";
+        let ExecResult {
+            stdout,
+            stderr,
+            mut child,
+            ..
+        } = session
+            .exec(command, None)
+            .await
+            .expect("long-running exec should start");
+
+        std::thread::sleep(Duration::from_millis(200));
+        child.kill().expect("kill should signal the remote exec");
+
+        let exit_code = wait_for_exit(&mut child, Duration::from_secs(5));
+        let stdout = read_all(stdout);
+        let stderr = read_all(stderr);
+
+        log_exec_outcome("exec-kill-path", command, &stdout, &stderr, exit_code);
+
+        assert!(stdout.is_empty(), "killed exec should not emit stdout");
+        assert!(stderr.is_empty(), "killed exec should not emit stderr");
+        assert_ne!(exit_code, 0, "killed exec should not report success");
+
+        let recovery_command = "sh -lc 'printf post-kill-recovery; exit 0'";
+        let recovered = session
+            .exec(recovery_command, None)
+            .await
+            .expect("session should accept another exec after kill");
+        let (stdout, stderr, exit_code) = collect_exec_result(recovered);
+
+        log_exec_outcome(
+            "exec-kill-recovery-path",
+            recovery_command,
+            &stdout,
+            &stderr,
+            exit_code,
+        );
+
+        assert_eq!(stdout, "post-kill-recovery");
+        assert!(
+            stderr.is_empty(),
+            "unexpected stderr from post-kill recovery"
+        );
         assert_eq!(exit_code, 0);
     })
 }

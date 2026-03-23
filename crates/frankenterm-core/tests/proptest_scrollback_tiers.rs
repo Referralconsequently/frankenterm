@@ -315,7 +315,7 @@ proptest! {
             let page = sb.warm_page_lines(0);
             prop_assert!(page.is_some(), "warm page 0 should be decompressible");
             let lines = page.unwrap();
-            prop_assert!(lines.len() > 0, "decompressed page should have lines");
+            prop_assert!(!lines.is_empty(), "decompressed page should have lines");
         }
     }
 }

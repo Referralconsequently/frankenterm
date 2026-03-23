@@ -612,7 +612,7 @@ fn checkpoint_retention_limit_enforced() {
     for i in 0..10 {
         manager.checkpoint(
             &registry,
-            &format!("cp-{i}"),
+            format!("cp-{i}"),
             CheckpointTrigger::Periodic,
             HashMap::new(),
         );

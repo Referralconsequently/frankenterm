@@ -1055,7 +1055,7 @@ mod tests {
         let mut plan = EradicationPlan::standard();
 
         // Complete all critical steps
-        for step in plan.steps.iter_mut() {
+        for step in &mut plan.steps {
             if step.finding.severity == ViolationSeverity::Critical {
                 step.completed = true;
             }
@@ -1216,14 +1216,14 @@ mod tests {
 
         // Plan with all steps complete
         let mut plan = EradicationPlan::standard();
-        for step in plan.steps.iter_mut() {
+        for step in &mut plan.steps {
             step.completed = true;
         }
         report.set_plan(plan);
 
         // All features aligned
         let mut alignments = standard_feature_alignments();
-        for a in alignments.iter_mut() {
+        for a in &mut alignments {
             a.aligned = true;
             a.legacy_exists = true;
             a.migration_exists = true;

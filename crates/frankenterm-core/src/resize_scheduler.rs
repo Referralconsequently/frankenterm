@@ -3218,7 +3218,7 @@ mod tests {
         // Schedule 4 frames where pane 2 takes the slot each time,
         // deferring pane 1 and accumulating aging credit.
         for i in 0..4 {
-            let seq = (i + 1) as u64;
+            let seq = i + 1;
             let _ =
                 scheduler.submit_intent(intent(2, seq, ResizeWorkClass::Interactive, 1, 100 + i));
             let _ = scheduler.schedule_frame();

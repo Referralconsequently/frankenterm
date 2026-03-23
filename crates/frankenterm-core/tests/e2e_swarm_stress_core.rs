@@ -170,8 +170,8 @@ mod multi_pane_scrollback {
         }
 
         assert!(!ratios.is_empty());
-        let min = ratios.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = ratios.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min = ratios.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = ratios.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         assert!(
             max / min < 2.0,
             "compression ratio variance too high: min={min:.2}, max={max:.2}"

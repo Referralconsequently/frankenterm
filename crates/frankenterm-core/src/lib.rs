@@ -409,7 +409,6 @@ pub mod stream_hash;
 pub mod subprocess_bridge;
 pub mod suffix_array;
 pub mod suggestions;
-pub mod spectral;
 pub mod survival;
 pub mod swarm_command_center;
 pub mod swarm_pipeline;

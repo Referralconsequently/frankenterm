@@ -766,7 +766,7 @@ mod tests {
                 ActionKind::SendText,
                 DecisionOutcome::Allow,
                 TraceSource::Policy,
-                Some(i as u64),
+                Some(i),
                 1000 + i,
             );
             console.ingest(trace);

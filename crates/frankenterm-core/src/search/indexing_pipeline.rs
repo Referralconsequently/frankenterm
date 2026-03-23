@@ -1013,11 +1013,11 @@ mod tests {
         // and both pane 2 docs are rate-limited.
         assert_eq!(report.ingest_report.accepted_docs, 1);
         assert_eq!(report.ingest_report.deferred_rate_limited_docs, 3);
-        let pane1 = pipeline
+        let indexed_pane = pipeline
             .watermark(1)
             .expect("first pane doc was handled before rate limiting");
-        assert_eq!(pane1.last_indexed_at_ms, 1000);
-        assert_eq!(pane1.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(indexed_pane.last_indexed_at_ms, 1000);
+        assert_eq!(indexed_pane.session_id.as_deref(), Some("sess-1"));
         assert_eq!(pipeline.watermark(2), None);
     }
 

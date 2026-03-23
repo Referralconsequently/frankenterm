@@ -379,7 +379,7 @@ proptest! {
         o.try_acquire(ResourceId::Pane(blocked), holder("blocker"), None);
 
         let resources: Vec<ResourceId> = (0..5)
-            .map(|i| ResourceId::Pane(i))
+            .map(ResourceId::Pane)
             .collect();
         let result = o.try_acquire_group(&resources, holder("requester"), None);
         prop_assert!(!result.is_all_acquired());

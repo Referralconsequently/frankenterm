@@ -1248,10 +1248,8 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn domain_coverage_all_implemented() {
-        let entries = vec![
-            make_entry("ft.x", "implemented", "none", &[], &["s"], &["a.rs"]),
-            make_entry("ft.y", "implemented", "none", &[], &["s"], &["b.rs"]),
-        ];
+        let entries = [make_entry("ft.x", "implemented", "none", &[], &["s"], &["a.rs"]),
+            make_entry("ft.y", "implemented", "none", &[], &["s"], &["b.rs"])];
         let coverage = DomainCoverage::compute("ft", &entries.iter().collect::<Vec<_>>());
         assert!((coverage.coverage_pct - 100.0).abs() < 0.001);
     }

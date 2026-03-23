@@ -118,7 +118,7 @@ fn gini_coefficient(values: &[u32]) -> f64 {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut numerator = 0.0;
     for (i, val) in sorted.iter().enumerate() {
-        numerator += (2.0 * (i as f64 + 1.0) - n - 1.0) * val;
+        numerator += (2.0f64.mul_add(i as f64 + 1.0, -n) - 1.0) * val;
     }
     numerator / (n * sum)
 }

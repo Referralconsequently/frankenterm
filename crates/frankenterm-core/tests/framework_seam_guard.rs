@@ -78,7 +78,7 @@ fn collect_named_files(root: &Path, file_name: &str) -> Vec<PathBuf> {
     files
 }
 
-fn non_comment_lines<'a>(content: &'a str) -> impl Iterator<Item = (usize, &'a str)> {
+fn non_comment_lines(content: &str) -> impl Iterator<Item = (usize, &str)> {
     content
         .lines()
         .enumerate()

@@ -5522,9 +5522,9 @@ mod tests {
         #[cfg(feature = "asupersync-runtime")]
         let _guard = _tokio_rt.enter();
 
-        let env = CassToolTestEnv::install(
-            r#"printf '%s\n' 'cass exploded' >&2
-exit 17"#,
+        let _env = CassToolTestEnv::install(
+            r"printf '%s\n' 'cass exploded' >&2
+exit 17",
         );
         let tool = WaCassStatusTool;
 

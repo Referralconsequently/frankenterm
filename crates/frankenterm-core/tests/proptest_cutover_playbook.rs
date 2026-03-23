@@ -222,7 +222,7 @@ proptest! {
     ) {
         let mut pb = CutoverPlaybook::new("test", 1);
         for i in 0..n_gates {
-            let gate = StageGate::new(&format!("G-{i}"), GateCategory::Parity, "test")
+            let gate = StageGate::new(format!("G-{i}"), GateCategory::Parity, "test")
                 .for_stage(stage);
             pb.register_gate(gate);
         }
@@ -239,7 +239,7 @@ proptest! {
     ) {
         let mut pb = CutoverPlaybook::new("test", 1);
         for i in 0..n_gates {
-            let gate = StageGate::new(&format!("G-{i}"), GateCategory::Parity, "test")
+            let gate = StageGate::new(format!("G-{i}"), GateCategory::Parity, "test")
                 .for_stage(CutoverStage::Preflight);
             pb.register_gate(gate);
         }
@@ -297,14 +297,14 @@ proptest! {
         let mut pb = CutoverPlaybook::new("test", 1);
 
         for i in 0..n_pass {
-            let gate = StageGate::new(&format!("P-{i}"), GateCategory::Parity, "pass")
+            let gate = StageGate::new(format!("P-{i}"), GateCategory::Parity, "pass")
                 .for_stage(CutoverStage::Preflight);
             pb.register_gate(gate);
             pb.pass_gate(&format!("P-{i}"), "ok");
         }
 
         for i in 0..n_fail {
-            let gate = StageGate::new(&format!("F-{i}"), GateCategory::Contract, "fail")
+            let gate = StageGate::new(format!("F-{i}"), GateCategory::Contract, "fail")
                 .for_stage(CutoverStage::Preflight);
             pb.register_gate(gate);
             pb.fail_gate(&format!("F-{i}"), "not ok");

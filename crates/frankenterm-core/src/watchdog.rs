@@ -1918,7 +1918,7 @@ mod tests {
         run_async_test(async {
             let mock = Arc::new(crate::wezterm::MockWezterm::new());
             mock.set_watchdog_warnings(vec![
-                "".to_string(),
+                String::new(),
                 "   ".to_string(),
                 "real warning: timeout".to_string(),
             ])

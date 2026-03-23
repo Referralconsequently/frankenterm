@@ -30,7 +30,6 @@ downcast-rs.workspace = true
 thiserror.workspace = true
 bitflags.workspace = true
 euclid.workspace = true
-flume.workspace = true
 guillotiere.workspace = true
 lazy_static.workspace = true
 libloading.workspace = true
