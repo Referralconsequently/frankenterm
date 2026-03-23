@@ -6,7 +6,6 @@
 
 <div align="center">
 
-[![CI](https://github.com/Dicklesworthstone/frankenterm/actions/workflows/ci.yml/badge.svg)](https://github.com/Dicklesworthstone/frankenterm/actions/workflows/ci.yml)
 [![License: MIT+Rider](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-yellow.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-nightly%202024-orange.svg)](https://www.rust-lang.org/)
 [![Lines of Code](https://img.shields.io/badge/core%20library-775k%20lines-blue.svg)]()
