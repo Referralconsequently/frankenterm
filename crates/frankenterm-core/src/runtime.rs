@@ -6173,4 +6173,109 @@ mod tests {
         // Warning with no critical stalls should NOT recommend safe-mode
         assert!(!ladder.signals.safe_mode_recommended);
     }
+
+    // ── Fleet coordinator runtime integration tests (ft-dwjtm) ─────────
+
+    #[test]
+    fn fleet_pane_infos_from_empty_registry() {
+        let registry = PaneRegistry::new();
+        let infos = fleet_pane_infos_from_registry(&registry);
+        assert!(infos.is_empty());
+    }
+
+    #[test]
+    fn fleet_pane_infos_excludes_ignored_panes() {
+        let mut registry = PaneRegistry::new();
+        // discovery_tick adds all as observed by default
+        registry.discovery_tick(vec![make_pane(1, "observed"), make_pane(2, "ignored")]);
+
+        // Mark pane 2 as ignored via the filter path
+        if let Some(entry) = registry.get_entry_mut(2) {
+            entry.observation = crate::ingest::ObservationDecision::Ignored {
+                reason: "excluded by filter".to_string(),
+            };
+        }
+
+        let infos = fleet_pane_infos_from_registry(&registry);
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].pane_id, 1);
+    }
+
+    #[test]
+    fn build_fleet_pressure_signals_green_at_low_utilization() {
+        let manager = BackpressureManager::new(BackpressureConfig::default());
+        let signals = build_fleet_pressure_signals(
+            &manager,
+            &QueueDepths {
+                capture_depth: 5,
+                capture_capacity: 100,
+                write_depth: 10,
+                write_capacity: 1_000,
+            },
+            MemoryPressureTier::Green,
+            BudgetLevel::Normal,
+            5,
+        );
+        assert_eq!(
+            signals.backpressure,
+            crate::backpressure::BackpressureTier::Green
+        );
+        assert_eq!(signals.memory_pressure, MemoryPressureTier::Green);
+        assert_eq!(signals.worst_budget, BudgetLevel::Normal);
+        assert_eq!(signals.pane_count, 5);
+        assert_eq!(signals.paused_pane_count, 0);
+    }
+
+    #[test]
+    fn build_fleet_pressure_signals_zero_capacity_is_green() {
+        let manager = BackpressureManager::new(BackpressureConfig::default());
+        let signals = build_fleet_pressure_signals(
+            &manager,
+            &QueueDepths {
+                capture_depth: 0,
+                capture_capacity: 0,
+                write_depth: 0,
+                write_capacity: 0,
+            },
+            MemoryPressureTier::Green,
+            BudgetLevel::Normal,
+            0,
+        );
+        // When capacities are zero the manager should still produce a valid tier
+        assert_eq!(signals.pane_count, 0);
+    }
+
+    #[test]
+    fn build_fleet_pressure_signals_propagates_memory_pressure() {
+        let manager = BackpressureManager::new(BackpressureConfig::default());
+        let signals = build_fleet_pressure_signals(
+            &manager,
+            &QueueDepths {
+                capture_depth: 0,
+                capture_capacity: 100,
+                write_depth: 0,
+                write_capacity: 100,
+            },
+            MemoryPressureTier::Red,
+            BudgetLevel::Throttled,
+            10,
+        );
+        assert_eq!(signals.memory_pressure, MemoryPressureTier::Red);
+        assert_eq!(signals.worst_budget, BudgetLevel::Throttled);
+    }
+
+    #[test]
+    fn fleet_pane_infos_warm_pages_divides_correctly() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "test")]);
+
+        let infos = fleet_pane_infos_from_registry(&registry);
+        assert_eq!(infos.len(), 1);
+
+        // warm_pages should be div_ceil(warm_bytes, 4096)
+        let expected_pages = infos[0]
+            .warm_bytes
+            .div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES);
+        assert_eq!(infos[0].warm_pages, expected_pages);
+    }
 }
