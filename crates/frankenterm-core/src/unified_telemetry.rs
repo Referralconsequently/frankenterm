@@ -224,6 +224,8 @@ pub enum SubsystemLayer {
     Runtime,
     /// Ingest and tailer (capture budgets, delta extraction).
     Ingest,
+    /// Fleet memory controller and scrollback coordinator.
+    FleetMemory,
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +254,8 @@ pub enum SubsystemPayload {
     Storage(Box<StoragePayload>),
     /// Ingest/tailer budget snapshot.
     Ingest(IngestPayload),
+    /// Fleet memory controller and scrollback coordinator telemetry.
+    FleetMemory(FleetMemoryPayload),
 }
 
 /// Wrapper for policy engine snapshot — keeps serde flat.
@@ -295,6 +299,15 @@ pub struct StoragePayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestPayload {
     pub snapshot: crate::tailer::SchedulerSnapshot,
+}
+
+/// Wrapper for fleet memory controller + scrollback coordinator telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetMemoryPayload {
+    /// Fleet memory controller snapshot (pressure tier, evaluation count, transitions).
+    pub controller: crate::fleet_memory_controller::FleetMemorySnapshot,
+    /// Scrollback coordinator telemetry (ticks, evictions, bytes reclaimed).
+    pub coordinator: crate::fleet_scrollback_coordinator::CoordinatorTelemetry,
 }
 
 // ---------------------------------------------------------------------------
