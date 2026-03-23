@@ -8,7 +8,7 @@
 // Coverage:
 //   B01–B04: Channel delivery contracts (ABC-CHN-001, ABC-CHN-002)
 //   B05–B07: Timeout override contracts (ABC-TO-001)
-//   B08–B09: Task lifecycle tracking (ABC-TL-001, ABC-TL-002)
+//   B08–B09b: Task lifecycle tracking (ABC-TL-001, ABC-TL-002)
 //   B10–B12: Semaphore backpressure (ABC-BP-001)
 //   B13–B15: Task ownership and cancellation (ABC-OWN-001, ABC-CAN-002)
 //   B16–B18c: Error mapping chain (ABC-ERR-001, ABC-ERR-002 spot checks)
@@ -235,7 +235,7 @@ fn b07_sleep_waits_at_least_requested_duration() {
 }
 
 // =============================================================================
-// B08–B09: Task lifecycle tracking (ABC-TL-001, ABC-TL-002)
+// B08–B09b: Task lifecycle tracking (ABC-TL-001, ABC-TL-002)
 // =============================================================================
 
 /// B08: ABC-TL-001 — JoinSet drives spawned tasks to completion.
@@ -317,6 +317,34 @@ fn b09_joinset_abort_all_cancels_tasks() {
             &format!("pass:cancelled={cancel_count}"),
         );
     });
+}
+
+/// B09b: ABC-TL-002 — vendored boundary sources forbid detached spawns.
+///
+/// Confirms the boundary-facing vendored modules do not call fire-and-forget
+/// spawning helpers, so every spawned task still has an owned handle and an
+/// explicit cancellation path.
+#[test]
+fn b09b_vendored_boundary_sources_forbid_detached_spawns() {
+    for path in [
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/vendored/mux_pool.rs"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/vendored/mux_client.rs"),
+    ] {
+        let contents =
+            std::fs::read_to_string(path).unwrap_or_else(|err| panic!("read {path}: {err}"));
+        let detached_refs = contents.matches("spawn_detached").count();
+        assert_eq!(
+            detached_refs, 0,
+            "vendored boundary file {path} must not use detached spawning (ABC-TL-002)"
+        );
+    }
+
+    emit_behavioral_log(
+        "b09b",
+        "ABC-TL-002",
+        "vendored_boundary_sources_forbid_detached_spawns",
+        "pass",
+    );
 }
 
 // =============================================================================
@@ -687,7 +715,10 @@ fn b21_full_audit_report_with_behavioral_evidence() {
         ("ABC-BP-001", "b10_semaphore_limits_concurrent_access"),
         ("ABC-TO-001", "b05_timeout_expires_on_slow_future"),
         ("ABC-TL-001", "b08_joinset_drives_tasks_to_completion"),
-        ("ABC-TL-002", "b13_task_ownership_via_join_handle"),
+        (
+            "ABC-TL-002",
+            "b09b_vendored_boundary_sources_forbid_detached_spawns",
+        ),
     ];
 
     for contract in contracts {
