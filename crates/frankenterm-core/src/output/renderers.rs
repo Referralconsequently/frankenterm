@@ -1784,6 +1784,11 @@ impl HealthSnapshotRenderer {
             output.push_str(&format!("  Backpressure:  {tier}\n"));
         }
 
+        // Fleet scrollback pressure tier
+        if let Some(tier) = &snapshot.fleet_pressure_tier {
+            output.push_str(&format!("  Fleet memory:  {tier}\n"));
+        }
+
         // Stuck pane indicator
         if !snapshot.last_activity_by_pane.is_empty() && snapshot.timestamp > 0 {
             const STUCK_MS: u64 = 5 * 60 * 1000;
@@ -4443,6 +4448,28 @@ mod tests {
         assert!(output.contains("7 rate-limited"));
         assert!(output.contains("2 byte-budget exceeded"));
         assert!(output.contains("Backpressure:  Yellow"));
+    }
+
+    #[test]
+    fn health_snapshot_plain_shows_fleet_pressure_tier() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.fleet_pressure_tier = Some("Elevated".to_string());
+
+        let ctx = RenderContext::new(OutputFormat::Plain);
+        let output = HealthSnapshotRenderer::render(&snapshot, &ctx);
+
+        assert!(output.contains("Fleet memory:  Elevated"));
+    }
+
+    #[test]
+    fn health_snapshot_plain_omits_fleet_pressure_when_none() {
+        let snapshot = sample_health_snapshot();
+        assert!(snapshot.fleet_pressure_tier.is_none());
+
+        let ctx = RenderContext::new(OutputFormat::Plain);
+        let output = HealthSnapshotRenderer::render(&snapshot, &ctx);
+
+        assert!(!output.contains("Fleet memory:"));
     }
 
     #[test]
