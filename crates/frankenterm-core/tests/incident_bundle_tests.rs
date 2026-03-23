@@ -55,6 +55,7 @@ fn basic_snapshot() -> HealthSnapshot {
         consecutive_crashes: 0,
         current_backoff_ms: 0,
         in_crash_loop: false,
+        fleet_pressure_tier: None,
     }
 }
 

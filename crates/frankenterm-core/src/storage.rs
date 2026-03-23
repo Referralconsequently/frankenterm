@@ -23338,6 +23338,7 @@ mod backpressure_integration_tests {
                 consecutive_crashes: 0,
                 current_backoff_ms: 0,
                 in_crash_loop: false,
+                fleet_pressure_tier: None,
             };
 
             assert!(!snapshot.warnings.is_empty());

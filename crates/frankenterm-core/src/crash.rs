@@ -98,6 +98,11 @@ pub struct HealthSnapshot {
     /// Whether the watcher is currently in a detected crash loop.
     #[serde(default)]
     pub in_crash_loop: bool,
+
+    /// Fleet scrollback coordinator compound pressure tier (ft-dwjtm).
+    /// Values: Normal, Elevated, Critical, Emergency.
+    #[serde(default)]
+    pub fleet_pressure_tier: Option<String>,
 }
 
 /// Health snapshot view of a runtime pane priority override.
@@ -1670,6 +1675,7 @@ mod tests {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         }
     }
 
@@ -1739,6 +1745,7 @@ mod tests {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         };
 
         HealthSnapshot::update_global(snapshot);
@@ -3300,6 +3307,7 @@ mod tests {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: Some("Normal".to_string()),
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         let parsed: HealthSnapshot = serde_json::from_str(&json).unwrap();
@@ -3309,6 +3317,7 @@ mod tests {
         assert_eq!(parsed.backpressure_tier.as_deref(), Some("Yellow"));
         assert_eq!(parsed.last_activity_by_pane.len(), 2);
         assert_eq!(parsed.restart_count, 2);
+        assert_eq!(parsed.fleet_pressure_tier.as_deref(), Some("Normal"));
         assert_eq!(parsed.last_crash_at, Some(1_699_990_000));
     }
 

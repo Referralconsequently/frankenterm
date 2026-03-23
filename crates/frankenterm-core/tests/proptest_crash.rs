@@ -81,6 +81,7 @@ fn arb_health_snapshot() -> impl Strategy<Value = HealthSnapshot> {
                     consecutive_crashes: 0,
                     current_backoff_ms: 0,
                     in_crash_loop: false,
+                    fleet_pressure_tier: None,
                 }
             },
         )
@@ -1046,6 +1047,7 @@ proptest! {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         };
         HealthSnapshot::update_global(snap.clone());
         let got = HealthSnapshot::get_global();
