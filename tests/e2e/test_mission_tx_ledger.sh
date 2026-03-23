@@ -27,21 +27,24 @@ else
 fi
 export CARGO_TARGET_DIR
 
+# Keep rch readiness semantics aligned with the shared E2E guard library while
+# preserving this harness's structured scenario logging.
+# shellcheck source=tests/e2e/lib_rch_guards.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib_rch_guards.sh"
+rch_init "${LOG_DIR}" "${RUN_ID}" "mission_tx_ledger"
+
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
 TOTAL_SCENARIOS=6
 LAST_STEP_QUEUE_LOG=""
-RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-LOCAL_RCH_TMPDIR_OVERRIDE=""
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
-TIMEOUT_BIN=""
-RCH_PROBE_LOG="${LOG_DIR}/mission_tx_ledger_${RUN_ID}.rch_probe.log"
-RCH_SMOKE_LOG="${LOG_DIR}/mission_tx_ledger_${RUN_ID}.rch_smoke.log"
-
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  LOCAL_RCH_TMPDIR_OVERRIDE="/tmp"
-fi
+RCH_COMPILE_TIMEOUT_SECS="${RCH_COMPILE_TIMEOUT_SECS:-1800}"
+# shellcheck disable=SC2153
+RCH_PROBE_LOG="${_RCH_PROBE_LOG}"
+# shellcheck disable=SC2153
+RCH_SMOKE_LOG="${_RCH_SMOKE_LOG}"
+RCH_PRECHECK_LOG="${LOG_DIR}/mission_tx_ledger_${RUN_ID}.rch_precheck.log"
 
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS: $1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1"; }
@@ -97,42 +100,21 @@ emit_log() {
     }' >> "${LOG_FILE}"
 }
 
-resolve_timeout_bin() {
-  if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_BIN="timeout"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_BIN="gtimeout"
-  else
-    TIMEOUT_BIN=""
-  fi
-}
-
-run_rch() {
-  if [[ -n "${LOCAL_RCH_TMPDIR_OVERRIDE}" ]]; then
-    env TMPDIR="${LOCAL_RCH_TMPDIR_OVERRIDE}" rch "$@"
-  else
-    rch "$@"
-  fi
-}
-
 run_rch_timed() {
   local timeout_secs="$1"
   shift
 
-  local -a cmd=(rch "$@")
-  if [[ -n "${LOCAL_RCH_TMPDIR_OVERRIDE}" ]]; then
-    cmd=(env TMPDIR="${LOCAL_RCH_TMPDIR_OVERRIDE}" "${cmd[@]}")
+  if [[ -z "${TIMEOUT_BIN}" ]]; then
+    echo "timeout or gtimeout is required to fail closed on stalled remote execution." >&2
+    return 1
   fi
 
+  local -a cmd=(env TMPDIR=/tmp rch "$@")
   if [[ -n "${TIMEOUT_BIN}" ]]; then
     "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${timeout_secs}" "${cmd[@]}"
   else
     "${cmd[@]}"
   fi
-}
-
-probe_has_reachable_workers() {
-  grep -Eiq '"status"[[:space:]]*:[[:space:]]*"(ok|healthy|reachable)"' "$1"
 }
 
 step_timed_out() {
@@ -147,6 +129,19 @@ timeout_artifact_label() {
     artifact_label "${LAST_STEP_QUEUE_LOG}"
   else
     artifact_label "${default_path}"
+  fi
+}
+
+preflight_timeout_artifact_label() {
+  local queue_path
+  queue_path="$(
+    sed -n 's/.*See \(.*\)$/\1/p' "${RCH_PRECHECK_LOG}" 2>/dev/null | tail -n 1
+  )"
+
+  if [[ -n "${queue_path}" ]]; then
+    artifact_label "${queue_path}"
+  else
+    artifact_label "${RCH_SMOKE_LOG}"
   fi
 }
 
@@ -177,16 +172,17 @@ check_rch_fallback_in_logs() {
   fi
 }
 
-run_rch_cargo_logged() {
-  local decision_path="$1"
-  local artifact_path="$2"
-  shift 2
+run_mission_rch_cargo_logged_with_timeout() {
+  local timeout_secs="$1"
+  local decision_path="$2"
+  local artifact_path="$3"
+  shift 3
 
   LAST_STEP_QUEUE_LOG=""
   set +e
   (
     cd "${ROOT_DIR}"
-    run_rch_timed "${RCH_STEP_TIMEOUT_SECS}" exec -- env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo "$@"
+    run_rch_timed "${timeout_secs}" exec -- env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo "$@"
   ) 2>&1 | tee "${artifact_path}" | tee -a "${STDOUT_FILE}"
   local rc=${PIPESTATUS[0]}
   set -e
@@ -200,6 +196,10 @@ run_rch_cargo_logged() {
 
   check_rch_fallback_in_logs "${decision_path}" "${artifact_path}" "rch cargo $*"
   return "${rc}"
+}
+
+run_rch_cargo_logged() {
+  run_mission_rch_cargo_logged_with_timeout "${RCH_STEP_TIMEOUT_SECS}" "$@"
 }
 
 run_exact_group() {
@@ -355,28 +355,33 @@ fi
 resolve_timeout_bin
 if [[ -z "${TIMEOUT_BIN}" ]]; then
   emit_log \
-    "running" \
+    "failed" \
     "preflight->timeout_resolution" \
     "timeout_guard_unavailable" \
-    "" \
+    "RCH-E002" \
     "$(artifact_label "${LOG_FILE}")" \
-    "timeout/gtimeout not installed; continuing without external timeout wrapper"
+    "timeout/gtimeout is required to fail closed on stalled remote execution"
+  echo "timeout or gtimeout is required to fail closed on stalled remote execution." >&2
+  exit 1
 fi
 
-echo "[preflight] Probing rch workers..."
+echo "[preflight] Running shared rch readiness guard..."
 set +e
-run_rch --json workers probe --all > "${RCH_PROBE_LOG}" 2>&1
-probe_rc=$?
+(
+  ensure_rch_ready
+) > "${RCH_PRECHECK_LOG}" 2>&1
+preflight_rc=$?
 set -e
+
 check_rch_fallback_in_logs "preflight->rch_probe" "${RCH_PROBE_LOG}" "rch workers probe --all"
-if [[ ${probe_rc} -ne 0 ]] || ! probe_has_reachable_workers "${RCH_PROBE_LOG}"; then
+if ! probe_has_reachable_workers "${RCH_PROBE_LOG}"; then
   emit_log \
     "failed" \
     "preflight->rch_probe" \
     "rch_workers_unhealthy" \
     "RCH-E100" \
     "$(artifact_label "${RCH_PROBE_LOG}")" \
-    "probe_exit=${probe_rc}"
+    "probe_exit=${preflight_rc}"
   echo "rch workers are unavailable; refusing local cargo execution." >&2
   exit 1
 fi
@@ -388,31 +393,26 @@ emit_log \
   "$(artifact_label "${RCH_PROBE_LOG}")" \
   "rch workers probe reported reachable capacity"
 
-echo "[preflight] Verifying remote rch exec path..."
-set +e
-run_rch_timed "${RCH_STEP_TIMEOUT_SECS}" exec -- cargo check --help > "${RCH_SMOKE_LOG}" 2>&1
-smoke_rc=$?
-set -e
 check_rch_fallback_in_logs "preflight->rch_smoke" "${RCH_SMOKE_LOG}" "rch remote smoke check (cargo check --help)"
-if step_timed_out "${smoke_rc}"; then
-  emit_log \
-    "failed" \
-    "preflight->rch_smoke" \
-    "rch_remote_smoke_timed_out" \
-    "RCH-REMOTE-STALL" \
-    "$(artifact_label "${RCH_SMOKE_LOG}")" \
-    "timeout_secs=${RCH_STEP_TIMEOUT_SECS}"
-  echo "rch remote smoke check timed out." >&2
-  exit 1
-fi
-if [[ ${smoke_rc} -ne 0 ]]; then
+if [[ ${preflight_rc} -ne 0 ]]; then
+  if grep -Eq 'RCH-(ARTIFACT|REMOTE)-STALL' "${RCH_PRECHECK_LOG}" 2>/dev/null; then
+    emit_log \
+      "failed" \
+      "preflight->rch_smoke" \
+      "rch_remote_smoke_timed_out" \
+      "$(grep -Eo 'RCH-(ARTIFACT|REMOTE)-STALL' "${RCH_PRECHECK_LOG}" | tail -n 1)" \
+      "$(preflight_timeout_artifact_label)" \
+      "timeout_secs=${RCH_SMOKE_TIMEOUT_SECS}"
+    echo "rch remote smoke check timed out." >&2
+    exit 1
+  fi
   emit_log \
     "failed" \
     "preflight->rch_smoke" \
     "rch_remote_smoke_failed" \
     "RCH-E101" \
     "$(artifact_label "${RCH_SMOKE_LOG}")" \
-    "smoke_exit=${smoke_rc}"
+    "smoke_exit=${preflight_rc}"
   echo "rch remote smoke preflight failed; refusing local cargo execution." >&2
   exit 1
 fi
@@ -426,7 +426,7 @@ emit_log \
 
 echo "[preflight] Compiling tx_idempotency tests via rch..."
 compile_log="${LOG_DIR}/mission_tx_ledger_${RUN_ID}.compile.log"
-if run_rch_cargo_logged "preflight->build_check" "${compile_log}" \
+if run_mission_rch_cargo_logged_with_timeout "${RCH_COMPILE_TIMEOUT_SECS}" "preflight->build_check" "${compile_log}" \
   test -p frankenterm-core --lib tx_idempotency --no-run; then
   compile_rc=0
 else
@@ -440,7 +440,7 @@ if step_timed_out "${compile_rc}"; then
     "build.compile_timed_out" \
     "RCH-REMOTE-STALL" \
     "$(timeout_artifact_label "${compile_log}")" \
-    "timeout_secs=${RCH_STEP_TIMEOUT_SECS}"
+    "timeout_secs=${RCH_COMPILE_TIMEOUT_SECS}"
   echo "[preflight] FAIL: compile step timed out"
   exit 1
 fi
@@ -476,16 +476,14 @@ run_exact_group \
   "tx_idempotency::tests::ledger_append_and_lookup" \
   "tx_idempotency::tests::ledger_hash_chain_integrity"
 
-# ── Scenario 2: Invalid-path detection ───────────────────────────────────
-run_exact_group \
-  2 \
-  "Invalid Path Detection" \
-  "invalid_paths" \
-  "Duplicate, sealed-ledger, and invalid-transition failures" \
-  "scenario->invalid_paths" \
-  "tx_idempotency::tests::ledger_duplicate_rejected" \
-  "tx_idempotency::tests::ledger_sealed_rejects_append" \
+# Scenario 2: Invalid-path detection.
+scenario_2_pass_message="Duplicate, sealed-ledger, and invalid-transition failures"
+scenario_2_filters=(
+  "tx_idempotency::tests::ledger_duplicate_rejected"
+  "tx_idempotency::tests::ledger_sealed_rejects_append"
   "tx_idempotency::tests::ledger_invalid_phase_transition"
+)
+run_exact_group 2 "Invalid Path Detection" "invalid_paths" "${scenario_2_pass_message}" "scenario->invalid_paths" "${scenario_2_filters[@]}"
 
 # ── Scenario 3: Serde roundtrips ─────────────────────────────────────────
 run_exact_group \
