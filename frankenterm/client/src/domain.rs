@@ -6,7 +6,7 @@ use codec::{ListPanesResponse, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
-use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
+use mux::domain::{Domain, DomainId, DomainState, SplitSource, alloc_domain_id};
 use mux::pane::{Pane, PaneId};
 use mux::tab::{SplitRequest, Tab, TabId};
 use mux::window::WindowId;
@@ -119,7 +119,7 @@ impl ClientInner {
         None
     }
 
-    pub fn remote_to_local_pane_id(&self, remote_pane_id: PaneId) -> Option<TabId> {
+    pub fn remote_to_local_pane_id(&self, remote_pane_id: PaneId) -> Option<PaneId> {
         let mut pane_map = self.remote_to_local_pane.lock().unwrap();
 
         if let Some(id) = pane_map.get(&remote_pane_id) {
@@ -423,7 +423,7 @@ impl ClientDomain {
         mux.domain_was_detached(self.local_domain_id);
     }
 
-    pub fn remote_to_local_pane_id(&self, remote_pane_id: TabId) -> Option<TabId> {
+    pub fn remote_to_local_pane_id(&self, remote_pane_id: PaneId) -> Option<PaneId> {
         let inner = self.inner()?;
         inner.remote_to_local_pane_id(remote_pane_id)
     }

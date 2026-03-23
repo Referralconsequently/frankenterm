@@ -1,6 +1,6 @@
 use crate::domain::ClientInner;
 use crate::pane::mousestate::MouseState;
-use crate::pane::renderable::{hydrate_lines, RenderableInner, RenderableState};
+use crate::pane::renderable::{RenderableInner, RenderableState, hydrate_lines};
 use anyhow::bail;
 use async_trait::async_trait;
 use codec::*;
@@ -8,8 +8,8 @@ use config::configuration;
 use config::keyassignment::ScrollbackEraseMode;
 use mux::domain::DomainId;
 use mux::pane::{
-    alloc_pane_id, CachePolicy, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId,
-    Pattern, SearchResult, WithPaneLines,
+    CachePolicy, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId, Pattern,
+    SearchResult, WithPaneLines, alloc_pane_id,
 };
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::TabId;
@@ -246,7 +246,7 @@ impl ClientPane {
         Ok(())
     }
 
-    pub fn remote_pane_id(&self) -> TabId {
+    pub fn remote_pane_id(&self) -> PaneId {
         self.remote_pane_id
     }
 
@@ -653,7 +653,7 @@ impl Pane for ClientPane {
 
 struct PaneWriter {
     client: Arc<ClientInner>,
-    remote_pane_id: TabId,
+    remote_pane_id: PaneId,
 }
 
 impl std::io::Write for PaneWriter {

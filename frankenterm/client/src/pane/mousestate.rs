@@ -1,21 +1,21 @@
 use crate::client::Client;
 use codec::*;
-use mux::tab::TabId;
+use mux::pane::PaneId;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use wezterm_term::{MouseButton, MouseEvent, MouseEventKind};
 
 pub struct MouseState {
     pending: AtomicBool,
     queue: VecDeque<MouseEvent>,
     client: Client,
-    remote_pane_id: TabId,
+    remote_pane_id: PaneId,
 }
 
 impl MouseState {
-    pub fn new(remote_pane_id: TabId, client: Client) -> Self {
+    pub fn new(remote_pane_id: PaneId, client: Client) -> Self {
         Self {
             remote_pane_id,
             client,

@@ -1,13 +1,24 @@
 #![allow(clippy::future_not_send)]
 use crate::PKI;
 use anyhow::{Context, anyhow};
-use codec::{DecodedPdu, InputSerial, GetPaneRenderChangesResponse, Pdu, SetPalette, NotifyAlert, ErrorResponse, Ping, Pong, SetWindowWorkspace, UnitResponse, SetClientId, SetFocusedPane, GetClientList, GetClientListResponse, ListPanes, ListPanesResponse, RenameWorkspace, WriteToPane, EraseScrollbackRequest, KillPane, SendPaste, SearchScrollbackRequest, SearchScrollbackResponse, SetPaneZoomed, GetPaneDirection, GetPaneDirectionResponse, ActivatePaneDirection, Resize, SendKeyDown, SendMouseEvent, GetPaneRenderableDimensions, GetPaneRenderableDimensionsResponse, GetPaneRenderChanges, LivenessResponse, GetLines, GetLinesResponse, GetImageCell, GetImageCellResponse, GetCodecVersionResponse, CODEC_VERSION, GetTlsCredsResponse, WindowTitleChanged, TabTitleChanged, AdjustPaneSize, SwapToLayout, SetLayoutCycle, CycleStack, SelectStackPane, UpdatePaneConstraints, SpawnV2, SplitPane, SpawnResponse, MovePaneToNewTab, MovePaneToNewTabResponse};
+use codec::{
+    ActivatePaneDirection, AdjustPaneSize, CODEC_VERSION, CycleStack, DecodedPdu,
+    EraseScrollbackRequest, ErrorResponse, GetClientList, GetClientListResponse,
+    GetCodecVersionResponse, GetImageCell, GetImageCellResponse, GetLines, GetLinesResponse,
+    GetPaneDirection, GetPaneDirectionResponse, GetPaneRenderChanges, GetPaneRenderChangesResponse,
+    GetPaneRenderableDimensions, GetPaneRenderableDimensionsResponse, GetTlsCredsResponse,
+    InputSerial, KillPane, ListPanes, ListPanesResponse, LivenessResponse, MovePaneToNewTab,
+    MovePaneToNewTabResponse, NotifyAlert, Pdu, Ping, Pong, RenameWorkspace, Resize,
+    SearchScrollbackRequest, SearchScrollbackResponse, SelectStackPane, SendKeyDown,
+    SendMouseEvent, SendPaste, SetClientId, SetFocusedPane, SetLayoutCycle, SetPalette,
+    SetPaneZoomed, SetWindowWorkspace, SpawnResponse, SpawnV2, SplitPane, SwapToLayout,
+    TabTitleChanged, UnitResponse, UpdatePaneConstraints, WindowTitleChanged, WriteToPane,
+};
 use config::TermConfig;
 use mux::client::ClientId;
 use mux::domain::SplitSource;
 use mux::pane::{CachePolicy, Pane, PaneId};
 use mux::renderable::{PaneTieredScrollbackStatus, RenderableDimensions, StableCursorPosition};
-use mux::tab::TabId;
 use mux::{Mux, MuxNotification};
 use promise::spawn::spawn_into_main_thread;
 use std::collections::HashMap;
@@ -536,7 +547,7 @@ impl SessionHandler {
                 use mux::pane::Pattern;
 
                 async fn do_search(
-                    pane_id: TabId,
+                    pane_id: PaneId,
                     pattern: Pattern,
                     range: std::ops::Range<StableRowIndex>,
                     limit: Option<u32>,
