@@ -566,7 +566,7 @@ CREATE TABLE IF NOT EXISTS notification_history (
     action_taken TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
     metadata TEXT,                       -- JSON blob for channel-specific data
-    created_at Integer NOT NULL          -- epoch ms
+    created_at INTEGER NOT NULL          -- epoch ms
 );
 
 CREATE INDEX IF NOT EXISTS idx_notification_history_timestamp ON notification_history(timestamp);

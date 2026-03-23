@@ -2457,10 +2457,10 @@ impl TermWindow {
         );
         let fuzzy_help_text = args
             .fuzzy_help_text
-            .unwrap_or("Fuzzy matching: ".to_string());
+            .unwrap_or_else(|| "Fuzzy matching: ".to_string());
 
         let config = &self.config;
-        let alphabet = args.alphabet.unwrap_or(config.launcher_alphabet.clone());
+        let alphabet = args.alphabet.unwrap_or_else(|| config.launcher_alphabet.clone());
 
         promise::spawn::spawn(async move {
             let args = LauncherArgs::new(
@@ -2806,7 +2806,7 @@ impl TermWindow {
             ShowDebugOverlay => self.show_debug_overlay(),
             ShowLauncher => self.show_launcher(),
             ShowLauncherArgs(args) => {
-                let title = args.title.clone().unwrap_or("Launcher".to_string());
+                let title = args.title.clone().unwrap_or_else(|| "Launcher".to_string());
                 let args = LauncherActionArgs {
                     title: Some(title),
                     flags: args.flags,

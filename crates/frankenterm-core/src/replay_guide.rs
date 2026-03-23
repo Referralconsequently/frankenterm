@@ -912,7 +912,7 @@ fn execute_regression_check_step(
                 .results
                 .get("artifact_results")
                 .cloned()
-                .unwrap_or(serde_json::json!([]));
+                .unwrap_or_else(|| serde_json::json!([]));
             GuideStepOutput {
                 workflow: input.workflow,
                 step: 2,

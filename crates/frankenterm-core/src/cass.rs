@@ -575,8 +575,10 @@ pub async fn export_sessions(
         .filter(|session| query.after_id.is_none_or(|after_id| session.id > after_id))
         .take(query.effective_limit())
     {
-        let content_tokens = session_recorded_tokens(&session)
-            .unwrap_or(estimate_session_content_tokens(storage, &session).await?);
+        let content_tokens = match session_recorded_tokens(&session) {
+            Some(tokens) => tokens,
+            None => estimate_session_content_tokens(storage, &session).await?,
+        };
         exported.push(CassExportSessionRecord {
             session_row_id: session.id,
             session_id: export_session_identifier(&session),

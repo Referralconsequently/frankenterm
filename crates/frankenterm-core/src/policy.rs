@@ -2432,6 +2432,19 @@ fn has_trauma_bypass_prefix(text: &str) -> bool {
             trimmed = stripped.trim_start();
         }
 
+        // Also strip leading parens (subshells) and braces (blocks)
+        loop {
+            if let Some(stripped) = trimmed.strip_prefix('(') {
+                trimmed = stripped.trim_start();
+                continue;
+            }
+            if let Some(stripped) = trimmed.strip_prefix('{') {
+                trimmed = stripped.trim_start();
+                continue;
+            }
+            break;
+        }
+
         while let Some(mat) = VAR_ASSIGN.find(trimmed) {
             let assignment = &trimmed[..mat.end()];
             if assignment.contains("FT_BYPASS_TRAUMA=1")
@@ -6743,6 +6756,8 @@ mod tests {
         assert!(has_trauma_bypass_prefix(
             "FT_BYPASS_TRAUMA=\"1\" cargo test"
         ));
+        assert!(has_trauma_bypass_prefix("(FT_BYPASS_TRAUMA=1 rm -rf /)"));
+        assert!(has_trauma_bypass_prefix("{ FT_BYPASS_TRAUMA=1 rm -rf /; }"));
         assert!(!has_trauma_bypass_prefix("FT_BYPASS_TRAUMA=0 cargo test"));
         assert!(!has_trauma_bypass_prefix("cargo test FT_BYPASS_TRAUMA=1"));
     }

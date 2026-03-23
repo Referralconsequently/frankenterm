@@ -274,7 +274,7 @@ pub fn classify(
     let is_test_process = context.is_test
         || TEST_RUNNERS
             .iter()
-            .any(|t| lower_name.contains(&t.to_lowercase()))
+            .any(|t| lower_name.contains(*t))
         || node
             .argv
             .iter()
@@ -330,7 +330,7 @@ pub fn classify(
     // Priority 5: Abandoned dev servers (24+ hours).
     if DEV_SERVERS
         .iter()
-        .any(|s| lower_name.contains(&s.to_lowercase()))
+        .any(|s| lower_name.contains(*s))
         && context.age > Duration::from_secs(24 * 3600)
     {
         return (
@@ -366,7 +366,7 @@ pub fn classify(
     // Priority 7-8: Agent processes.
     if AGENT_PROCESSES
         .iter()
-        .any(|a| lower_name.contains(&a.to_lowercase()))
+        .any(|a| lower_name.contains(*a))
     {
         if context.age > Duration::from_secs(16 * 3600) {
             return (
