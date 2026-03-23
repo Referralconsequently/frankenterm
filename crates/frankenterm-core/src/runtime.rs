@@ -28,11 +28,7 @@ use crate::sharded_counter::{ShardedCounter, ShardedGauge, ShardedMax};
 
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::backpressure::BackpressureConfig;
-use crate::fleet_memory_controller::{FleetMemoryConfig, PaneScrollbackInfo};
-use crate::fleet_scrollback_coordinator::{
-    CoordinatorConfig, FleetScrollbackCoordinator, NullPaneScrollbackAccess,
-};
+use crate::backpressure::{BackpressureConfig, BackpressureManager, QueueDepths};
 use crate::config::{
     CaptureBudgetConfig, HotReloadableConfig, PaneFilterConfig, PanePriorityConfig, PatternsConfig,
     SnapshotConfig, SnapshotSchedulingMode,
@@ -40,10 +36,16 @@ use crate::config::{
 use crate::crash::{HealthSnapshot, ShutdownSummary};
 use crate::error::Result;
 use crate::events::{Event, EventBus, UserVarPayload, event_identity_key};
+use crate::fleet_memory_controller::{FleetMemoryConfig, PaneScrollbackInfo};
+use crate::fleet_scrollback_coordinator::{
+    CoordinatorConfig, FleetScrollbackCoordinator, NullPaneScrollbackAccess,
+};
 use crate::gc::{CacheGcSettings, compact_u64_map, should_vacuum};
 use crate::ingest::{
     PaneCursor, PaneRegistry, bounded_segment_for_persistence, persist_captured_segment,
 };
+use crate::memory_budget::BudgetLevel;
+use crate::memory_pressure::{MemoryPressureConfig, MemoryPressureMonitor, MemoryPressureTier};
 #[cfg(feature = "native-wezterm")]
 use crate::native_events::{NativeEvent, NativeEventListener};
 use crate::patterns::{Detection, DetectionContext, PatternEngine, Severity};
@@ -1402,6 +1404,9 @@ impl ObservationRuntime {
             let mut last_retention_check = Instant::now();
             let mut last_checkpoint = Instant::now();
             let mut last_cache_gc = Instant::now();
+            let backpressure_manager = BackpressureManager::new(BackpressureConfig::default());
+            let memory_pressure_monitor =
+                MemoryPressureMonitor::new(MemoryPressureConfig::default());
 
             // Fleet scrollback coordinator (ft-dwjtm): evaluates fleet memory
             // pressure from queue depths and triggers warm-page eviction when
@@ -1682,36 +1687,27 @@ impl ObservationRuntime {
 
                     // ── Fleet scrollback coordinator tick (ft-dwjtm) ────────
                     //
-                    // Build pressure signals from the queue depths already
-                    // collected above, then run one coordinator evaluation.
-                    // Until TieredScrollback instances are stored in the
-                    // runtime, we pass synthetic PaneScrollbackInfo from cursor
-                    // memory data and a NullPaneScrollbackAccess (eviction is
-                    // a no-op). The coordinator still tracks fleet pressure
-                    // tier and emits telemetry.
-                    let fleet_signals = FleetScrollbackCoordinator::signals_from_queue_depths(
-                        capture_depth,
-                        capture_cap,
-                        write_depth,
-                        write_cap,
+                    // Drive the coordinator from the runtime's actual pressure
+                    // surfaces instead of cursor-derived placeholders:
+                    // - queue depths via BackpressureManager
+                    // - host memory sampling via MemoryPressureMonitor
+                    // - per-pane logical accounting via PaneRegistry arenas
+                    let fleet_signals = build_fleet_pressure_signals(
+                        &backpressure_manager,
+                        &QueueDepths {
+                            capture_depth,
+                            capture_capacity: capture_cap,
+                            write_depth,
+                            write_capacity: write_cap,
+                        },
+                        memory_pressure_monitor.sample().tier,
+                        BudgetLevel::Normal,
                         observed_panes,
-                        0, // paused_pane_count: not yet tracked at this level
                     );
-
-                    // Build synthetic per-pane info from cursor snapshot data.
-                    // Warm bytes/pages are zero until TieredScrollback is
-                    // integrated; estimated memory comes from cursor snapshot
-                    // sizes captured above.
-                    let fleet_pane_infos: Vec<PaneScrollbackInfo> = last_seq_by_pane
-                        .iter()
-                        .map(|(pane_id, _seq)| PaneScrollbackInfo {
-                            pane_id: *pane_id,
-                            activity_counter: 0,
-                            warm_bytes: 0,
-                            warm_pages: 0,
-                            estimated_memory_bytes: 0,
-                        })
-                        .collect();
+                    let fleet_pane_infos = {
+                        let reg = registry.read().await;
+                        fleet_pane_infos_from_registry(&reg)
+                    };
 
                     let mut null_panes = NullPaneScrollbackAccess;
                     let fleet_eval = fleet_coordinator.evaluate(
@@ -1736,6 +1732,36 @@ impl ObservationRuntime {
                             actions = fleet_eval.actions.len(),
                             "fleet scrollback coordinator: elevated pressure"
                         );
+                    }
+
+                    // Record fleet coordinator evaluation as a maintenance
+                    // event so it shows up in diagnostics and audit trail.
+                    {
+                        let telem = fleet_coordinator.telemetry_snapshot();
+                        let metadata = serde_json::json!({
+                            "compound_tier": format!("{:?}", fleet_eval.compound_tier),
+                            "pages_evicted": fleet_eval.pages_evicted,
+                            "bytes_reclaimed": fleet_eval.bytes_reclaimed,
+                            "targets_applied": fleet_eval.targets_applied,
+                            "actions": fleet_eval.actions.len(),
+                            "observed_panes": observed_panes,
+                            "cumulative_ticks": telem.ticks,
+                            "cumulative_elevated_ticks": telem.elevated_ticks,
+                            "cumulative_pages_evicted": telem.pages_evicted,
+                            "cumulative_bytes_reclaimed": telem.bytes_reclaimed,
+                        });
+                        let _ = storage
+                            .record_maintenance(MaintenanceRecord {
+                                id: 0,
+                                event_type: "fleet_scrollback_coordinator".to_string(),
+                                message: Some(format!(
+                                    "Fleet coordinator tick: tier={:?}, evicted={} pages",
+                                    fleet_eval.compound_tier, fleet_eval.pages_evicted,
+                                )),
+                                metadata: Some(metadata.to_string()),
+                                timestamp: epoch_ms(),
+                            })
+                            .await;
                     }
                     // ── end fleet coordinator tick ──────────────────────────
 
@@ -1777,6 +1803,7 @@ impl ObservationRuntime {
                         consecutive_crashes: 0,
                         current_backoff_ms: 0,
                         in_crash_loop: false,
+                        fleet_pressure_tier: Some(format!("{:?}", fleet_eval.compound_tier)),
                     };
 
                     HealthSnapshot::update_global(snapshot);
@@ -3135,6 +3162,48 @@ const SNAPSHOT_TRIGGER_BRIDGE_TICK_SECS: u64 = 30;
 const SNAPSHOT_IDLE_WINDOW_SECS: u64 = 5 * 60;
 /// Minimum interval between `MemoryPressure` trigger emissions.
 const SNAPSHOT_MEMORY_TRIGGER_COOLDOWN_SECS: u64 = 2 * 60;
+/// Coarse page-size estimate used when only logical pane accounting is
+/// available and direct warm-tier page counts are not.
+const FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES: usize = 4096;
+
+fn build_fleet_pressure_signals(
+    backpressure_manager: &BackpressureManager,
+    queue_depths: &QueueDepths,
+    memory_pressure: MemoryPressureTier,
+    worst_budget: BudgetLevel,
+    pane_count: usize,
+) -> crate::fleet_memory_controller::PressureSignals {
+    let _ = backpressure_manager.evaluate(queue_depths);
+
+    crate::fleet_memory_controller::PressureSignals {
+        backpressure: backpressure_manager.current_tier(),
+        memory_pressure,
+        worst_budget,
+        pane_count,
+        paused_pane_count: backpressure_manager.paused_pane_ids().len(),
+    }
+}
+
+fn fleet_pane_infos_from_registry(registry: &PaneRegistry) -> Vec<PaneScrollbackInfo> {
+    registry
+        .entries()
+        .filter(|(_, entry)| entry.should_observe())
+        .map(|(pane_id, entry)| {
+            let tracked_bytes = registry
+                .pane_arena_stats(*pane_id)
+                .map(|stats| stats.tracked_bytes)
+                .unwrap_or_else(|| entry.estimated_bytes());
+
+            PaneScrollbackInfo {
+                pane_id: *pane_id,
+                activity_counter: u64::try_from(entry.last_seen_at).unwrap_or_default(),
+                warm_bytes: tracked_bytes,
+                warm_pages: tracked_bytes.div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES),
+                estimated_memory_bytes: tracked_bytes,
+            }
+        })
+        .collect()
+}
 
 fn classify_backpressure_tier(
     capture_depth: usize,
@@ -3472,6 +3541,7 @@ impl RuntimeHandle {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         };
 
         HealthSnapshot::update_global(snapshot);
@@ -4334,6 +4404,7 @@ mod tests {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         };
 
         // Verify metrics are correctly reflected in snapshot
@@ -4471,12 +4542,103 @@ mod tests {
         }
     }
 
+    fn make_pane(pane_id: u64, title: &str) -> PaneInfo {
+        PaneInfo {
+            pane_id,
+            tab_id: 1,
+            window_id: 1,
+            domain_id: None,
+            domain_name: None,
+            workspace: Some("default".to_string()),
+            size: None,
+            rows: None,
+            cols: None,
+            title: Some(title.to_string()),
+            cwd: Some("/tmp".to_string()),
+            tty_name: None,
+            cursor_x: None,
+            cursor_y: None,
+            cursor_visibility: None,
+            left_col: None,
+            top_row: None,
+            is_active: true,
+            is_zoomed: false,
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn fleet_pane_infos_from_registry_uses_arena_accounting() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash"), make_pane(2, "vim")]);
+        registry.get_entry_mut(1).expect("pane 1").last_seen_at = 111;
+        registry.get_entry_mut(2).expect("pane 2").last_seen_at = 222;
+
+        let stats1 = registry.pane_arena_stats(1).expect("pane 1 arena stats");
+        let stats2 = registry.pane_arena_stats(2).expect("pane 2 arena stats");
+
+        let mut infos = fleet_pane_infos_from_registry(&registry);
+        infos.sort_by_key(|info| info.pane_id);
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].pane_id, 1);
+        assert_eq!(infos[0].activity_counter, 111);
+        assert_eq!(infos[0].warm_bytes, stats1.tracked_bytes);
+        assert_eq!(infos[0].estimated_memory_bytes, stats1.tracked_bytes);
+        assert_eq!(
+            infos[0].warm_pages,
+            stats1
+                .tracked_bytes
+                .div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES)
+        );
+
+        assert_eq!(infos[1].pane_id, 2);
+        assert_eq!(infos[1].activity_counter, 222);
+        assert_eq!(infos[1].warm_bytes, stats2.tracked_bytes);
+        assert_eq!(infos[1].estimated_memory_bytes, stats2.tracked_bytes);
+        assert_eq!(
+            infos[1].warm_pages,
+            stats2
+                .tracked_bytes
+                .div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES)
+        );
+    }
+
+    #[test]
+    fn build_fleet_pressure_signals_tracks_manager_state() {
+        let manager = BackpressureManager::new(BackpressureConfig::default());
+        manager.pause_pane(5);
+        manager.pause_pane(9);
+
+        let signals = build_fleet_pressure_signals(
+            &manager,
+            &QueueDepths {
+                capture_depth: 96,
+                capture_capacity: 100,
+                write_depth: 0,
+                write_capacity: 1_000,
+            },
+            MemoryPressureTier::Orange,
+            BudgetLevel::Throttled,
+            12,
+        );
+
+        assert_eq!(
+            signals.backpressure,
+            crate::backpressure::BackpressureTier::Black
+        );
+        assert_eq!(signals.memory_pressure, MemoryPressureTier::Orange);
+        assert_eq!(signals.worst_budget, BudgetLevel::Throttled);
+        assert_eq!(signals.pane_count, 12);
+        assert_eq!(signals.paused_pane_count, 2);
+    }
+
     #[test]
     fn mpsc_queue_depth_computation_is_correct() {
         // Validates queue depth accounting for a fixed-capacity channel.
         let (tx, _rx) = mpsc::channel::<u8>(16);
         #[allow(unused_variables)]
-            let max_cap = 16usize;
+        let max_cap = 16usize;
         assert_eq!(max_cap, 16);
 
         // Empty queue: depth should be 0
@@ -4630,6 +4792,7 @@ mod tests {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         };
 
         assert_eq!(snapshot.capture_queue_depth, 500);
@@ -4675,6 +4838,7 @@ mod tests {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         };
 
         let sched = snapshot.scheduler.as_ref().unwrap();
@@ -4720,6 +4884,7 @@ mod tests {
             consecutive_crashes: 0,
             current_backoff_ms: 0,
             in_crash_loop: false,
+            fleet_pressure_tier: None,
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();
