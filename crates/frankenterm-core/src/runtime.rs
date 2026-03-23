@@ -3155,6 +3155,8 @@ const SNAPSHOT_MEMORY_TRIGGER_COOLDOWN_SECS: u64 = 2 * 60;
 struct PaneActivityState {
     last_seq: i64,
     last_output_at_ms: u64,
+    generation: u32,
+    first_seen_at_ms: u64,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -3171,7 +3173,8 @@ fn build_health_pane_snapshot(
     activity_tracker: &mut HashMap<u64, PaneActivityState>,
     now_ms: u64,
 ) -> HealthPaneSnapshot {
-    let observed_ids = registry.observed_pane_ids();
+    let mut observed_ids = registry.observed_pane_ids();
+    observed_ids.sort_unstable();
     let observed_set: HashSet<u64> = observed_ids.iter().copied().collect();
     activity_tracker.retain(|pane_id, _| observed_set.contains(pane_id));
 
@@ -3181,6 +3184,13 @@ fn build_health_pane_snapshot(
 
     for pane_id in observed_ids {
         let current_seq = cursors.get(&pane_id).map_or(-1, PaneCursor::last_seq);
+        let (generation, first_seen_at_ms) =
+            registry.get_entry(pane_id).map_or((0, now_ms), |entry| {
+                (
+                    entry.generation,
+                    u64::try_from(entry.first_seen_at).unwrap_or(0),
+                )
+            });
         if let Some(cursor) = cursors.get(&pane_id) {
             cursor_snapshot_bytes = cursor_snapshot_bytes
                 .saturating_add(u64::try_from(cursor.last_snapshot.len()).unwrap_or(u64::MAX));
@@ -3191,8 +3201,17 @@ fn build_health_pane_snapshot(
             .or_insert(PaneActivityState {
                 last_seq: current_seq,
                 last_output_at_ms: now_ms,
+                generation,
+                first_seen_at_ms,
             });
-        if state.last_seq != current_seq {
+        if state.generation != generation || state.first_seen_at_ms != first_seen_at_ms {
+            *state = PaneActivityState {
+                last_seq: current_seq,
+                last_output_at_ms: now_ms,
+                generation,
+                first_seen_at_ms,
+            };
+        } else if state.last_seq != current_seq {
             state.last_seq = current_seq;
             state.last_output_at_ms = now_ms;
         }
@@ -4698,6 +4717,67 @@ mod tests {
         );
 
         assert_eq!(second.last_seq_by_pane, vec![(1, 3)]);
+        assert_eq!(second.last_activity_by_pane, vec![(1, 8_000)]);
+    }
+
+    #[test]
+    fn health_pane_snapshot_resets_activity_on_generation_change() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash")]);
+        registry.get_cursor_mut(1).expect("pane 1 cursor").next_seq = 4;
+
+        let mut tracker = HashMap::new();
+        let first = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            2_000,
+        );
+        assert_eq!(first.last_activity_by_pane, vec![(1, 2_000)]);
+
+        registry.discovery_tick(vec![make_pane(1, "vim")]);
+        let second = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            9_000,
+        );
+
+        assert_eq!(second.last_seq_by_pane, vec![(1, 3)]);
+        assert_eq!(
+            second.last_activity_by_pane,
+            vec![(1, 9_000)],
+            "new pane generations must reset tracked activity even when sequence numbers are unchanged"
+        );
+    }
+
+    #[test]
+    fn health_pane_snapshot_resets_activity_on_first_seen_change() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash")]);
+        registry.get_cursor_mut(1).expect("pane 1 cursor").next_seq = 5;
+
+        let mut tracker = HashMap::new();
+        let first = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            1_000,
+        );
+        assert_eq!(first.last_activity_by_pane, vec![(1, 1_000)]);
+
+        registry
+            .get_entry_mut(1)
+            .expect("pane 1 entry")
+            .first_seen_at = 8_000;
+        let second = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            8_000,
+        );
+
+        assert_eq!(second.last_seq_by_pane, vec![(1, 4)]);
         assert_eq!(second.last_activity_by_pane, vec![(1, 8_000)]);
     }
 
