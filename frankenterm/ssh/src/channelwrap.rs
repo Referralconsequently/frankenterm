@@ -79,6 +79,16 @@ impl ChannelWrap {
         }
     }
 
+    pub fn send_eof(&mut self) -> anyhow::Result<()> {
+        match self {
+            #[cfg(feature = "ssh2")]
+            Self::Ssh2(chan) => Ok(chan.send_eof()?),
+
+            #[cfg(feature = "libssh-rs")]
+            Self::LibSsh(chan) => Ok(chan.send_eof()?),
+        }
+    }
+
     pub fn close(&mut self) {
         match self {
             #[cfg(feature = "ssh2")]

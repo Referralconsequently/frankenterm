@@ -3,17 +3,17 @@ use crate::config::ConfigMap;
 use crate::dirwrap::DirWrap;
 use crate::filewrap::FileWrap;
 use crate::pty::*;
-use crate::runtime::channel::{bounded, Receiver, Sender, TryRecvError};
+use crate::runtime::channel::{Receiver, Sender, TryRecvError, bounded};
 use crate::session::{Exec, ExecResult, SessionEvent, SessionRequest, SignalChannel};
 use crate::sessionwrap::SessionWrap;
 use crate::sftp::dir::{Dir, DirId, DirRequest};
 use crate::sftp::file::{File, FileId, FileRequest};
 use crate::sftp::{OpenWithMode, SftpChannelResult, SftpRequest};
 use crate::sftpwrap::SftpWrap;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use camino::Utf8PathBuf;
 use filedescriptor::{
-    poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescriptor, POLLIN, POLLOUT,
+    AsRawSocketDescriptor, FileDescriptor, POLLIN, POLLOUT, poll, pollfd, socketpair,
 };
 use portable_pty::ExitStatus;
 use socket2::{Domain, Socket, Type};
@@ -528,7 +528,17 @@ impl SessionInner {
                                     "error reading from channel {channel_id} stdin pipe: {:#}",
                                     err
                                 );
-                                info.channel.close();
+                                if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                                    if let Err(send_err) = info.channel.send_eof() {
+                                        log::trace!(
+                                            "failed to send EOF to channel {channel_id} after stdin closure: {:#}",
+                                            send_err
+                                        );
+                                        info.channel.close();
+                                    }
+                                } else {
+                                    info.channel.close();
+                                }
                                 state.fd.take();
                             }
                         }
@@ -605,7 +615,14 @@ impl SessionInner {
                     continue;
                 }
                 match read_into_buf(&mut chan.channel.reader(idx), &mut out.buf) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        if maybe_close_exited_output(out, chan.exited, current_len) {
+                            log::trace!(
+                                "channel {id} stream {} exited with no buffered data remaining: close pipe",
+                                idx
+                            );
+                        }
+                    }
                     Err(err) => {
                         if out.buf.is_empty() {
                             log::trace!(
@@ -1155,6 +1172,15 @@ fn read_into_buf<R: Read>(r: &mut R, buf: &mut VecDeque<u8>) -> std::io::Result<
     }
 }
 
+fn maybe_close_exited_output(state: &mut DescriptorState, exited: bool, prior_len: usize) -> bool {
+    if exited && prior_len == 0 && state.buf.is_empty() {
+        state.fd.take();
+        return true;
+    }
+
+    false
+}
+
 /// A little helper to ensure that the Result returned by `f()`
 /// is routed via a Sender
 fn dispatch<T, F>(reply: Sender<T>, f: F, what: &str) -> anyhow::Result<bool>
@@ -1367,5 +1393,43 @@ mod tests {
         assert_eq!(buf.len(), MAX_DESCRIPTOR_BUF_SIZE);
         assert_eq!(buf.front(), Some(&7_u8));
         assert_eq!(buf.back(), Some(&7_u8));
+    }
+
+    #[test]
+    fn maybe_close_exited_output_closes_empty_exited_stream() {
+        let (writer, _reader) = socketpair().expect("socketpair failed");
+        let mut state = DescriptorState {
+            fd: Some(writer),
+            buf: VecDeque::new(),
+        };
+
+        let closed = maybe_close_exited_output(&mut state, true, 0);
+
+        assert!(closed, "empty exited output stream should close");
+        assert!(state.fd.is_none(), "fd should be taken after closure");
+    }
+
+    #[test]
+    fn maybe_close_exited_output_preserves_pending_or_running_streams() {
+        let (writer_a, _reader_a) = socketpair().expect("socketpair failed");
+        let mut with_data = DescriptorState {
+            fd: Some(writer_a),
+            buf: VecDeque::from(vec![1_u8]),
+        };
+        let closed = maybe_close_exited_output(&mut with_data, true, 1);
+        assert!(!closed, "buffered output must remain writable after exit");
+        assert!(
+            with_data.fd.is_some(),
+            "fd should remain while buffer drains"
+        );
+
+        let (writer_b, _reader_b) = socketpair().expect("socketpair failed");
+        let mut running = DescriptorState {
+            fd: Some(writer_b),
+            buf: VecDeque::new(),
+        };
+        let closed = maybe_close_exited_output(&mut running, false, 0);
+        assert!(!closed, "running stream must stay open");
+        assert!(running.fd.is_some(), "fd should remain for running stream");
     }
 }
