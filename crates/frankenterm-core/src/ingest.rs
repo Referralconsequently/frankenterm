@@ -1560,7 +1560,7 @@ pub fn extract_delta(previous: &str, current: &str, overlap_size: usize) -> Delt
     {
         return DeltaResult::Content(current[previous.len()..].to_string());
     }
-    // If boundary check fails (should vary rare if starts_with matched), fall through to full check
+    // If boundary check fails (should be very rare if starts_with matched), fall through to full check
 
     if overlap_size == 0 || current.is_empty() {
         return DeltaResult::Gap {
