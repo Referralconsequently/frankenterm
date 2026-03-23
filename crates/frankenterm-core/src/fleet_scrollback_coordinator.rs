@@ -1086,4 +1086,85 @@ mod tests {
         let signals = FleetScrollbackCoordinator::signals_from_queue_depths(0, 0, 0, 0, 10, 0);
         assert_eq!(signals.backpressure, BackpressureTier::Green);
     }
+
+    // ── NullPaneScrollbackAccess tests ──────────────────────────────────
+
+    #[test]
+    fn null_pane_access_returns_empty_ids() {
+        let null = NullPaneScrollbackAccess;
+        assert!(null.pane_ids().is_empty());
+    }
+
+    #[test]
+    fn null_pane_access_snapshot_returns_none() {
+        let null = NullPaneScrollbackAccess;
+        assert!(null.snapshot(42).is_none());
+    }
+
+    #[test]
+    fn null_pane_access_evict_warm_pages_returns_zero() {
+        let mut null = NullPaneScrollbackAccess;
+        assert_eq!(null.evict_warm_pages(42, 100), 0);
+    }
+
+    #[test]
+    fn null_pane_access_evict_all_warm_is_noop() {
+        let mut null = NullPaneScrollbackAccess;
+        // Should not panic.
+        null.evict_all_warm(99);
+    }
+
+    #[test]
+    fn evaluate_with_null_panes_tracks_telemetry() {
+        let mut coord = FleetScrollbackCoordinator::default();
+        let signals = FleetScrollbackCoordinator::signals_from_queue_depths(
+            90, 100, // capture 90% → Red
+            50, 100, // write 50% → Yellow
+            10, 0,
+        );
+        let infos: Vec<PaneScrollbackInfo> = (0..10)
+            .map(|i| PaneScrollbackInfo {
+                pane_id: i,
+                activity_counter: 0,
+                warm_bytes: 0,
+                warm_pages: 0,
+                estimated_memory_bytes: 0,
+            })
+            .collect();
+        let mut null_panes = NullPaneScrollbackAccess;
+        let result = coord.evaluate(&signals, &infos, &mut null_panes);
+
+        // With zero warm bytes, eviction is skipped (below threshold).
+        assert_eq!(result.pages_evicted, 0);
+        assert_eq!(result.bytes_reclaimed, 0);
+        assert_eq!(coord.telemetry().ticks, 1);
+    }
+
+    #[test]
+    fn evaluate_with_null_panes_under_normal_pressure() {
+        let mut coord = FleetScrollbackCoordinator::default();
+        let signals = FleetScrollbackCoordinator::default_signals(5);
+        let infos = Vec::new();
+        let mut null_panes = NullPaneScrollbackAccess;
+        let result = coord.evaluate(&signals, &infos, &mut null_panes);
+
+        assert_eq!(
+            result.compound_tier,
+            crate::fleet_memory_controller::FleetPressureTier::Normal
+        );
+        assert_eq!(result.pages_evicted, 0);
+        assert_eq!(coord.telemetry().elevated_ticks, 0);
+    }
+
+    #[test]
+    fn coordinator_accumulates_ticks_with_null_panes() {
+        let mut coord = FleetScrollbackCoordinator::default();
+        let signals = FleetScrollbackCoordinator::default_signals(0);
+        let mut null_panes = NullPaneScrollbackAccess;
+
+        for _ in 0..5 {
+            coord.evaluate(&signals, &[], &mut null_panes);
+        }
+        assert_eq!(coord.telemetry().ticks, 5);
+    }
 }
