@@ -289,6 +289,30 @@ impl FleetScrollbackCoordinator {
         infos
     }
 
+    /// Sync scrollback memory estimates to a [`PaneArenaRegistry`].
+    ///
+    /// After each evaluation tick, callers can invoke this to update the
+    /// arena registry's `tracked_bytes` for each pane with the scrollback
+    /// memory estimate. This bridges the scrollback tier system with the
+    /// per-pane allocator arena accounting (ft-3axa).
+    ///
+    /// Returns the number of pane arenas updated.
+    pub fn sync_to_arena_registry(
+        pane_infos: &[PaneScrollbackInfo],
+        registry: &frankenterm_alloc::PaneArenaRegistry,
+    ) -> usize {
+        let mut updated = 0;
+        for info in pane_infos {
+            if registry
+                .set_tracked_bytes(info.pane_id, info.estimated_memory_bytes)
+                .is_some()
+            {
+                updated += 1;
+            }
+        }
+        updated
+    }
+
     /// Build default pressure signals for testing or fallback.
     #[must_use]
     pub fn default_signals(pane_count: usize) -> PressureSignals {
@@ -861,5 +885,79 @@ mod tests {
         // (Some warm pages remain because proportional eviction doesn't evict everything)
         // This assertion is conditional — depends on data volume
         let _ = total_warm; // suppress unused warning
+    }
+
+    #[test]
+    fn sync_to_arena_registry_updates_tracked_bytes() {
+        let registry = frankenterm_alloc::PaneArenaRegistry::new();
+        // Reserve arenas for 3 panes
+        registry.reserve(0);
+        registry.reserve(1);
+        registry.reserve(2);
+
+        let infos = vec![
+            PaneScrollbackInfo {
+                pane_id: 0,
+                activity_counter: 100,
+                warm_bytes: 5000,
+                warm_pages: 2,
+                estimated_memory_bytes: 15000,
+            },
+            PaneScrollbackInfo {
+                pane_id: 1,
+                activity_counter: 200,
+                warm_bytes: 8000,
+                warm_pages: 3,
+                estimated_memory_bytes: 25000,
+            },
+            PaneScrollbackInfo {
+                pane_id: 2,
+                activity_counter: 50,
+                warm_bytes: 1000,
+                warm_pages: 1,
+                estimated_memory_bytes: 7000,
+            },
+        ];
+
+        let updated = FleetScrollbackCoordinator::sync_to_arena_registry(&infos, &registry);
+        assert_eq!(updated, 3);
+
+        // Verify tracked bytes were set
+        let stats0 = registry.stats(0).expect("pane 0 stats");
+        assert_eq!(stats0.tracked_bytes, 15000);
+
+        let stats1 = registry.stats(1).expect("pane 1 stats");
+        assert_eq!(stats1.tracked_bytes, 25000);
+
+        let stats2 = registry.stats(2).expect("pane 2 stats");
+        assert_eq!(stats2.tracked_bytes, 7000);
+    }
+
+    #[test]
+    fn sync_to_arena_registry_skips_unregistered_panes() {
+        let registry = frankenterm_alloc::PaneArenaRegistry::new();
+        registry.reserve(0); // Only register pane 0
+
+        let infos = vec![
+            PaneScrollbackInfo {
+                pane_id: 0,
+                activity_counter: 100,
+                warm_bytes: 5000,
+                warm_pages: 2,
+                estimated_memory_bytes: 15000,
+            },
+            PaneScrollbackInfo {
+                pane_id: 99, // Not registered
+                activity_counter: 50,
+                warm_bytes: 1000,
+                warm_pages: 1,
+                estimated_memory_bytes: 7000,
+            },
+        ];
+
+        let updated = FleetScrollbackCoordinator::sync_to_arena_registry(&infos, &registry);
+        assert_eq!(updated, 1); // Only pane 0 was updated
+
+        assert!(registry.stats(99).is_none());
     }
 }

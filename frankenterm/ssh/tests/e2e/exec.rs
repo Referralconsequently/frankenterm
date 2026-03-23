@@ -1,9 +1,9 @@
 use crate::sshd::*;
-use frankenterm_ssh::runtime::block_on;
 use frankenterm_ssh::ExecResult;
+use frankenterm_ssh::runtime::block_on;
 use portable_pty::{Child, ChildKiller};
 use rstest::*;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn read_all(mut reader: impl Read) -> String {
@@ -21,6 +21,26 @@ fn collect_exec_result(result: ExecResult) -> (String, String, u32) {
         mut child,
         ..
     } = result;
+
+    let stdout = read_all(stdout);
+    let stderr = read_all(stderr);
+    let status = child.wait().expect("exec wait failed");
+
+    (stdout, stderr, status.exit_code())
+}
+
+fn collect_exec_result_with_input(result: ExecResult, input: &[u8]) -> (String, String, u32) {
+    let ExecResult {
+        mut stdin,
+        stdout,
+        stderr,
+        mut child,
+    } = result;
+
+    stdin
+        .write_all(input)
+        .expect("failed to write exec stdin payload");
+    drop(stdin);
 
     let stdout = read_all(stdout);
     let stderr = read_all(stderr);
@@ -129,6 +149,53 @@ fn exec_should_recover_after_non_zero_exit_on_same_session(#[future] session: Se
 
         assert_eq!(stdout, "recovered-output");
         assert!(stderr.is_empty(), "unexpected stderr from recovery exec");
+        assert_eq!(exit_code, 0);
+    })
+}
+
+#[rstest]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
+fn exec_should_echo_stdin_and_allow_followup_exec(#[future] session: SessionWithSshd) {
+    if !sshd_available() {
+        return;
+    }
+    block_on(async {
+        let session: SessionWithSshd = session.await;
+
+        let command = "sh -lc 'IFS= read -r line; printf \"%s\" \"$line\"; exit 0'";
+        let input = b"stdin-roundtrip\n";
+        let result = session
+            .exec(command, None)
+            .await
+            .expect("stdin-driven exec should start");
+        let (stdout, stderr, exit_code) = collect_exec_result_with_input(result, input);
+
+        log_exec_outcome("exec-stdin-path", command, &stdout, &stderr, exit_code);
+
+        assert_eq!(stdout, "stdin-roundtrip");
+        assert!(stderr.is_empty(), "unexpected stderr from stdin exec");
+        assert_eq!(exit_code, 0);
+
+        let recovery_command = "sh -lc 'printf stdin-followup; exit 0'";
+        let recovered = session
+            .exec(recovery_command, None)
+            .await
+            .expect("session should remain usable after stdin-driven exec");
+        let (stdout, stderr, exit_code) = collect_exec_result(recovered);
+
+        log_exec_outcome(
+            "exec-stdin-recovery-path",
+            recovery_command,
+            &stdout,
+            &stderr,
+            exit_code,
+        );
+
+        assert_eq!(stdout, "stdin-followup");
+        assert!(
+            stderr.is_empty(),
+            "unexpected stderr from stdin recovery exec"
+        );
         assert_eq!(exit_code, 0);
     })
 }
