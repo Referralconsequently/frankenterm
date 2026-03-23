@@ -183,7 +183,7 @@ else
 fi
 
 EXEC_TEST_COUNT=$(grep -c '^fn exec_should_' "${EXEC_FILE}" || true)
-if [[ "${EXEC_TEST_COUNT}" -ge 3 ]]; then
+if [[ "${EXEC_TEST_COUNT}" -ge 4 ]]; then
   record_structural_pass "exec_test_floor" "sufficient" "${STRUCTURAL_FILE}" "count=${EXEC_TEST_COUNT}"
 else
   record_structural_fail "exec_test_floor" "insufficient" "E_TESTS" "${STRUCTURAL_FILE}" "count=${EXEC_TEST_COUNT}"
@@ -203,6 +203,14 @@ if grep -Fq 'frankenterm_ssh_e2e_exec' "${EXEC_FILE}" \
   record_structural_pass "structured_log_fields" "present" "${STRUCTURAL_FILE}"
 else
   record_structural_fail "structured_log_fields" "missing" "E_LOG_FIELDS" "${STRUCTURAL_FILE}"
+fi
+
+if grep -Fq 'exec-stdin-path' "${EXEC_FILE}" \
+  && grep -Fq 'exec-stdin-recovery-path' "${EXEC_FILE}" \
+  && grep -Fq 'collect_exec_result_with_input' "${EXEC_FILE}"; then
+  record_structural_pass "stdin_recovery_path_present" "present" "${STRUCTURAL_FILE}"
+else
+  record_structural_fail "stdin_recovery_path_present" "missing" "E_STDIN" "${STRUCTURAL_FILE}"
 fi
 
 echo ""
@@ -235,6 +243,13 @@ assert_output_contains "exec_failure_log" "${ARTIFACT_DIR}/exec_failure_recovery
 assert_output_contains "exec_recovery_log" "${ARTIFACT_DIR}/exec_failure_recovery_${RUN_ID}.log" '"scenario_id":"exec-recovery-path"' "${ARTIFACT_DIR}/exec_failure_recovery_${RUN_ID}.log"
 
 run_rch_phase \
+  "exec_stdin_recovery" \
+  "cargo test -p frankenterm-ssh --test lib exec_should_echo_stdin_and_allow_followup_exec -- --nocapture" \
+  test -p frankenterm-ssh --test lib exec_should_echo_stdin_and_allow_followup_exec -- --nocapture
+assert_output_contains "exec_stdin_log" "${ARTIFACT_DIR}/exec_stdin_recovery_${RUN_ID}.log" '"scenario_id":"exec-stdin-path"' "${ARTIFACT_DIR}/exec_stdin_recovery_${RUN_ID}.log"
+assert_output_contains "exec_stdin_recovery_log" "${ARTIFACT_DIR}/exec_stdin_recovery_${RUN_ID}.log" '"scenario_id":"exec-stdin-recovery-path"' "${ARTIFACT_DIR}/exec_stdin_recovery_${RUN_ID}.log"
+
+run_rch_phase \
   "exec_kill_recovery" \
   "cargo test -p frankenterm-ssh --test lib exec_should_terminate_after_kill_and_allow_followup_exec -- --nocapture" \
   test -p frankenterm-ssh --test lib exec_should_terminate_after_kill_and_allow_followup_exec -- --nocapture
@@ -247,6 +262,7 @@ run_rch_phase \
   "exec_suite_rerun" \
   "cargo test -p frankenterm-ssh --test lib exec_should -- --nocapture" \
   test -p frankenterm-ssh --test lib exec_should -- --nocapture
+assert_output_contains "exec_suite_rerun_stdin" "${ARTIFACT_DIR}/exec_suite_rerun_${RUN_ID}.log" '"scenario_id":"exec-stdin-path"' "${ARTIFACT_DIR}/exec_suite_rerun_${RUN_ID}.log"
 assert_output_contains "exec_suite_rerun_kill" "${ARTIFACT_DIR}/exec_suite_rerun_${RUN_ID}.log" '"scenario_id":"exec-kill-path"' "${ARTIFACT_DIR}/exec_suite_rerun_${RUN_ID}.log"
 
 echo ""

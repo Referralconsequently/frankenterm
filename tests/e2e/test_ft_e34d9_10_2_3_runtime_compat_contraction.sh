@@ -17,9 +17,9 @@ export CARGO_TARGET_DIR
 
 LAST_STEP_LOG=""
 
+# shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/lib_rch_guards.sh"
 rch_init "${LOG_DIR}" "${RUN_ID}" "e34d9_10_2_3_runtime_compat_contraction"
-ensure_rch_ready
 
 emit_log() {
   local component="$1"
@@ -57,6 +57,25 @@ emit_log() {
     }' >> "${LOG_FILE}"
 }
 
+record_rch_preflight_artifacts() {
+  if [[ -f "${_RCH_PROBE_LOG}" ]]; then
+    emit_log "preflight" "rch_preflight.probe" "artifact=$(basename "${_RCH_PROBE_LOG}")" "captured" "rch_probe_artifact" "none" "$(basename "${_RCH_PROBE_LOG}")"
+  fi
+  if [[ -f "${_RCH_SMOKE_LOG}" ]]; then
+    emit_log "preflight" "rch_preflight.smoke" "artifact=$(basename "${_RCH_SMOKE_LOG}")" "captured" "rch_smoke_artifact" "none" "$(basename "${_RCH_SMOKE_LOG}")"
+  fi
+}
+
+ensure_rch_ready_capture_artifacts() {
+  local rc=0
+  set +e
+  ( ensure_rch_ready )
+  rc=$?
+  set -e
+  record_rch_preflight_artifacts
+  return "${rc}"
+}
+
 run_step() {
   local label="$1"
   shift
@@ -66,7 +85,25 @@ run_step() {
   "$@" 2>&1 | tee "${LAST_STEP_LOG}" | tee -a "${STDOUT_FILE}"
   local rc=${PIPESTATUS[0]}
   set -e
-  return ${rc}
+  return "${rc}"
+}
+
+run_rch_cargo_step() {
+  local label="$1"
+  shift
+
+  LAST_STEP_LOG="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}_${label}.log"
+  set +e
+  (
+    run_rch_cargo_logged "${LAST_STEP_LOG}" env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo "$@"
+  )
+  local rc=$?
+  set -e
+
+  if [[ -f "${LAST_STEP_LOG}" ]]; then
+    tee -a "${STDOUT_FILE}" < "${LAST_STEP_LOG}" >/dev/null
+  fi
+  return "${rc}"
 }
 
 require_cmd() {
@@ -78,14 +115,6 @@ require_cmd() {
   fi
 }
 
-ensure_rch_remote_only() {
-  if grep -q "\[RCH\] local" "${LAST_STEP_LOG}"; then
-    emit_log "validation" "rch_offload_policy" "rch_local_fallback_detected" "failed" "rch_fail_open_local_fallback" "RCH-LOCAL-FALLBACK" "$(basename "${LAST_STEP_LOG}")"
-    echo "rch fell back to local execution; failing per offload-only policy" >&2
-    exit 3
-  fi
-}
-
 run_rch_test_step() {
   local label="$1"
   local decision_path="$2"
@@ -93,8 +122,7 @@ run_rch_test_step() {
   shift 3
 
   emit_log "validation" "${decision_path}" "${input_summary}" "running" "none" "none" "$(basename "${STDOUT_FILE}")"
-  if run_step "${label}" rch exec -- env CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" "$@"; then
-    ensure_rch_remote_only
+  if run_rch_cargo_step "${label}" "$@"; then
     emit_log "validation" "${decision_path}" "${input_summary}" "passed" "tests_passed" "none" "$(basename "${LAST_STEP_LOG}")"
   else
     emit_log "validation" "${decision_path}" "${input_summary}" "failed" "test_failure" "CARGO-TEST-FAIL" "$(basename "${LAST_STEP_LOG}")"
@@ -190,6 +218,14 @@ require_cmd cargo
 
 emit_log "preflight" "startup" "scenario_start" "started" "none" "none" "$(basename "${LOG_FILE}")"
 emit_log "preflight" "target_dir" "cargo_target_dir=${CARGO_TARGET_DIR}" "configured" "none" "none" "$(basename "${LOG_FILE}")"
+
+if ensure_rch_ready_capture_artifacts; then
+  emit_log "preflight" "rch_preflight" "ensure_rch_ready" "passed" "rch_preflight_passed" "none" "$(basename "${_RCH_SMOKE_LOG}")"
+else
+  emit_log "preflight" "rch_preflight" "ensure_rch_ready" "failed" "rch_preflight_failed" "RCH-E100" "$(basename "${_RCH_SMOKE_LOG}")"
+  exit 2
+fi
+
 run_static_contract_checks
 
 probe_log="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}_rch_probe.json"
@@ -242,13 +278,13 @@ run_rch_test_step \
   "runtime_compat_surface_contract_unit" \
   "runtime_compat.surface_contract.unit" \
   "test=runtime_compat::tests::surface_contract_entries_are_unique" \
-  cargo test -p frankenterm-core runtime_compat::tests::surface_contract_entries_are_unique -- --nocapture
+  test -p frankenterm-core runtime_compat::tests::surface_contract_entries_are_unique -- --nocapture
 
 run_rch_test_step \
   "runtime_compat_smoke" \
   "runtime_compat.smoke.integration" \
   "test_target=runtime_compat_smoke" \
-  cargo test -p frankenterm-core --test runtime_compat_smoke -- --nocapture
+  test -p frankenterm-core --test runtime_compat_smoke -- --nocapture
 
 emit_log "summary" "nominal_suite" "scenario_complete" "passed" "all_checks_passed" "none" "$(basename "${STDOUT_FILE}")"
 echo "ft-e34d9.10.2.3 runtime_compat contraction scenario passed. Logs: ${LOG_FILE#"${ROOT_DIR}/"}"
