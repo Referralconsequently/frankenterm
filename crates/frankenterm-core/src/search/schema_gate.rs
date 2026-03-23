@@ -89,7 +89,8 @@ impl SchemaSnapshot {
     fn now(version: &str, fields: Vec<SchemaField>) -> Self {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_millis()).ok())
             .unwrap_or(0);
         Self {
             fields,

@@ -3534,10 +3534,11 @@ fn set_user_version(conn: &Connection, version: i32) -> Result<()> {
 
 /// Record a migration in the schema_version audit table.
 fn record_migration(conn: &Connection, version: i32, description: &str) -> Result<()> {
-    #[allow(clippy::cast_possible_truncation)]
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0);
 
     conn.execute(
         "INSERT INTO schema_version (version, applied_at, description) VALUES (?1, ?2, ?3)",
@@ -9929,10 +9930,11 @@ fn dispatch_write_command(
 
 /// Get current timestamp in epoch milliseconds
 pub fn now_ms() -> i64 {
-    #[allow(clippy::cast_possible_truncation)]
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn u64_to_i64(value: u64, label: &str) -> Result<i64> {
@@ -13677,10 +13679,7 @@ fn sync_fts_for_pane(
     pane_id: u64,
     config: &FtsSyncConfig,
 ) -> Result<(u64, u64)> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let now = now_ms();
 
     // Get current progress
     let progress = get_fts_pane_progress_sync(conn, pane_id)?;
@@ -13754,10 +13753,7 @@ fn sync_fts_for_pane(
 fn full_fts_rebuild_sync(conn: &Connection, config: &FtsSyncConfig) -> Result<FtsSyncResult> {
     use std::time::Instant;
     let start = Instant::now();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let now = now_ms();
 
     let mut warnings = Vec::new();
 
@@ -13907,10 +13903,7 @@ pub fn sync_fts_on_startup(conn: &Connection, config: &FtsSyncConfig) -> Result<
         }
     } else {
         // No state = first run after migration, initialize
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let now = now_ms();
         let new_state = FtsIndexState {
             index_version: FTS_INDEX_VERSION,
             last_full_rebuild_at: None,

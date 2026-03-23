@@ -3171,8 +3171,9 @@ impl ToolHandler for WaAccountsRefreshTool {
                 if let Ok(accounts) = storage.get_accounts_by_service(&service).await {
                     let now_check = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as i64;
+                        .ok()
+                        .and_then(|d| i64::try_from(d.as_millis()).ok())
+                        .unwrap_or(0);
                     let most_recent = accounts.iter().map(|a| a.last_refreshed_at).max().unwrap_or(0);
                     if let Some((secs_ago, wait_secs)) =
                         check_refresh_cooldown(most_recent, now_check, MCP_REFRESH_COOLDOWN_MS)
@@ -3198,8 +3199,9 @@ impl ToolHandler for WaAccountsRefreshTool {
 
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64;
+                    .ok()
+                    .and_then(|d| i64::try_from(d.as_millis()).ok())
+                    .unwrap_or(0);
 
                 let mut account_infos = Vec::new();
                 for usage in &refresh_result.accounts {
