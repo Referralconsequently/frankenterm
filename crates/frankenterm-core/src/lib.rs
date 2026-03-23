@@ -198,6 +198,7 @@ pub mod fibonacci_heap;
 pub mod fleet_dashboard;
 pub mod fleet_launcher;
 pub mod fleet_memory_controller;
+pub mod fleet_scrollback_coordinator;
 pub mod forbidden_dep_guards;
 pub mod forensic_export;
 pub mod gc;
