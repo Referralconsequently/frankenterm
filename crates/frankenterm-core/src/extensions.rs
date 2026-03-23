@@ -427,7 +427,8 @@ pub fn remove_extension(
                     .join(&path)
             };
 
-            if full_path.starts_with(&ext_dir) && full_path.exists() {
+            if full_path.exists() {
+                ensure_managed_extension_path(&full_path, &ext_dir)?;
                 std::fs::remove_file(&full_path)?;
             }
 
@@ -505,6 +506,30 @@ fn try_resolve_name(
     }
 
     None
+}
+
+fn ensure_managed_extension_path(candidate: &Path, ext_dir: &Path) -> Result<()> {
+    let canonical_candidate = candidate.canonicalize().map_err(|e| {
+        crate::Error::Runtime(format!(
+            "failed to resolve extension path {}: {e}",
+            candidate.display()
+        ))
+    })?;
+    let canonical_ext_dir = ext_dir.canonicalize().map_err(|e| {
+        crate::Error::Runtime(format!(
+            "failed to resolve extensions directory {}: {e}",
+            ext_dir.display()
+        ))
+    })?;
+
+    if canonical_candidate.starts_with(&canonical_ext_dir) {
+        Ok(())
+    } else {
+        Err(crate::Error::Runtime(format!(
+            "refusing to remove extension outside managed directory: {}",
+            candidate.display()
+        )))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +960,28 @@ anchors = ["custom anchor"]
         let removed = remove_extension("my-ext", &config, Some(&config_path)).unwrap();
         assert_eq!(removed, Some(pack_id));
         assert!(!ext_dir.join("my-ext.toml").exists());
+    }
+
+    #[test]
+    fn remove_extension_rejects_parent_escape_from_config_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("ft.toml");
+        let ext_dir = dir.path().join("extensions");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+
+        let outside = dir.path().join("secret.toml");
+        std::fs::write(&outside, "name = 'secret'\nversion = '1.0.0'\nrules = []\n").unwrap();
+
+        let config = PatternsConfig {
+            packs: vec!["file:extensions/../secret.toml".to_string()],
+            ..Default::default()
+        };
+
+        let err = remove_extension("secret", &config, Some(&config_path))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("outside managed directory"));
+        assert!(outside.exists());
     }
 
     #[test]

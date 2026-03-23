@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{PackOverride, PatternsConfig};
@@ -296,9 +296,11 @@ pub fn load_profile_by_name(
                 .rulesets
                 .iter()
                 .find(|entry| entry.name == canonical)
-                .map(|entry| rulesets_dir.join(&entry.path))
+                .map(|entry| entry.path.clone())
         })
-        .unwrap_or_else(|| rulesets_dir.join(format!("{canonical}.toml")));
+        .unwrap_or_else(|| format!("{canonical}.toml"));
+
+    let path = resolve_managed_ruleset_path(rulesets_dir, &path)?;
 
     let profile = load_profile_from_path(&path)?;
     if !profile.name.trim().is_empty() {
@@ -373,6 +375,47 @@ fn is_valid_profile_name(name: &str) -> bool {
 
     name.chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn resolve_managed_ruleset_path(
+    rulesets_dir: &Path,
+    relative_path: &str,
+) -> crate::Result<PathBuf> {
+    let relative = Path::new(relative_path);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(crate::error::ConfigError::ValidationError(format!(
+            "ruleset path '{relative_path}' must stay within {}",
+            rulesets_dir.display()
+        ))
+        .into());
+    }
+
+    let resolved = rulesets_dir.join(relative);
+    if resolved.exists() && rulesets_dir.exists() {
+        let canonical_rulesets_dir = rulesets_dir.canonicalize().map_err(|e| {
+            crate::error::ConfigError::ReadFailed(rulesets_dir.display().to_string(), e.to_string())
+        })?;
+        let canonical_resolved = resolved.canonicalize().map_err(|e| {
+            crate::error::ConfigError::ReadFailed(resolved.display().to_string(), e.to_string())
+        })?;
+        if !canonical_resolved.starts_with(&canonical_rulesets_dir) {
+            return Err(crate::error::ConfigError::ValidationError(format!(
+                "ruleset path '{relative_path}' resolves outside {}",
+                rulesets_dir.display()
+            ))
+            .into());
+        }
+    }
+
+    Ok(resolved)
 }
 
 fn merge_pack_overrides(
@@ -640,6 +683,24 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let result = load_profile_by_name(&dir, None, "nonexistent");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_profile_by_name_rejects_manifest_parent_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = RulesetManifest {
+            version: RULESET_MANIFEST_VERSION,
+            rulesets: vec![RulesetManifestEntry {
+                name: "incident".to_string(),
+                path: "../incident.toml".to_string(),
+                ..Default::default()
+            }],
+        };
+
+        let err = load_profile_by_name(dir.path(), Some(&manifest), "incident")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must stay within"));
     }
 
     // =========================================================================

@@ -1,7 +1,7 @@
 //! Config profile management (ft.toml overlays).
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CONFIG_PROFILE_MANIFEST_VERSION: u32 = 1;
@@ -236,14 +236,15 @@ pub fn resolve_profile_path(
                 .profiles
                 .iter()
                 .find(|entry| entry.name == canonical)
-                .map(|entry| (profiles_dir.join(&entry.path), entry.path.clone()))
+                .map(|entry| (entry.path.clone(), entry.path.clone()))
         })
         .unwrap_or_else(|| {
             let file_name = format!("{canonical}.toml");
-            (profiles_dir.join(&file_name), file_name)
+            (file_name.clone(), file_name)
         });
 
-    Ok((canonical, path, rel_path))
+    let resolved_path = resolve_managed_profile_path(profiles_dir, &rel_path)?;
+    Ok((canonical, resolved_path, rel_path))
 }
 
 pub fn canonicalize_profile_name(raw: &str) -> crate::Result<String> {
@@ -266,6 +267,47 @@ fn is_valid_profile_name(name: &str) -> bool {
     bytes
         .iter()
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
+}
+
+fn resolve_managed_profile_path(
+    profiles_dir: &Path,
+    relative_path: &str,
+) -> crate::Result<PathBuf> {
+    let relative = Path::new(relative_path);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(crate::error::ConfigError::ValidationError(format!(
+            "profile path '{relative_path}' must stay within {}",
+            profiles_dir.display()
+        ))
+        .into());
+    }
+
+    let resolved = profiles_dir.join(relative);
+    if resolved.exists() && profiles_dir.exists() {
+        let canonical_profiles_dir = profiles_dir.canonicalize().map_err(|e| {
+            crate::error::ConfigError::ReadFailed(profiles_dir.display().to_string(), e.to_string())
+        })?;
+        let canonical_resolved = resolved.canonicalize().map_err(|e| {
+            crate::error::ConfigError::ReadFailed(resolved.display().to_string(), e.to_string())
+        })?;
+        if !canonical_resolved.starts_with(&canonical_profiles_dir) {
+            return Err(crate::error::ConfigError::ValidationError(format!(
+                "profile path '{relative_path}' resolves outside {}",
+                profiles_dir.display()
+            ))
+            .into());
+        }
+    }
+
+    Ok(resolved)
 }
 
 fn timestamps_for(path: &Path) -> (Option<u64>, Option<u64>) {
@@ -331,6 +373,25 @@ mod tests {
         assert_eq!(manifest.profiles[0].name, "staging");
         assert_eq!(manifest.profiles[0].path, "staging.toml");
         assert_eq!(manifest.profiles[0].created_at, Some(900));
+    }
+
+    #[test]
+    fn resolve_profile_path_rejects_manifest_parent_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = ConfigProfileManifest {
+            version: CONFIG_PROFILE_MANIFEST_VERSION,
+            profiles: vec![ConfigProfileManifestEntry {
+                name: "incident".to_string(),
+                path: "../incident.toml".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let err = resolve_profile_path(dir.path(), Some(&manifest), "incident")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must stay within"));
     }
 
     // =========================================================================
