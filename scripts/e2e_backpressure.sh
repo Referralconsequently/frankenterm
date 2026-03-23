@@ -28,7 +28,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/e2e_artifacts.sh"
+# shellcheck disable=SC1091
+source "$PROJECT_ROOT/tests/e2e/lib_rch_guards.sh"
+
+RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+RCH_LOG_DIR="$PROJECT_ROOT/tests/e2e/logs"
+RCH_TARGET_DIR="${RCH_TARGET_DIR:-target/rch-backpressure-${RUN_ID}}"
 
 # Colors (disabled when piped)
 if [[ -t 1 ]]; then
@@ -121,12 +128,11 @@ make_temp_workspace() {
 check_prerequisites() {
     log_test "Prerequisites"
 
-    # Check cargo
-    if ! command -v cargo &>/dev/null; then
-        echo -e "${RED}ERROR:${NC} cargo not found. Install Rust toolchain." >&2
+    if ! command -v rch &>/dev/null; then
+        echo -e "${RED}ERROR:${NC} rch not found. Install/configure RCH for remote cargo execution." >&2
         exit 5
     fi
-    log_pass "cargo available"
+    log_pass "rch available"
 
     # Check jq
     if ! command -v jq &>/dev/null; then
@@ -149,6 +155,43 @@ check_prerequisites() {
     fi
 }
 
+run_rch_cargo_to_file() {
+    local output_file="$1"
+    shift
+
+    ( run_rch_cargo_logged "$output_file" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo "$@" )
+}
+
+run_rch_cargo_to_file_with_timeout() {
+    local timeout_secs="$1"
+    local output_file="$2"
+    shift 2
+
+    (
+        run_rch_cargo_logged_with_timeout "${timeout_secs}" "$output_file" \
+            env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo "$@"
+    )
+}
+
+record_rch_preflight_artifacts() {
+    if [[ -f "${_RCH_PROBE_LOG}" ]]; then
+        e2e_add_file "rch_probe.log" "$(cat "${_RCH_PROBE_LOG}")"
+    fi
+    if [[ -f "${_RCH_SMOKE_LOG}" ]]; then
+        e2e_add_file "rch_smoke.log" "$(cat "${_RCH_SMOKE_LOG}")"
+    fi
+}
+
+ensure_rch_ready_capture_artifacts() {
+    local rc=0
+    set +e
+    ( ensure_rch_ready )
+    rc=$?
+    set -e
+    record_rch_preflight_artifacts
+    return "$rc"
+}
+
 # ==============================================================================
 # Scenario 1: Backpressure core unit tests
 # ==============================================================================
@@ -160,9 +203,8 @@ scenario_backpressure_unit_tests() {
     test_output=$(mktemp)
     exit_code=0
 
-    cargo test -p frankenterm-core backpressure::tests \
-        --no-fail-fast -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core backpressure::tests \
+        --no-fail-fast -- --nocapture || exit_code=$?
 
     e2e_add_file "backpressure_unit_tests.log" "$(cat "$test_output")"
 
@@ -212,9 +254,8 @@ scenario_overflow_gap_tests() {
     exit_code=0
 
     # Run tailer overflow gap tests
-    cargo test -p frankenterm-core tailer::tests::overflow_gap \
-        --no-fail-fast -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core tailer::tests::overflow_gap \
+        --no-fail-fast -- --nocapture || exit_code=$?
 
     e2e_add_file "overflow_gap_tailer_tests.log" "$(cat "$test_output")"
 
@@ -226,9 +267,8 @@ scenario_overflow_gap_tests() {
 
     # Run ingest overflow gap tests
     exit_code=0
-    cargo test -p frankenterm-core ingest::tests::emit_overflow_gap \
-        --no-fail-fast -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core ingest::tests::emit_overflow_gap \
+        --no-fail-fast -- --nocapture || exit_code=$?
 
     e2e_add_file "overflow_gap_ingest_tests.log" "$(cat "$test_output")"
 
@@ -240,9 +280,8 @@ scenario_overflow_gap_tests() {
 
     # Verify the overflow threshold is reasonable
     exit_code=0
-    cargo test -p frankenterm-core tailer::tests::overflow_threshold_constant_is_reasonable \
-        -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core tailer::tests::overflow_threshold_constant_is_reasonable \
+        -- --nocapture || exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
         log_pass "S2.3: Overflow threshold constant validated"
@@ -264,9 +303,8 @@ scenario_storage_backpressure_integration() {
     test_output=$(mktemp)
     exit_code=0
 
-    cargo test -p frankenterm-core storage::backpressure_integration_tests \
-        --no-fail-fast -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core storage::backpressure_integration_tests \
+        --no-fail-fast -- --nocapture || exit_code=$?
 
     e2e_add_file "storage_backpressure_integration.log" "$(cat "$test_output")"
 
@@ -316,9 +354,8 @@ scenario_tailer_backpressure_counters() {
     exit_code=0
 
     # Run tailer backpressure-related tests (exclude overflow_gap which has its own scenario)
-    cargo test -p frankenterm-core 'tailer::tests' \
-        --no-fail-fast -- --nocapture --skip overflow_gap \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core 'tailer::tests' \
+        --no-fail-fast -- --nocapture --skip overflow_gap || exit_code=$?
 
     e2e_add_file "tailer_backpressure_counters.log" "$(cat "$test_output")"
 
@@ -342,9 +379,8 @@ scenario_runtime_backpressure_warnings() {
     test_output=$(mktemp)
     exit_code=0
 
-    cargo test -p frankenterm-core runtime::tests::backpressure \
-        --no-fail-fast -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core runtime::tests::backpressure \
+        --no-fail-fast -- --nocapture || exit_code=$?
 
     e2e_add_file "runtime_backpressure_warnings.log" "$(cat "$test_output")"
 
@@ -356,9 +392,8 @@ scenario_runtime_backpressure_warnings() {
 
     # Also run the events backpressure-causes-lag test
     exit_code=0
-    cargo test -p frankenterm-core events::tests::backpressure_causes_lag \
-        -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core events::tests::backpressure_causes_lag \
+        -- --nocapture || exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
         log_pass "S5.2: Event backpressure lag detection tested"
@@ -381,9 +416,8 @@ scenario_health_snapshot_schema() {
     exit_code=0
 
     # Run health snapshot renderer tests that validate backpressure display
-    cargo test -p frankenterm-core 'output::renderers::tests::health_' \
-        --no-fail-fast -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core 'output::renderers::tests::health_' \
+        --no-fail-fast -- --nocapture || exit_code=$?
 
     e2e_add_file "health_snapshot_schema.log" "$(cat "$test_output")"
 
@@ -395,9 +429,8 @@ scenario_health_snapshot_schema() {
 
     # Verify that BackpressureSnapshot serializes to valid JSON with expected fields
     exit_code=0
-    cargo test -p frankenterm-core backpressure::tests::snapshot_serialization_roundtrip \
-        -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+    run_rch_cargo_to_file "$test_output" test -p frankenterm-core backpressure::tests::snapshot_serialization_roundtrip \
+        -- --nocapture || exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
         log_pass "S6.2: BackpressureSnapshot JSON roundtrip validated"
@@ -489,10 +522,9 @@ scenario_bounded_execution() {
     start_time=$(date +%s)
     exit_code=0
 
-    timeout 120 cargo test -p frankenterm-core \
+    run_rch_cargo_to_file_with_timeout 120 "$test_output" test -p frankenterm-core \
         backpressure \
-        --no-fail-fast -- --nocapture \
-        >"$test_output" 2>&1 || exit_code=$?
+        --no-fail-fast -- --nocapture || exit_code=$?
 
     end_time=$(date +%s)
     duration_s=$((end_time - start_time))
@@ -543,9 +575,14 @@ main() {
     echo -e "${BLUE}Bead: wa-upg.12.6${NC}"
     echo -e "${BLUE}================================================${NC}"
 
-    check_prerequisites
-
     e2e_init_artifacts "backpressure-stress" >/dev/null
+    rch_init "$RCH_LOG_DIR" "$RUN_ID" "scripts_backpressure" "$PROJECT_ROOT"
+    if ! e2e_capture_scenario "rch_preflight" ensure_rch_ready_capture_artifacts; then
+        log_fail "rch preflight failed; refusing local cargo fallback"
+        e2e_finalize 1 >/dev/null
+        return 1
+    fi
+    check_prerequisites
 
     local overall_exit=0
 

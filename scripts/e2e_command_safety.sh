@@ -22,7 +22,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/e2e_artifacts.sh"
+# shellcheck disable=SC1091
+source "$PROJECT_ROOT/tests/e2e/lib_rch_guards.sh"
+
+RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+RCH_LOG_DIR="$PROJECT_ROOT/tests/e2e/logs"
+RCH_TARGET_DIR="${RCH_TARGET_DIR:-target/rch-command-safety-${RUN_ID}}"
 
 # Colors (disabled when piped)
 if [[ -t 1 ]]; then
@@ -91,10 +98,18 @@ run_wa_timeout() {
     local timeout_secs="${1:-5}"
     shift
     local raw_output
-    raw_output=$(timeout "$timeout_secs" "$FT_BIN" "$@" 2>&1 || true)
+    if [[ -z "${TIMEOUT_BIN}" ]]; then
+        resolve_timeout_bin
+    fi
+    if [[ -n "${TIMEOUT_BIN}" ]]; then
+        raw_output=$(env "${TIMEOUT_BIN}" --signal=TERM --kill-after=5 "$timeout_secs" "$FT_BIN" "$@" 2>&1 || true)
+    else
+        raw_output=$("$FT_BIN" "$@" 2>&1 || true)
+    fi
 
     # Strip ANSI codes and extract JSON object
     local stripped
+    # shellcheck disable=SC2001
     stripped=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*m//g')
 
     # Extract JSON from first { to last }
@@ -102,6 +117,43 @@ run_wa_timeout() {
         /^\{/ { found=1 }
         found { print }
     '
+}
+
+run_rch_cargo_capture() {
+    local label="$1"
+    shift
+
+    local output_file
+    output_file="${RCH_LOG_DIR}/command_safety_${RUN_ID}_${label}.log"
+    if ( run_rch_cargo_logged "$output_file" env CARGO_TARGET_DIR="${RCH_TARGET_DIR}" cargo "$@" ); then
+        cat "$output_file"
+        return 0
+    fi
+
+    local rc=$?
+    cat "$output_file"
+    return "$rc"
+}
+
+# shellcheck disable=SC2329 # Invoked via helper callback flow in main().
+record_rch_preflight_artifacts() {
+    if [[ -f "${_RCH_PROBE_LOG}" ]]; then
+        e2e_add_file "rch_probe.log" "$(cat "${_RCH_PROBE_LOG}")"
+    fi
+    if [[ -f "${_RCH_SMOKE_LOG}" ]]; then
+        e2e_add_file "rch_smoke.log" "$(cat "${_RCH_SMOKE_LOG}")"
+    fi
+}
+
+# shellcheck disable=SC2329 # Invoked via e2e_capture_scenario callback in main().
+ensure_rch_ready_capture_artifacts() {
+    local rc=0
+    set +e
+    ( ensure_rch_ready )
+    rc=$?
+    set -e
+    record_rch_preflight_artifacts
+    return "$rc"
 }
 
 # =============================================================================
@@ -112,7 +164,7 @@ test_command_candidate_unit() {
     log_test "is_command_candidate Unit Tests"
 
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_candidate -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "command_candidate_unit" test -p frankenterm-core command_candidate -- --nocapture || true)
 
     e2e_add_file "command_candidate_unit.txt" "$output"
 
@@ -132,7 +184,7 @@ test_command_gate_rules_unit() {
     log_test "Command Gate Rule Unit Tests"
 
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_gate -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "command_gate_rules_unit" test -p frankenterm-core command_gate -- --nocapture || true)
 
     e2e_add_file "command_gate_rules_unit.txt" "$output"
 
@@ -184,7 +236,7 @@ test_policy_bypass_detection() {
     log_test "Policy Bypass Detection (Interpreter Abuse)"
 
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core --test policy_bypass -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "policy_bypass_detection" test -p frankenterm-core --test policy_bypass -- --nocapture || true)
 
     e2e_add_file "policy_bypass_tests.txt" "$output"
 
@@ -292,7 +344,7 @@ test_dryrun_redacts_sensitive_text() {
         if [[ "$error_check" == "robot.wezterm_not_running" ]] || [[ -z "$output" ]]; then
             log_info "Compatibility backend bridge not running -- checking redaction via unit tests"
             local fallback_output
-            fallback_output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm redact -- --nocapture 2>&1 || true)
+            fallback_output=$(run_rch_cargo_capture "dryrun_redaction_fallback" test -p frankenterm redact -- --nocapture || true)
             if echo "$fallback_output" | grep -q "test result: ok\|0 tests"; then
                 log_pass "Redaction validated (unit tests or no redact tests found)"
             else
@@ -325,7 +377,7 @@ test_command_gate_deny_rm_rf_root() {
     # The command gate is evaluated in the actual send path, not dry-run.
     # Validate via the dedicated unit test.
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_gate_blocks_rm_rf_root -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "gate_deny_rm_rf_root" test -p frankenterm-core command_gate_blocks_rm_rf_root -- --nocapture || true)
 
     e2e_add_file "gate_deny_rm_rf_root.txt" "$output"
 
@@ -344,7 +396,7 @@ test_command_gate_approval_git_reset() {
     log_test "Command Gate: git reset --hard Requires Approval"
 
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_gate_requires_approval_for_git_reset -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "gate_approval_git_reset" test -p frankenterm-core command_gate_requires_approval_for_git_reset -- --nocapture || true)
 
     e2e_add_file "gate_approval_git_reset.txt" "$output"
 
@@ -363,7 +415,7 @@ test_command_gate_allows_safe_text() {
     log_test "Command Gate: Safe Text Passes Through"
 
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_gate_ignores_non_command_text -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "gate_allows_safe_text" test -p frankenterm-core command_gate_ignores_non_command_text -- --nocapture || true)
 
     e2e_add_file "gate_allows_safe_text.txt" "$output"
 
@@ -383,7 +435,7 @@ test_command_gate_coverage() {
 
     # Verify each built-in rule has at least one test
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_gate -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "command_gate_coverage" test -p frankenterm-core command_gate -- --nocapture || true)
 
     e2e_add_file "command_gate_coverage.txt" "$output"
 
@@ -440,10 +492,10 @@ test_sql_destructive_commands() {
     log_test "SQL Destructive Command Detection"
 
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core --test policy_bypass 2>&1 || true)
+    output=$(run_rch_cargo_capture "sql_destructive_policy_bypass" test -p frankenterm-core --test policy_bypass || true)
     # Also run the main policy tests for SQL
     local policy_output
-    policy_output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_gate 2>&1 || true)
+    policy_output=$(run_rch_cargo_capture "sql_destructive_command_gate" test -p frankenterm-core command_gate || true)
 
     e2e_add_file "sql_destructive_tests.txt" "$output"$'\n'"$policy_output"
 
@@ -468,10 +520,10 @@ test_shell_operator_detection() {
     # Test that is_command_candidate detects shell operators
     # This runs all command_candidate tests which include operator checks
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core is_command_candidate -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "shell_operator_detection_primary" test -p frankenterm-core is_command_candidate -- --nocapture || true)
     # Also try the more specific test name
     local output2
-    output2=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core command_candidate -- --nocapture 2>&1 || true)
+    output2=$(run_rch_cargo_capture "shell_operator_detection_secondary" test -p frankenterm-core command_candidate -- --nocapture || true)
 
     local combined="$output"$'\n'"$output2"
     e2e_add_file "shell_operator_detection.txt" "$combined"
@@ -492,7 +544,7 @@ test_interpreter_bypass() {
 
     # Verify that interpreters used to bypass safety are caught
     local output
-    output=$(cd "$PROJECT_ROOT" && cargo test -p frankenterm-core --test policy_bypass dangerous_interpreters -- --nocapture 2>&1 || true)
+    output=$(run_rch_cargo_capture "interpreter_bypass" test -p frankenterm-core --test policy_bypass dangerous_interpreters -- --nocapture || true)
 
     e2e_add_file "interpreter_bypass.txt" "$output"
 
@@ -516,6 +568,12 @@ main() {
 
     # Initialize artifacts
     e2e_init_artifacts "command-safety"
+    rch_init "$RCH_LOG_DIR" "$RUN_ID" "scripts_command_safety" "$PROJECT_ROOT"
+    if ! e2e_capture_scenario "rch_preflight" ensure_rch_ready_capture_artifacts; then
+        log_fail "rch preflight failed; refusing local cargo fallback"
+        e2e_finalize 1
+        exit 1
+    fi
 
     # Find wa binary
     find_ft_binary

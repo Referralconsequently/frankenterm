@@ -1114,11 +1114,18 @@ e2e_finalize() {
         return 1
     fi
 
+    local restore_nounset=0
+    if [[ $- == *u* ]]; then
+        restore_nounset=1
+        set +u
+    fi
+
     local end_ms
     end_ms=$(_e2e_time_ms)
     local total_duration_ms=$(( end_ms - E2E_START_TIME ))
 
-    local total_scenarios=${#E2E_SCENARIOS[@]}
+    local -a scenarios=("${E2E_SCENARIOS[@]}")
+    local total_scenarios=${#scenarios[@]}
 
     # Build manifest JSON
     local manifest_file="$E2E_RUN_DIR/manifest.json"
@@ -1127,7 +1134,7 @@ e2e_finalize() {
     # Build scenarios array for manifest/summary and emit per-scenario manifests.
     local scenarios_json="[]"
     local scenario_index=1
-    for entry in "${E2E_SCENARIOS[@]}"; do
+    for entry in "${scenarios[@]}"; do
         IFS=':' read -r name exit_code duration <<< "$entry"
         local status="passed"
         [[ $exit_code -ne 0 ]] && status="failed"
@@ -1259,7 +1266,7 @@ Scenarios
 ---------
 EOF
 
-    for entry in "${E2E_SCENARIOS[@]}"; do
+    for entry in "${scenarios[@]}"; do
         IFS=':' read -r name exit_code duration <<< "$entry"
         local status="PASS"
         [[ $exit_code -ne 0 ]] && status="FAIL"
@@ -1275,6 +1282,10 @@ EOF
     # Print path for CI artifact upload
     echo ""
     echo "ARTIFACTS_DIR=$E2E_RUN_DIR"
+
+    if [[ "$restore_nounset" -eq 1 ]]; then
+        set -u
+    fi
 }
 
 # ==============================================================================
