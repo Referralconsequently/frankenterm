@@ -181,11 +181,12 @@ impl ConnectionOps for WaylandConnection {
     }
 
     fn get_appearance(&self) -> Appearance {
-        match promise::spawn::block_on(crate::os::xdg_desktop_portal::get_appearance()) {
+        match crate::os::xdg_desktop_portal::get_appearance_if_cached() {
             Ok(Some(appearance)) => return appearance,
             Ok(None) => {}
             Err(err) => {
-                log::warn!("Unable to resolve appearance using xdg-desktop-portal: {err:#}");
+                log::trace!("Appearance cache unavailable via xdg-desktop-portal: {err:#}");
+                crate::os::xdg_desktop_portal::refresh_appearance_in_background();
             }
         }
         // fallback
