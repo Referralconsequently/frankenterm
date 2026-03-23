@@ -228,14 +228,15 @@ impl FleetScrollbackCoordinator {
         if is_emergency && self.config.emergency_evict_all {
             // Emergency path: evict all warm pages on every pane.
             self.telemetry.emergency_cleanups += 1;
-            let (pages, bytes, targets) = self.apply_emergency_eviction(pane_infos, panes);
+            let (evicted_pages, freed_bytes, applied) =
+                self.apply_emergency_eviction(pane_infos, panes);
             return EvaluationResult {
                 compound_tier: tier,
                 actions,
                 eviction_plan: None, // emergency bypasses orchestrator
-                pages_evicted: pages,
-                bytes_reclaimed: bytes,
-                targets_applied: targets,
+                pages_evicted: evicted_pages,
+                bytes_reclaimed: freed_bytes,
+                targets_applied: applied,
             };
         }
 
@@ -256,15 +257,15 @@ impl FleetScrollbackCoordinator {
         self.telemetry.plans_produced += 1;
 
         // Step 6: Apply the eviction plan (bounded by max_targets_per_cycle).
-        let (pages, bytes, targets) = self.apply_plan(&plan, panes);
+        let (evicted_pages, freed_bytes, applied) = self.apply_plan(&plan, panes);
 
         EvaluationResult {
             compound_tier: tier,
             actions,
             eviction_plan: Some(plan),
-            pages_evicted: pages,
-            bytes_reclaimed: bytes,
-            targets_applied: targets,
+            pages_evicted: evicted_pages,
+            bytes_reclaimed: freed_bytes,
+            targets_applied: applied,
         }
     }
 
@@ -396,7 +397,9 @@ pub trait PaneScrollbackAccess {
 }
 
 /// Simple HashMap-based implementation for testing and lightweight usage.
-impl PaneScrollbackAccess for std::collections::HashMap<u64, TieredScrollback> {
+impl<S: std::hash::BuildHasher> PaneScrollbackAccess
+    for std::collections::HashMap<u64, TieredScrollback, S>
+{
     fn pane_ids(&self) -> Vec<u64> {
         self.keys().copied().collect()
     }
