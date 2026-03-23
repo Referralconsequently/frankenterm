@@ -229,8 +229,9 @@ pub struct SessionHandler {
 impl Drop for SessionHandler {
     fn drop(&mut self) {
         if let Some(client_id) = self.client_id.take() {
-            let mux = Mux::get();
-            mux.unregister_client(&client_id);
+            if let Some(mux) = Mux::try_get() {
+                mux.unregister_client(&client_id);
+            }
         }
     }
 }
@@ -344,14 +345,11 @@ impl SessionHandler {
                     let client_id = Arc::new(client_id);
                     if self.client_id.as_ref() != Some(&client_id) {
                         let prior_client_id = self.client_id.replace(client_id.clone());
-                        spawn_into_main_thread(async move {
-                            let mux = Mux::get();
-                            if let Some(prior_client_id) = prior_client_id {
-                                mux.unregister_client(&prior_client_id);
-                            }
-                            mux.register_client(client_id);
-                        })
-                        .detach();
+                        let mux = Mux::get();
+                        if let Some(prior_client_id) = prior_client_id {
+                            mux.unregister_client(&prior_client_id);
+                        }
+                        mux.register_client(client_id);
                     }
                 }
                 send_response(Ok(Pdu::UnitResponse(UnitResponse {})));
@@ -1276,7 +1274,6 @@ mod tests {
     use mux::domain::DomainId;
     use mux::pane::{CachePolicy, ForEachPaneLogicalLine, LogicalLine, Pane, WithPaneLines};
     use parking_lot::MappedMutexGuard;
-    use promise::spawn::{ScopedExecutor, block_on};
     use rangeset::RangeSet;
     use std::ops::Range;
     use std::sync::Mutex as StdMutex;
@@ -1835,7 +1832,6 @@ mod tests {
     #[test]
     fn set_client_id_replaces_prior_registered_client_without_leaking_stale_entries() {
         let _lock = SET_CLIENT_ID_TEST_LOCK.lock().unwrap();
-        let exec = ScopedExecutor::new();
         let first = test_client_id("review-first", 41_001);
         let second = test_client_id("review-second", 41_002);
         let mux = Arc::new(Mux::new(None));
@@ -1843,25 +1839,28 @@ mod tests {
         let (sender, _captured) = capturing_sender();
         let mut handler = SessionHandler::new(sender);
 
-        block_on(exec.run(async {
-            handler.process_one(DecodedPdu {
-                serial: 10,
-                pdu: Pdu::SetClientId(SetClientId {
-                    client_id: first.clone(),
-                    is_proxy: false,
-                }),
-            });
-            spawn_into_main_thread(async {}).await;
+        handler.process_one(DecodedPdu {
+            serial: 10,
+            pdu: Pdu::SetClientId(SetClientId {
+                client_id: first.clone(),
+                is_proxy: false,
+            }),
+        });
 
-            handler.process_one(DecodedPdu {
-                serial: 11,
-                pdu: Pdu::SetClientId(SetClientId {
-                    client_id: second.clone(),
-                    is_proxy: false,
-                }),
-            });
-            spawn_into_main_thread(async {}).await;
-        }));
+        let clients_after_first_set = mux.iter_clients();
+        assert!(
+            clients_after_first_set
+                .iter()
+                .any(|info| *info.client_id == first)
+        );
+
+        handler.process_one(DecodedPdu {
+            serial: 11,
+            pdu: Pdu::SetClientId(SetClientId {
+                client_id: second.clone(),
+                is_proxy: false,
+            }),
+        });
 
         let clients = mux.iter_clients();
         assert!(clients.iter().any(|info| *info.client_id == second));
@@ -1875,7 +1874,27 @@ mod tests {
                 .iter()
                 .any(|info| *info.client_id == second)
         );
-        drop(exec);
+    }
+
+    #[test]
+    fn dropping_handler_after_mux_shutdown_does_not_panic() {
+        let _lock = SET_CLIENT_ID_TEST_LOCK.lock().unwrap();
+        let mux = Arc::new(Mux::new(None));
+        let _mux_guard = ScopedMux::install(&mux);
+        let client = test_client_id("shutdown-safe", 41_003);
+        let (sender, _captured) = capturing_sender();
+        let mut handler = SessionHandler::new(sender);
+
+        handler.process_one(DecodedPdu {
+            serial: 12,
+            pdu: Pdu::SetClientId(SetClientId {
+                client_id: client,
+                is_proxy: false,
+            }),
+        });
+
+        Mux::shutdown();
+        drop(handler);
     }
 
     #[test]
