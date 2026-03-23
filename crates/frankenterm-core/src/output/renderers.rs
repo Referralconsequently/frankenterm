@@ -4617,6 +4617,7 @@ mod tests {
             "consecutive_crashes",
             "current_backoff_ms",
             "in_crash_loop",
+            "fleet_pressure_tier",
         ];
 
         for field in &expected {
