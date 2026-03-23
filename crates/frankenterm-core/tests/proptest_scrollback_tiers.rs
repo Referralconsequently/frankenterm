@@ -73,6 +73,8 @@ fn arb_snapshot() -> impl Strategy<Value = ScrollbackTierSnapshot> {
         0u64..=1_000_000,    // cold_lines
         0u64..=10_000,       // cold_pages
         0u64..=10_000_000,   // total_lines_added
+        0u64..=100_000_000,  // activity_counter
+        0u64..=500_000_000,  // cold_uncompressed_bytes
     )
         .prop_map(
             |(
@@ -83,6 +85,8 @@ fn arb_snapshot() -> impl Strategy<Value = ScrollbackTierSnapshot> {
                 cold_lines,
                 cold_pages,
                 total_lines_added,
+                activity_counter,
+                cold_uncompressed_bytes,
             )| {
                 ScrollbackTierSnapshot {
                     hot_lines,
@@ -92,6 +96,8 @@ fn arb_snapshot() -> impl Strategy<Value = ScrollbackTierSnapshot> {
                     cold_lines,
                     cold_pages,
                     total_lines_added,
+                    activity_counter,
+                    cold_uncompressed_bytes,
                 }
             },
         )

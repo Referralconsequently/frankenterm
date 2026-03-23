@@ -419,6 +419,201 @@ pub fn recommend_actions(
 }
 
 // =============================================================================
+// Fleet scrollback orchestrator
+// =============================================================================
+
+/// Per-pane scrollback metadata used for eviction targeting.
+///
+/// The orchestrator collects these from all panes and sorts them to determine
+/// which panes should be evicted first under memory pressure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaneScrollbackInfo {
+    /// Pane identifier.
+    pub pane_id: u64,
+    /// Current activity counter from the pane's `TieredScrollback`.
+    pub activity_counter: u64,
+    /// Warm tier compressed bytes for this pane.
+    pub warm_bytes: usize,
+    /// Number of warm pages.
+    pub warm_pages: usize,
+    /// Estimated total memory (hot + warm) in bytes.
+    pub estimated_memory_bytes: usize,
+}
+
+/// Eviction plan produced by the orchestrator for a single evaluation cycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvictionPlan {
+    /// Pane IDs to evict, ordered by priority (most idle first).
+    pub targets: Vec<EvictionTarget>,
+    /// Fleet pressure tier that triggered this plan.
+    pub trigger_tier: FleetPressureTier,
+    /// Total warm bytes across fleet before eviction.
+    pub fleet_warm_bytes_before: usize,
+    /// Target warm bytes after eviction (0 for emergency).
+    pub fleet_warm_bytes_target: usize,
+}
+
+/// A single pane targeted for eviction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvictionTarget {
+    /// Pane ID to evict from.
+    pub pane_id: u64,
+    /// Number of warm pages to evict from this pane.
+    pub pages_to_evict: usize,
+}
+
+/// Orchestrates fleet-wide scrollback eviction decisions.
+///
+/// Given the current fleet pressure tier and per-pane scrollback info,
+/// produces an `EvictionPlan` that targets idle panes first and evicts
+/// proportionally to bring fleet memory under control.
+#[derive(Debug)]
+pub struct FleetScrollbackOrchestrator {
+    /// Activity counter snapshot from the last evaluation cycle.
+    /// Used to compute activity delta (idle = counter unchanged).
+    last_activity: std::collections::HashMap<u64, u64>,
+    /// Total eviction plans produced.
+    total_plans: u64,
+    /// Total panes targeted for eviction across all plans.
+    total_targets: u64,
+}
+
+impl FleetScrollbackOrchestrator {
+    /// Create a new orchestrator.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            last_activity: std::collections::HashMap::new(),
+            total_plans: 0,
+            total_targets: 0,
+        }
+    }
+
+    /// Total eviction plans produced.
+    #[must_use]
+    pub fn total_plans(&self) -> u64 {
+        self.total_plans
+    }
+
+    /// Total pane eviction targets across all plans.
+    #[must_use]
+    pub fn total_targets(&self) -> u64 {
+        self.total_targets
+    }
+
+    /// Produce an eviction plan based on the current fleet state.
+    ///
+    /// `panes` should contain scrollback info for every active pane.
+    /// The plan targets idle panes (unchanged activity counter) first,
+    /// then sorts by warm bytes descending to maximize memory recovery.
+    ///
+    /// Returns `None` if no eviction is needed (Normal tier or no warm data).
+    pub fn plan_eviction(
+        &mut self,
+        tier: FleetPressureTier,
+        panes: &[PaneScrollbackInfo],
+    ) -> Option<EvictionPlan> {
+        if tier == FleetPressureTier::Normal {
+            self.update_activity(panes);
+            return None;
+        }
+
+        let fleet_warm_bytes: usize = panes.iter().map(|p| p.warm_bytes).sum();
+        if fleet_warm_bytes == 0 {
+            self.update_activity(panes);
+            return None;
+        }
+
+        // Determine eviction aggressiveness based on tier
+        let (target_fraction, max_pane_fraction) = match tier {
+            FleetPressureTier::Normal => unreachable!(),
+            FleetPressureTier::Elevated => (0.25, 0.5), // evict 25% of fleet warm, up to 50% per pane
+            FleetPressureTier::Critical => (0.75, 1.0), // evict 75% of fleet warm, full per pane
+            FleetPressureTier::Emergency => (1.0, 1.0), // evict everything
+        };
+
+        let fleet_warm_bytes_target =
+            ((fleet_warm_bytes as f64) * (1.0 - target_fraction)) as usize;
+
+        // Score each pane for eviction priority.
+        // Lower score = higher eviction priority (evict first).
+        // Idle panes (no activity delta) get priority, then sort by warm bytes desc.
+        let mut scored: Vec<(u64, u64, usize, usize)> = panes
+            .iter()
+            .filter(|p| p.warm_pages > 0)
+            .map(|p| {
+                let prev = self.last_activity.get(&p.pane_id).copied().unwrap_or(0);
+                let delta = p.activity_counter.saturating_sub(prev);
+                (p.pane_id, delta, p.warm_bytes, p.warm_pages)
+            })
+            .collect();
+
+        // Sort: idle panes first (delta == 0), then by warm_bytes descending
+        scored.sort_by(|a, b| {
+            let a_idle = a.1 == 0;
+            let b_idle = b.1 == 0;
+            match (a_idle, b_idle) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => b.2.cmp(&a.2), // more warm bytes = evict first
+            }
+        });
+
+        let mut targets = Vec::new();
+        let mut remaining_to_evict = fleet_warm_bytes.saturating_sub(fleet_warm_bytes_target);
+
+        for (pane_id, _delta, warm_bytes, warm_pages) in &scored {
+            if remaining_to_evict == 0 {
+                break;
+            }
+
+            let target_frac = remaining_to_evict as f64 / *warm_bytes as f64;
+            let capped_frac = target_frac.min(max_pane_fraction).min(1.0);
+
+            let pages_to_evict = (capped_frac * *warm_pages as f64).ceil() as usize;
+            let pages_to_evict = pages_to_evict.min(*warm_pages).max(1);
+
+            let bytes_evicted =
+                (*warm_bytes as f64 * (pages_to_evict as f64 / *warm_pages as f64)) as usize;
+            remaining_to_evict = remaining_to_evict.saturating_sub(bytes_evicted.min(*warm_bytes));
+
+            targets.push(EvictionTarget {
+                pane_id: *pane_id,
+                pages_to_evict,
+            });
+        }
+
+        self.update_activity(panes);
+        self.total_plans += 1;
+        self.total_targets += targets.len() as u64;
+
+        if targets.is_empty() {
+            None
+        } else {
+            Some(EvictionPlan {
+                targets,
+                trigger_tier: tier,
+                fleet_warm_bytes_before: fleet_warm_bytes,
+                fleet_warm_bytes_target,
+            })
+        }
+    }
+
+    fn update_activity(&mut self, panes: &[PaneScrollbackInfo]) {
+        self.last_activity.clear();
+        for p in panes {
+            self.last_activity.insert(p.pane_id, p.activity_counter);
+        }
+    }
+}
+
+impl Default for FleetScrollbackOrchestrator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -764,16 +959,10 @@ mod tests {
         // Normal has no real actions
         assert!(normal.iter().all(|a| *a == FleetMemoryAction::None));
         // Elevated includes throttling
-        assert!(
-            elevated.contains(&FleetMemoryAction::ThrottlePolling)
-        );
+        assert!(elevated.contains(&FleetMemoryAction::ThrottlePolling));
         // Critical includes everything Elevated has plus more
-        assert!(
-            critical.contains(&FleetMemoryAction::ThrottlePolling)
-        );
-        assert!(
-            critical.contains(&FleetMemoryAction::PauseIdlePanes)
-        );
+        assert!(critical.contains(&FleetMemoryAction::ThrottlePolling));
+        assert!(critical.contains(&FleetMemoryAction::PauseIdlePanes));
     }
 
     // ── Action predicates ────────────────────────────────────────────
@@ -913,5 +1102,158 @@ mod tests {
         let record = &ctrl.audit_trail()[0];
         assert_eq!(record.signals.backpressure, BackpressureTier::Red);
         assert_eq!(record.signals.pane_count, 200);
+    }
+
+    // ── FleetScrollbackOrchestrator ─────────────────────────────────
+
+    fn make_pane_info(
+        pane_id: u64,
+        activity: u64,
+        warm_bytes: usize,
+        warm_pages: usize,
+    ) -> PaneScrollbackInfo {
+        PaneScrollbackInfo {
+            pane_id,
+            activity_counter: activity,
+            warm_bytes,
+            warm_pages,
+            estimated_memory_bytes: warm_bytes + 10_000,
+        }
+    }
+
+    #[test]
+    fn orchestrator_no_eviction_at_normal() {
+        let mut orch = FleetScrollbackOrchestrator::new();
+        let panes = vec![make_pane_info(1, 100, 5000, 10)];
+        let plan = orch.plan_eviction(FleetPressureTier::Normal, &panes);
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn orchestrator_no_eviction_when_no_warm_data() {
+        let mut orch = FleetScrollbackOrchestrator::new();
+        let panes = vec![make_pane_info(1, 100, 0, 0)];
+        let plan = orch.plan_eviction(FleetPressureTier::Critical, &panes);
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn orchestrator_evicts_at_elevated_with_warm_data() {
+        let mut orch = FleetScrollbackOrchestrator::new();
+        let panes = vec![
+            make_pane_info(1, 100, 5000, 10),
+            make_pane_info(2, 200, 3000, 6),
+        ];
+        let plan = orch.plan_eviction(FleetPressureTier::Elevated, &panes);
+        assert!(plan.is_some());
+        let plan = plan.unwrap();
+        assert_eq!(plan.trigger_tier, FleetPressureTier::Elevated);
+        assert!(!plan.targets.is_empty());
+    }
+
+    #[test]
+    fn orchestrator_targets_idle_panes_first() {
+        let mut orch = FleetScrollbackOrchestrator::new();
+        // First cycle: set activity baselines
+        let panes_initial = vec![
+            make_pane_info(1, 100, 5000, 10), // will be idle
+            make_pane_info(2, 200, 5000, 10), // will be active
+        ];
+        orch.plan_eviction(FleetPressureTier::Normal, &panes_initial);
+
+        // Second cycle: pane 1 idle (same activity), pane 2 active (bumped)
+        let panes = vec![
+            make_pane_info(1, 100, 5000, 10), // idle: counter unchanged
+            make_pane_info(2, 300, 5000, 10), // active: counter bumped
+        ];
+        let plan = orch.plan_eviction(FleetPressureTier::Elevated, &panes);
+        assert!(plan.is_some());
+        let plan = plan.unwrap();
+        // Idle pane (1) should be first target
+        assert_eq!(plan.targets[0].pane_id, 1);
+    }
+
+    #[test]
+    fn orchestrator_emergency_evicts_everything() {
+        let mut orch = FleetScrollbackOrchestrator::new();
+        let panes = vec![
+            make_pane_info(1, 100, 5000, 10),
+            make_pane_info(2, 200, 3000, 6),
+            make_pane_info(3, 300, 7000, 14),
+        ];
+        let plan = orch.plan_eviction(FleetPressureTier::Emergency, &panes);
+        assert!(plan.is_some());
+        let plan = plan.unwrap();
+        assert_eq!(plan.fleet_warm_bytes_target, 0);
+        // Should target all panes with warm data
+        assert_eq!(plan.targets.len(), 3);
+    }
+
+    #[test]
+    fn orchestrator_tracks_totals() {
+        let mut orch = FleetScrollbackOrchestrator::new();
+        assert_eq!(orch.total_plans(), 0);
+        assert_eq!(orch.total_targets(), 0);
+
+        let panes = vec![make_pane_info(1, 100, 5000, 10)];
+        orch.plan_eviction(FleetPressureTier::Critical, &panes);
+        assert_eq!(orch.total_plans(), 1);
+        assert!(orch.total_targets() >= 1);
+    }
+
+    #[test]
+    fn orchestrator_eviction_plan_serde_roundtrip() {
+        let plan = EvictionPlan {
+            targets: vec![
+                EvictionTarget {
+                    pane_id: 1,
+                    pages_to_evict: 5,
+                },
+                EvictionTarget {
+                    pane_id: 2,
+                    pages_to_evict: 3,
+                },
+            ],
+            trigger_tier: FleetPressureTier::Critical,
+            fleet_warm_bytes_before: 100_000,
+            fleet_warm_bytes_target: 25_000,
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        let rt: EvictionPlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.targets.len(), 2);
+        assert_eq!(rt.targets[0].pane_id, 1);
+        assert_eq!(rt.fleet_warm_bytes_before, 100_000);
+    }
+
+    #[test]
+    fn pane_scrollback_info_serde_roundtrip() {
+        let info = PaneScrollbackInfo {
+            pane_id: 42,
+            activity_counter: 1000,
+            warm_bytes: 50_000,
+            warm_pages: 20,
+            estimated_memory_bytes: 60_000,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let rt: PaneScrollbackInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.pane_id, 42);
+        assert_eq!(rt.activity_counter, 1000);
+    }
+
+    #[test]
+    fn orchestrator_200_pane_critical_eviction() {
+        let mut orch = FleetScrollbackOrchestrator::new();
+        let panes: Vec<PaneScrollbackInfo> = (0..200)
+            .map(|i| make_pane_info(i, i * 10, 50_000, 100))
+            .collect();
+
+        let plan = orch.plan_eviction(FleetPressureTier::Critical, &panes);
+        assert!(plan.is_some());
+        let plan = plan.unwrap();
+        // At Critical, target 75% eviction
+        let total_warm: usize = panes.iter().map(|p| p.warm_bytes).sum();
+        assert_eq!(plan.fleet_warm_bytes_before, total_warm);
+        assert!(plan.fleet_warm_bytes_target < total_warm);
+        assert!(!plan.targets.is_empty());
     }
 }

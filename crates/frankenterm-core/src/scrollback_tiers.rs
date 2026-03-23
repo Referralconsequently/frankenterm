@@ -172,6 +172,11 @@ pub struct TieredScrollback {
     next_page_index: u64,
     /// Total pages evicted to cold tier.
     cold_page_count: u64,
+    /// Monotonic counter incremented on every push/access. Used by the fleet
+    /// controller to identify idle panes for preferential eviction.
+    activity_counter: u64,
+    /// Estimated total uncompressed bytes evicted to cold tier (for memory reporting).
+    cold_uncompressed_bytes: u64,
 }
 
 /// Snapshot of scrollback tier statistics for telemetry/diagnostics.
@@ -191,6 +196,10 @@ pub struct ScrollbackTierSnapshot {
     pub cold_pages: u64,
     /// Total lines ever added to this scrollback.
     pub total_lines_added: u64,
+    /// Activity counter (monotonic, for idle detection).
+    pub activity_counter: u64,
+    /// Estimated uncompressed bytes evicted to cold tier.
+    pub cold_uncompressed_bytes: u64,
 }
 
 impl TieredScrollback {
@@ -209,6 +218,8 @@ impl TieredScrollback {
             cold_line_count: 0,
             next_page_index: 0,
             cold_page_count: 0,
+            activity_counter: 0,
+            cold_uncompressed_bytes: 0,
         }
     }
 
@@ -216,6 +227,7 @@ impl TieredScrollback {
     pub fn push_line(&mut self, line: String) {
         self.hot.push_back(line);
         self.total_lines_added += 1;
+        self.activity_counter += 1;
 
         // Overflow hot → warm when hot exceeds capacity
         if self.hot.len() > self.config.hot_lines + self.config.page_size {
@@ -365,7 +377,60 @@ impl TieredScrollback {
             cold_lines: self.cold_line_count,
             cold_pages: self.cold_page_count,
             total_lines_added: self.total_lines_added,
+            activity_counter: self.activity_counter,
+            cold_uncompressed_bytes: self.cold_uncompressed_bytes,
         }
+    }
+
+    /// Current activity counter value (monotonic, for idle detection).
+    #[must_use]
+    pub fn activity_counter(&self) -> u64 {
+        self.activity_counter
+    }
+
+    /// Evict up to `count` warm pages to cold tier (proportional eviction).
+    ///
+    /// Evicts oldest pages first. Returns the number of pages actually evicted.
+    pub fn evict_warm_pages(&mut self, count: usize) -> usize {
+        let mut evicted = 0;
+        for _ in 0..count {
+            if let Some(page) = self.warm.pop_front() {
+                self.evict_warm_page(page);
+                evicted += 1;
+            } else {
+                break;
+            }
+        }
+        evicted
+    }
+
+    /// Evict warm pages until warm tier uses at most `target_bytes` compressed.
+    ///
+    /// Returns the number of pages evicted.
+    pub fn evict_warm_to_target(&mut self, target_bytes: usize) -> usize {
+        let mut evicted = 0;
+        while self.warm_bytes > target_bytes {
+            if let Some(page) = self.warm.pop_front() {
+                self.evict_warm_page(page);
+                evicted += 1;
+            } else {
+                break;
+            }
+        }
+        evicted
+    }
+
+    /// Estimated total memory footprint (hot + warm) in bytes.
+    ///
+    /// Does not include cold tier (evicted from memory).
+    #[must_use]
+    pub fn estimated_memory_bytes(&self) -> usize {
+        let hot_bytes: usize = self
+            .hot
+            .iter()
+            .map(|s| s.len() + std::mem::size_of::<String>())
+            .sum();
+        hot_bytes + self.warm_bytes
     }
 
     /// Force eviction of all warm pages to cold tier.
@@ -398,6 +463,8 @@ impl TieredScrollback {
         self.cold_page_count = 0;
         self.total_lines_added = 0;
         self.next_page_index = 0;
+        self.activity_counter = 0;
+        self.cold_uncompressed_bytes = 0;
     }
 
     /// Compression ratio for the warm tier (uncompressed / compressed).
@@ -455,6 +522,7 @@ impl TieredScrollback {
     fn evict_warm_page(&mut self, page: CompressedPage) {
         self.warm_bytes = self.warm_bytes.saturating_sub(page.compressed_size());
         self.cold_line_count += page.line_count as u64;
+        self.cold_uncompressed_bytes += page.uncompressed_size as u64;
         self.cold_page_count += 1;
         self.cold.push_back(ColdPageMeta {
             page_index: page.page_index,
@@ -839,6 +907,8 @@ mod tests {
             cold_lines: 500,
             cold_pages: 2,
             total_lines_added: 1880,
+            activity_counter: 42,
+            cold_uncompressed_bytes: 10240,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let back: ScrollbackTierSnapshot = serde_json::from_str(&json).unwrap();
@@ -1003,5 +1073,146 @@ mod tests {
             "200 panes should use < 10 MB, got {} bytes",
             total_bytes
         );
+    }
+
+    // ── Proportional eviction ──────────────────────────────────────
+
+    #[test]
+    fn evict_warm_pages_partial() {
+        let mut sb = TieredScrollback::new(small_config());
+        for i in 0..50 {
+            sb.push_line(line(i));
+        }
+        let initial_warm = sb.warm_page_count();
+        assert!(initial_warm >= 2, "need at least 2 warm pages");
+
+        let evicted = sb.evict_warm_pages(1);
+        assert_eq!(evicted, 1);
+        assert_eq!(sb.warm_page_count(), initial_warm - 1);
+        assert!(sb.cold_line_count() > 0);
+    }
+
+    #[test]
+    fn evict_warm_pages_all() {
+        let mut sb = TieredScrollback::new(small_config());
+        for i in 0..50 {
+            sb.push_line(line(i));
+        }
+        let initial_warm = sb.warm_page_count();
+        let evicted = sb.evict_warm_pages(initial_warm + 10);
+        assert_eq!(evicted, initial_warm);
+        assert_eq!(sb.warm_page_count(), 0);
+    }
+
+    #[test]
+    fn evict_warm_pages_zero() {
+        let mut sb = TieredScrollback::new(small_config());
+        for i in 0..50 {
+            sb.push_line(line(i));
+        }
+        let before = sb.warm_page_count();
+        let evicted = sb.evict_warm_pages(0);
+        assert_eq!(evicted, 0);
+        assert_eq!(sb.warm_page_count(), before);
+    }
+
+    #[test]
+    fn evict_warm_to_target_partial() {
+        let mut sb = TieredScrollback::new(small_config());
+        for i in 0..50 {
+            sb.push_line(line(i));
+        }
+        let initial_bytes = sb.warm_total_bytes();
+        assert!(initial_bytes > 0);
+
+        let target = initial_bytes / 2;
+        let evicted = sb.evict_warm_to_target(target);
+        assert!(evicted > 0);
+        assert!(sb.warm_total_bytes() <= target);
+    }
+
+    #[test]
+    fn evict_warm_to_target_zero_evicts_all() {
+        let mut sb = TieredScrollback::new(small_config());
+        for i in 0..50 {
+            sb.push_line(line(i));
+        }
+        let evicted = sb.evict_warm_to_target(0);
+        assert!(evicted > 0);
+        assert_eq!(sb.warm_total_bytes(), 0);
+        assert_eq!(sb.warm_page_count(), 0);
+    }
+
+    // ── Activity counter ───────────────────────────────────────────
+
+    #[test]
+    fn activity_counter_increments_on_push() {
+        let mut sb = TieredScrollback::new(small_config());
+        assert_eq!(sb.activity_counter(), 0);
+
+        sb.push_line("hello".to_string());
+        assert_eq!(sb.activity_counter(), 1);
+
+        sb.push_lines((0..5).map(line));
+        assert_eq!(sb.activity_counter(), 6);
+    }
+
+    #[test]
+    fn activity_counter_in_snapshot() {
+        let mut sb = TieredScrollback::new(small_config());
+        sb.push_lines((0..10).map(line));
+
+        let snap = sb.snapshot();
+        assert_eq!(snap.activity_counter, 10);
+    }
+
+    #[test]
+    fn activity_counter_resets_on_clear() {
+        let mut sb = TieredScrollback::new(small_config());
+        sb.push_lines((0..10).map(line));
+        sb.clear();
+        assert_eq!(sb.activity_counter(), 0);
+    }
+
+    // ── Cold uncompressed bytes tracking ───────────────────────────
+
+    #[test]
+    fn cold_uncompressed_bytes_tracked() {
+        let config = ScrollbackConfig {
+            hot_lines: 10,
+            page_size: 5,
+            warm_max_bytes: 50,
+            compression: CompressionLevel::Fast,
+            cold_eviction_enabled: true,
+        };
+        let mut sb = TieredScrollback::new(config);
+        for i in 0..100 {
+            sb.push_line(line(i));
+        }
+
+        let snap = sb.snapshot();
+        assert!(snap.cold_uncompressed_bytes > 0);
+        assert!(snap.cold_lines > 0);
+    }
+
+    // ── Estimated memory bytes ─────────────────────────────────────
+
+    #[test]
+    fn estimated_memory_bytes_includes_hot_and_warm() {
+        let mut sb = TieredScrollback::new(small_config());
+        for i in 0..30 {
+            sb.push_line(line(i));
+        }
+
+        let est = sb.estimated_memory_bytes();
+        assert!(est > 0);
+        // Should include both hot line bytes and warm compressed bytes
+        assert!(est >= sb.warm_total_bytes());
+    }
+
+    #[test]
+    fn estimated_memory_bytes_empty() {
+        let sb = TieredScrollback::new(small_config());
+        assert_eq!(sb.estimated_memory_bytes(), 0);
     }
 }
