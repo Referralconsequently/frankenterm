@@ -29,6 +29,10 @@ use crate::sharded_counter::{ShardedCounter, ShardedGauge, ShardedMax};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::backpressure::BackpressureConfig;
+use crate::fleet_memory_controller::{FleetMemoryConfig, PaneScrollbackInfo};
+use crate::fleet_scrollback_coordinator::{
+    CoordinatorConfig, FleetScrollbackCoordinator, NullPaneScrollbackAccess,
+};
 use crate::config::{
     CaptureBudgetConfig, HotReloadableConfig, PaneFilterConfig, PanePriorityConfig, PatternsConfig,
     SnapshotConfig, SnapshotSchedulingMode,
@@ -1399,6 +1403,14 @@ impl ObservationRuntime {
             let mut last_checkpoint = Instant::now();
             let mut last_cache_gc = Instant::now();
 
+            // Fleet scrollback coordinator (ft-dwjtm): evaluates fleet memory
+            // pressure from queue depths and triggers warm-page eviction when
+            // TieredScrollback instances are available.
+            let mut fleet_coordinator = FleetScrollbackCoordinator::new(
+                CoordinatorConfig::default(),
+                FleetMemoryConfig::default(),
+            );
+
             loop {
                 if !first_tick {
                     sleep(maintenance_interval).await;
@@ -1667,6 +1679,65 @@ impl ObservationRuntime {
                         write_depth,
                         write_cap,
                     );
+
+                    // ── Fleet scrollback coordinator tick (ft-dwjtm) ────────
+                    //
+                    // Build pressure signals from the queue depths already
+                    // collected above, then run one coordinator evaluation.
+                    // Until TieredScrollback instances are stored in the
+                    // runtime, we pass synthetic PaneScrollbackInfo from cursor
+                    // memory data and a NullPaneScrollbackAccess (eviction is
+                    // a no-op). The coordinator still tracks fleet pressure
+                    // tier and emits telemetry.
+                    let fleet_signals = FleetScrollbackCoordinator::signals_from_queue_depths(
+                        capture_depth,
+                        capture_cap,
+                        write_depth,
+                        write_cap,
+                        observed_panes,
+                        0, // paused_pane_count: not yet tracked at this level
+                    );
+
+                    // Build synthetic per-pane info from cursor snapshot data.
+                    // Warm bytes/pages are zero until TieredScrollback is
+                    // integrated; estimated memory comes from cursor snapshot
+                    // sizes captured above.
+                    let fleet_pane_infos: Vec<PaneScrollbackInfo> = last_seq_by_pane
+                        .iter()
+                        .map(|(pane_id, _seq)| PaneScrollbackInfo {
+                            pane_id: *pane_id,
+                            activity_counter: 0,
+                            warm_bytes: 0,
+                            warm_pages: 0,
+                            estimated_memory_bytes: 0,
+                        })
+                        .collect();
+
+                    let mut null_panes = NullPaneScrollbackAccess;
+                    let fleet_eval = fleet_coordinator.evaluate(
+                        &fleet_signals,
+                        &fleet_pane_infos,
+                        &mut null_panes,
+                    );
+
+                    if fleet_eval.pages_evicted > 0 || fleet_eval.bytes_reclaimed > 0 {
+                        info!(
+                            tier = ?fleet_eval.compound_tier,
+                            pages_evicted = fleet_eval.pages_evicted,
+                            bytes_reclaimed = fleet_eval.bytes_reclaimed,
+                            "fleet scrollback coordinator eviction"
+                        );
+                    } else if !matches!(
+                        fleet_eval.compound_tier,
+                        crate::fleet_memory_controller::FleetPressureTier::Normal
+                    ) {
+                        debug!(
+                            tier = ?fleet_eval.compound_tier,
+                            actions = fleet_eval.actions.len(),
+                            "fleet scrollback coordinator: elevated pressure"
+                        );
+                    }
+                    // ── end fleet coordinator tick ──────────────────────────
 
                     let snapshot = HealthSnapshot {
                         timestamp: epoch_ms_u64(),

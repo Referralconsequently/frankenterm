@@ -496,6 +496,37 @@ impl<S: std::hash::BuildHasher> PaneScrollbackAccess
 }
 
 // =============================================================================
+// Null (no-op) PaneScrollbackAccess — used when the runtime does not yet
+// hold real TieredScrollback instances (pre-wiring phase).  Evaluate still
+// runs the pressure-signal / fleet-tier logic; eviction requests are silently
+// dropped.
+// =============================================================================
+
+/// No-op implementation of [`PaneScrollbackAccess`].
+///
+/// Returns no panes, no snapshots, and silently ignores eviction requests.
+/// Used by the runtime maintenance loop before real pane scrollback storage
+/// is wired in, so the coordinator's pressure evaluation and telemetry still
+/// run.
+pub struct NullPaneScrollbackAccess;
+
+impl PaneScrollbackAccess for NullPaneScrollbackAccess {
+    fn pane_ids(&self) -> Vec<u64> {
+        Vec::new()
+    }
+
+    fn snapshot(&self, _pane_id: u64) -> Option<ScrollbackTierSnapshot> {
+        None
+    }
+
+    fn evict_warm_pages(&mut self, _pane_id: u64, _count: usize) -> usize {
+        0
+    }
+
+    fn evict_all_warm(&mut self, _pane_id: u64) {}
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
