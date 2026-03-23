@@ -8,11 +8,11 @@ mkdir -p "$LOG_DIR"
 run_id="replay_decision_capture_$(date -u +%Y%m%dT%H%M%SZ)"
 json_log="$LOG_DIR/${run_id}.jsonl"
 cargo_home="/tmp/cargo-home-replay-decision-e2e"
-cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$ROOT_DIR/target-replay-decision-e2e-${run_id}}"
 component="replay_decision_capture"
 scenario_id="replay_decision_capture_suite"
 local_tmpdir="${FT_REPLAY_CAPTURE_LOCAL_TMPDIR:-${TMPDIR:-/tmp}}"
 remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
+cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-decision-e2e-${run_id}}"
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
 RCH_SMOKE_LOG="${LOG_DIR}/replay_decision_capture_${run_id}.smoke.log"

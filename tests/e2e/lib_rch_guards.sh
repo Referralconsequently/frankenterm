@@ -64,6 +64,49 @@ check_rch_fallback() {
     fi
 }
 
+child_pids() {
+    local pid="$1"
+    if command -v pgrep >/dev/null 2>&1; then
+        pgrep -P "${pid}" 2>/dev/null || true
+    fi
+}
+
+terminate_process_tree() {
+    local pid="$1"
+    local signal="${2:-TERM}"
+    local child
+    for child in $(child_pids "${pid}"); do
+        terminate_process_tree "${child}" "${signal}"
+    done
+    kill -"${signal}" "${pid}" 2>/dev/null || true
+}
+
+start_rch_fallback_monitor() {
+    local runner_pid="$1"
+    local output_file="$2"
+
+    (
+        while kill -0 "${runner_pid}" 2>/dev/null; do
+            if grep -Eq "${RCH_FAIL_OPEN_REGEX}" "${output_file}" 2>/dev/null; then
+                terminate_process_tree "${runner_pid}" TERM
+                sleep 2
+                terminate_process_tree "${runner_pid}" KILL
+                exit 0
+            fi
+            sleep 1
+        done
+    ) &
+    printf '%s\n' "$!"
+}
+
+stop_rch_fallback_monitor() {
+    local monitor_pid="$1"
+    if [[ -n "${monitor_pid}" ]]; then
+        kill "${monitor_pid}" 2>/dev/null || true
+        wait "${monitor_pid}" 2>/dev/null || true
+    fi
+}
+
 rch_timeout_queue_log() {
     local output_file="$1"
     local queue_log="${output_file%.log}.rch_queue_timeout.log"
@@ -99,6 +142,8 @@ run_rch_cargo_logged_with_timeout() {
     local timeout_secs="$1"
     local output_file="$2"
     shift 2
+    local runner_pid=""
+    local monitor_pid=""
 
     if [[ -z "${TIMEOUT_BIN}" ]]; then
         resolve_timeout_bin
@@ -107,14 +152,21 @@ run_rch_cargo_logged_with_timeout() {
         rch_fatal "timeout or gtimeout is required to fail closed on stalled remote execution."
     fi
 
+    : >"${output_file}"
+
     set +e
     (
         cd "${_RCH_REPO_ROOT}"
-        env TMPDIR=/tmp "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${timeout_secs}" \
+        exec env TMPDIR=/tmp "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${timeout_secs}" \
             rch exec -- "$@"
-    ) >"${output_file}" 2>&1
+    ) >"${output_file}" 2>&1 &
+    runner_pid="$!"
+    monitor_pid="$(start_rch_fallback_monitor "${runner_pid}" "${output_file}")"
+
+    wait "${runner_pid}"
     local rc=$?
     set -e
+    stop_rch_fallback_monitor "${monitor_pid}"
 
     check_rch_fallback "${output_file}"
     if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then

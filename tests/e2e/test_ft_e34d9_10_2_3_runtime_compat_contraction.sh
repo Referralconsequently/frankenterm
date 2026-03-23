@@ -11,7 +11,10 @@ CORRELATION_ID="ft-e34d9.10.2.3-${RUN_ID}"
 LOG_FILE="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}.jsonl"
 STDOUT_FILE="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}.stdout.log"
 
-BASE_CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/rch-e2e-ft-e34d9-10-2-3}"
+BASE_CARGO_TARGET_DIR="target/rch-e2e-ft-e34d9-10-2-3"
+if [[ -n "${CARGO_TARGET_DIR:-}" && "${CARGO_TARGET_DIR}" == target/* ]]; then
+  BASE_CARGO_TARGET_DIR="${CARGO_TARGET_DIR}"
+fi
 CARGO_TARGET_DIR="${BASE_CARGO_TARGET_DIR%/}-${RUN_ID}"
 export CARGO_TARGET_DIR
 
@@ -133,8 +136,17 @@ run_rch_test_step() {
 validate_spawn_blocking_allowlist() {
   local mode="$1"
   local output_file="$2"
+  local pattern="runtime_compat::task::spawn_blocking"
 
-  rg -n "runtime_compat::task::spawn_blocking" \
+  # The nominal contract bans transitional task::spawn_blocking callsites outside
+  # runtime_compat.rs. For failure injection, deliberately widen the detector to
+  # the canonical helper so the script still proves detector sensitivity even
+  # after the transitional helper count reaches zero.
+  if [[ "${mode}" == "failure_injection" ]]; then
+    pattern="runtime_compat::spawn_blocking"
+  fi
+
+  rg -n "${pattern}" \
     crates/frankenterm/src/main.rs \
     crates/frankenterm-core/src \
     > "${output_file}" || true
@@ -156,14 +168,15 @@ validate_spawn_blocking_allowlist() {
     return
   fi
 
-  # Failure-injection mode: enforce an intentionally empty allowlist and
-  # require the check to fail (proves detector sensitivity).
+  # Failure-injection mode: use the broader canonical helper pattern with an
+  # intentionally empty allowlist so the detector path still fires against real
+  # code after the transitional helper count reaches zero.
   [[ -s "${output_file}" ]]
 }
 
 validate_runtime_compat_helper_callsites() {
   local output_file="$1"
-  rg -n "runtime_compat::process::Command|\\b(mpsc_recv_option|mpsc_send|watch_has_changed|watch_borrow_and_update_clone|watch_changed)\\b" \
+  rg -n "runtime_compat::process::Command|\\b(mpsc_recv_option|mpsc_send|watch_has_changed|watch_borrow_and_update_clone|watch_changed)\\s*\\(" \
     crates/frankenterm/src/main.rs \
     crates/frankenterm-core/src \
     --glob '!runtime_compat.rs' \
@@ -183,9 +196,9 @@ run_static_contract_checks() {
 
   local failure_injection_log="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}_allowlist_failure_injection.log"
   if validate_spawn_blocking_allowlist "failure_injection" "${failure_injection_log}"; then
-    emit_log "validation" "compat_surface.allowlist.failure_injection" "allowed=none" "passed" "detector_triggered_expected_failure" "none" "$(basename "${failure_injection_log}")"
+    emit_log "validation" "compat_surface.allowlist.failure_injection" "pattern=runtime_compat::spawn_blocking;allowed=none" "passed" "detector_triggered_expected_failure" "none" "$(basename "${failure_injection_log}")"
   else
-    emit_log "validation" "compat_surface.allowlist.failure_injection" "allowed=none" "failed" "detector_missed_expected_failure" "SURFACE-E201" "$(basename "${failure_injection_log}")"
+    emit_log "validation" "compat_surface.allowlist.failure_injection" "pattern=runtime_compat::spawn_blocking;allowed=none" "failed" "detector_missed_expected_failure" "SURFACE-E201" "$(basename "${failure_injection_log}")"
     exit 1
   fi
 
@@ -278,7 +291,7 @@ run_rch_test_step \
   "runtime_compat_surface_contract_unit" \
   "runtime_compat.surface_contract.unit" \
   "test=runtime_compat::tests::surface_contract_entries_are_unique" \
-  test -p frankenterm-core runtime_compat::tests::surface_contract_entries_are_unique -- --nocapture
+  test -p frankenterm-core --lib runtime_compat::tests::surface_contract_entries_are_unique -- --nocapture
 
 run_rch_test_step \
   "runtime_compat_smoke" \

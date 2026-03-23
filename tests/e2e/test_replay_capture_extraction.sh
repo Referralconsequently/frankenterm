@@ -10,10 +10,10 @@ scenario_id="runtime_replay_capture_adapter"
 json_log="$LOG_DIR/${run_id}.jsonl"
 raw_log="$LOG_DIR/${run_id}.cargo.log"
 cargo_home="/tmp/cargo-home-replay-capture-e2e"
-cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$ROOT_DIR/target-replay-capture-e2e-${run_id}}"
 component="replay_capture_extraction"
 local_tmpdir="${FT_REPLAY_CAPTURE_LOCAL_TMPDIR:-${TMPDIR:-/tmp}}"
 remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
+cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-capture-e2e-${run_id}}"
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
 RCH_SMOKE_LOG="${LOG_DIR}/replay_capture_extraction_${run_id}.smoke.log"

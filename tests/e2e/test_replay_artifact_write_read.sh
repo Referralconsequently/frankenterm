@@ -13,9 +13,9 @@ mkdir -p "$raw_dir"
 component="replay_artifact_write_read"
 
 cargo_home="/tmp/cargo-home-replay-artifact-write-read"
-cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$ROOT_DIR/target-replay-artifact-write-read-${run_id}}"
 local_tmpdir="${FT_REPLAY_CAPTURE_LOCAL_TMPDIR:-${TMPDIR:-/tmp}}"
 remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
+cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-artifact-write-read-${run_id}}"
 work_dir="$ROOT_DIR/tests/e2e/tmp/${run_id}"
 mkdir -p "$work_dir"
 
