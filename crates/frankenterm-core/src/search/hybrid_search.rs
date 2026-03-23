@@ -254,6 +254,10 @@ pub fn blend_two_tier(
     let tier2_ids: std::collections::HashSet<u64> = tier2.iter().map(|r| r.id).collect();
     metrics.overlap_count = tier1_ids.intersection(&tier2_ids).count();
 
+    let tier1_ranking: Vec<u64> = tier1.iter().map(|r| r.id).collect();
+    let tier2_ranking: Vec<u64> = tier2.iter().map(|r| r.id).collect();
+    metrics.rank_correlation = kendall_tau(&tier1_ranking, &tier2_ranking);
+
     // Tier 1 first
     for r in tier1 {
         if results.len() >= top_k {
