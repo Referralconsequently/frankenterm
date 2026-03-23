@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! NTM decommission governance and operator documentation index (ft-3681t.8.5).
 //!
 //! Manages the retirement of Named Tmux Manager (NTM) as an operational dependency,

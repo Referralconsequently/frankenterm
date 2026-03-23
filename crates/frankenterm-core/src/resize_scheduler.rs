@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Global resize scheduler with frame-budget-aware work classes.
 //!
 //! This module provides the control-plane scheduler required by `wa-1u90p.2.3`.

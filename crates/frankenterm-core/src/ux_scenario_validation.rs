@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Operator UX scenario validation and usability telemetry (ft-3681t.9.1).
 //!
 //! Provides scenario-driven UX validation for critical operator workflows

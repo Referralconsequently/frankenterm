@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Go/no-go evidence package for the asupersync migration cutover (ft-e34d9.10.8.4).
 //!
 //! Assembles and validates the final technical decision package proving

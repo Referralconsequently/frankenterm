@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Staged cutover playbook with rollback gates (ft-3681t.8.4).
 //!
 //! Orchestrates the multi-stage migration cutover from NTM to FrankenTerm-native

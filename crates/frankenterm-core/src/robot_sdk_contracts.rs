@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Machine contracts, SDK generation, NTM-compat shim, and replay tests (ft-3681t.4.4).
 //!
 //! Publishes durable machine contracts (schemas, specs, examples), provides

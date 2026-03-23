@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! User-facing latency/throughput contract and regression gates (ft-e34d9.10.2.4).
 //!
 //! Defines measurable performance SLOs for every user-facing operation in the

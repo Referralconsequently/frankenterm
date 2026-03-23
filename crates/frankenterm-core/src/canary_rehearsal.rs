@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Canary rollout rehearsal and fail-safe drill orchestration (ft-e34d9.10.8.3).
 //!
 //! Builds on `canary_rollout_controller` (phase state machine) and

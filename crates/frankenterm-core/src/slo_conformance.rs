@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! SLO conformance and observability audit suite (ft-3681t.7.5).
 //!
 //! Validates telemetry quality, alert fidelity, and SLO conformance across

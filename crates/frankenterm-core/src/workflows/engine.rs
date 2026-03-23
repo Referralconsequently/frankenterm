@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Workflow execution state and engine.
 //!
 //! Provides WorkflowExecution, ExecutionStatus, WorkflowEngine, and

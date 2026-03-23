@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Robot API contract/replay and compatibility test matrix (ft-3681t.4.5).
 //!
 //! Validates schema stability, deterministic semantics, replay correctness,

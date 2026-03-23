@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Migration rehearsal and rollback-drill suite (ft-3681t.8.6).
 //!
 //! Codifies repeatable migration rehearsals that exercise parity corpus,

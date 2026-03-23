@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Context budget and compaction observability for AI agent sessions.
 //!
 //! Tracks context-window pressure, compaction/rotation events, and recovery

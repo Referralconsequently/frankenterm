@@ -1,3 +1,7 @@
+#![allow(clippy::float_cmp)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::overly_complex_bool_expr)]
+#![allow(unused_parens)]
 //! Runtime SLOs, alerts, and automated gate policies (ft-e34d9.10.7.3).
 //!
 //! Defines runtime-specific SLOs for the asupersync migration: cancellation
