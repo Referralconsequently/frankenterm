@@ -3346,6 +3346,38 @@ mod tests {
         assert_eq!(parsed.consecutive_crashes, 0);
         assert_eq!(parsed.current_backoff_ms, 0);
         assert!(!parsed.in_crash_loop);
+        assert!(parsed.fleet_pressure_tier.is_none());
+    }
+
+    #[test]
+    fn health_snapshot_fleet_pressure_tier_roundtrip() {
+        let snapshot = HealthSnapshot {
+            timestamp: 2000,
+            observed_panes: 10,
+            capture_queue_depth: 0,
+            write_queue_depth: 0,
+            last_seq_by_pane: vec![],
+            warnings: vec![],
+            ingest_lag_avg_ms: 0.0,
+            ingest_lag_max_ms: 0,
+            db_writable: true,
+            db_last_write_at: None,
+            pane_priority_overrides: vec![],
+            scheduler: None,
+            backpressure_tier: None,
+            last_activity_by_pane: vec![],
+            restart_count: 0,
+            last_crash_at: None,
+            consecutive_crashes: 0,
+            current_backoff_ms: 0,
+            in_crash_loop: false,
+            fleet_pressure_tier: Some("Critical".to_string()),
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let parsed: HealthSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.fleet_pressure_tier.as_deref(), Some("Critical"));
+        assert!(json.contains("fleet_pressure_tier"));
+        assert!(json.contains("Critical"));
     }
 
     // -- replay_incident_bundle tests --
