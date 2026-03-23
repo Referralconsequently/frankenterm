@@ -746,7 +746,12 @@ impl FilteredEventStream {
                     }
                     self.filtered_out.fetch_add(1, Ordering::Relaxed);
                 }
-                Some(Err(_)) | None => return None,
+                Some(Err(crate::events::RecvError::Lagged { .. })) => {
+                    // The subscriber has already advanced to the newest retained
+                    // position. Keep draining so callers can still get an
+                    // immediately available event from the new cursor.
+                }
+                Some(Err(crate::events::RecvError::Closed)) | None => return None,
             }
         }
     }
@@ -1502,5 +1507,39 @@ mod tests {
         assert_eq!(telem.delivered, 0);
         assert_eq!(telem.filtered_out, 0);
         assert_eq!(telem.cursor_position, 0);
+    }
+
+    #[test]
+    fn filtered_stream_try_next_drains_past_lagged_marker() {
+        let bus = EventBus::new(1);
+        let mut stream = FilteredEventStream::new(
+            &bus,
+            EventStreamFilter::default(),
+            StreamCursor::from_beginning(),
+            50,
+        );
+
+        let _ = bus.publish(Event::PaneDiscovered {
+            pane_id: 1,
+            domain: "local".to_string(),
+            title: "first".to_string(),
+        });
+        let _ = bus.publish(Event::PaneDiscovered {
+            pane_id: 2,
+            domain: "local".to_string(),
+            title: "second".to_string(),
+        });
+
+        match stream.try_next() {
+            Some(Event::PaneDiscovered { pane_id, title, .. }) => {
+                assert_eq!(pane_id, 2);
+                assert_eq!(title, "second");
+            }
+            other => panic!("expected latest retained event after lag, got {other:?}"),
+        }
+
+        let telemetry = stream.telemetry();
+        assert_eq!(telemetry.delivered, 1);
+        assert_eq!(telemetry.filtered_out, 0);
     }
 }
