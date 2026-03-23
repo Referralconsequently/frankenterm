@@ -106,9 +106,7 @@ fn update_mux_domains_impl(config: &ConfigHandle, is_standalone_mux: bool) -> an
     Ok(())
 }
 
-lazy_static::lazy_static! {
-    pub static ref PKI: pki::Pki = pki::Pki::init().expect("failed to initialize PKI");
-}
+pub static PKI: std::sync::LazyLock<pki::Pki> = std::sync::LazyLock::new(|| pki::Pki::init().expect("failed to initialize PKI"));
 
 #[cfg(test)]
 mod tests {

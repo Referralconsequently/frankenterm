@@ -1,3 +1,4 @@
+#![allow(clippy::future_not_send)]
 use crate::PKI;
 use anyhow::{Context, anyhow};
 use codec::{DecodedPdu, InputSerial, GetPaneRenderChangesResponse, Pdu, SetPalette, NotifyAlert, ErrorResponse, Ping, Pong, SetWindowWorkspace, UnitResponse, SetClientId, SetFocusedPane, GetClientList, GetClientListResponse, ListPanes, ListPanesResponse, RenameWorkspace, WriteToPane, EraseScrollbackRequest, KillPane, SendPaste, SearchScrollbackRequest, SearchScrollbackResponse, SetPaneZoomed, GetPaneDirection, GetPaneDirectionResponse, ActivatePaneDirection, Resize, SendKeyDown, SendMouseEvent, GetPaneRenderableDimensions, GetPaneRenderableDimensionsResponse, GetPaneRenderChanges, LivenessResponse, GetLines, GetLinesResponse, GetImageCell, GetImageCellResponse, GetCodecVersionResponse, CODEC_VERSION, GetTlsCredsResponse, WindowTitleChanged, TabTitleChanged, AdjustPaneSize, SwapToLayout, SetLayoutCycle, CycleStack, SelectStackPane, UpdatePaneConstraints, SpawnV2, SplitPane, SpawnResponse, MovePaneToNewTab, MovePaneToNewTabResponse};
@@ -129,8 +130,8 @@ impl PerPane {
         }
 
         self.cursor_position = cursor_position;
-        self.title = title.clone();
-        self.working_dir = working_dir.clone();
+        self.title.clone_from(&title);
+        self.working_dir.clone_from(&working_dir);
         self.dimensions = dims;
         self.tiered_scrollback_status = tiered_scrollback_status;
         self.mouse_grabbed = mouse_grabbed;
@@ -322,7 +323,7 @@ impl SessionHandler {
                     // the proxy information so that it is clear what is going
                     // on from the `wezterm cli list-clients` information
                     if let Some(proxy_id) = &self.proxy_client_id {
-                        client_id.ssh_auth_sock = proxy_id.ssh_auth_sock.clone();
+                        client_id.ssh_auth_sock.clone_from(&proxy_id.ssh_auth_sock);
                         // Note that this `via proxy pid` string is coupled
                         // with the logic in mux/src/ssh_agent
                         client_id.hostname =
