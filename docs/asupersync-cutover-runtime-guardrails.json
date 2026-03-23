@@ -2,7 +2,7 @@
   "contract_id": "ft.asupersync.cutover_runtime_guards.v1",
   "version": "1.0.0",
   "bead_id": "ft-e34d9.10.8.2",
-  "last_updated": "2026-02-28",
+  "last_updated": "2026-03-23",
   "source_roots": [
     "crates",
     "frankenterm"
@@ -20,23 +20,28 @@
     ],
     "smol": [
       "Cargo.toml",
+      "crates/frankenterm-mux-server-impl/Cargo.toml",
+      "frankenterm/client/Cargo.toml",
       "frankenterm/codec/Cargo.toml",
       "frankenterm/config/Cargo.toml",
+      "frankenterm/lua-api-crates/mux-lua/Cargo.toml",
       "frankenterm/pty/Cargo.toml",
       "frankenterm/scripting/Cargo.toml",
       "frankenterm/ssh/Cargo.toml"
     ],
     "async-io": [
       "Cargo.toml",
+      "crates/frankenterm-mux-server-impl/Cargo.toml",
       "frankenterm/async_ossl/Cargo.toml",
+      "frankenterm/client/Cargo.toml",
       "frankenterm/promise/Cargo.toml",
       "frankenterm/uds/Cargo.toml"
     ]
   },
   "forbidden_token_ceilings": {
-    "tokio::": 1302,
-    "smol::": 83,
-    "async_io::": 3
+    "tokio::": 281,
+    "smol::": 53,
+    "async_io::": 10
   },
   "strict_zero_modules": [
     "crates/frankenterm-core/src/cpu_pressure.rs",

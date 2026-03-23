@@ -1091,36 +1091,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn run_async_test<F>(future: F)
-    where
-        F: std::future::Future<Output = ()>,
-    {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
-        let runtime = crate::runtime_compat::RuntimeBuilder::current_thread()
-            .enable_all()
-            .build()
-            .expect("build current-thread runtime");
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::runtime_compat::CompatRuntime::block_on(&runtime, future);
-        }));
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            drop(runtime);
-        }));
-        // Clear handle from TLS so it doesn't panic during thread exit.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::runtime_compat::clear_runtime_handle();
-        }));
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
-        }
-    }
-
     // -- Weibull parameters ---------------------------------------------------
 
     #[test]
@@ -1871,32 +1841,45 @@ mod tests {
 
     #[test]
     fn model_run_and_shutdown() {
-        run_async_test(async {
-            let model = Arc::new(SurvivalModel::new(SurvivalConfig {
-                warmup_observations: 0,
-                update_interval: Duration::from_millis(50),
-                ..Default::default()
-            }));
+        let model = Arc::new(SurvivalModel::new(SurvivalConfig {
+            warmup_observations: 0,
+            update_interval: Duration::from_millis(50),
+            ..Default::default()
+        }));
 
-            // Add some observations
-            for i in 0..5 {
-                model.observe(Observation {
-                    time: (i + 1) as f64 * 10.0,
-                    event_observed: false,
-                    covariates: Covariates::default(),
-                    timestamp_secs: 0,
-                });
-            }
-
-            let m = Arc::clone(&model);
-            let handle = crate::runtime_compat::task::spawn(async move {
-                m.run().await;
+        // Add some observations
+        for i in 0..5 {
+            model.observe(Observation {
+                time: (i + 1) as f64 * 10.0,
+                event_observed: false,
+                covariates: Covariates::default(),
+                timestamp_secs: 0,
             });
+        }
 
-            crate::runtime_compat::sleep(Duration::from_millis(200)).await;
-            model.shutdown();
-            handle.await.unwrap();
+        let runner = Arc::clone(&model);
+        let handle = std::thread::spawn(move || {
+            let runtime = crate::runtime_compat::RuntimeBuilder::current_thread()
+                .enable_all()
+                .build()
+                .expect("build current-thread runtime");
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::runtime_compat::CompatRuntime::block_on(&runtime, runner.run());
+            }));
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drop(runtime);
+            }));
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::runtime_compat::clear_runtime_handle();
+            }));
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
         });
+
+        std::thread::sleep(Duration::from_millis(200));
+        model.shutdown();
+        handle.join().expect("survival run thread should join cleanly");
     }
 
     // -----------------------------------------------------------------------
