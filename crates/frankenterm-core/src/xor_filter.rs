@@ -206,6 +206,11 @@ impl XorFilter {
         if self.fingerprints.is_empty() || self.block_length == 0 {
             return false;
         }
+        // Guard against corrupted deserialized state where fingerprints
+        // is shorter than the expected 3 * block_length.
+        if self.fingerprints.len() < 3 * self.block_length {
+            return false;
+        }
 
         let hash = hash_with_seed(key, self.seed);
         let h0 = (hash as usize) % self.block_length;
@@ -377,6 +382,11 @@ impl XorFilter16 {
     #[must_use]
     pub fn contains(&self, key: u64) -> bool {
         if self.fingerprints.is_empty() || self.block_length == 0 {
+            return false;
+        }
+        // Guard against corrupted deserialized state where fingerprints
+        // is shorter than the expected 3 * block_length.
+        if self.fingerprints.len() < 3 * self.block_length {
             return false;
         }
 

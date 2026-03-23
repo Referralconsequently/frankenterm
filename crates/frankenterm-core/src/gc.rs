@@ -56,10 +56,21 @@ pub fn normalized_vacuum_threshold(threshold: f64) -> f64 {
 }
 
 /// Compute SQLite free-page ratio from raw page counters.
+///
+/// Returns 0.0 for invalid inputs (negative or zero counts), which
+/// causes [`should_vacuum`] to return `false`.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn free_page_ratio(page_count: i64, free_pages: i64) -> f64 {
-    if page_count <= 0 || free_pages <= 0 {
+    if page_count < 0 || free_pages < 0 {
+        tracing::warn!(
+            page_count,
+            free_pages,
+            "negative page count from SQLite — possible database corruption"
+        );
+        return 0.0;
+    }
+    if page_count == 0 || free_pages == 0 {
         return 0.0;
     }
 

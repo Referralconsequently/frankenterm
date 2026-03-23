@@ -144,9 +144,14 @@ impl HyperLogLog {
         #[allow(clippy::naive_bytecount)]
         let zeros = self.registers.iter().filter(|&&r| r == 0).count();
         if raw_estimate <= 2.5 * m && zeros > 0 {
-            // Linear counting
-            let lc = m * (m / zeros as f64).ln();
-            return lc as u64;
+            // Linear counting: m * ln(m / zeros)
+            let ratio = m / zeros as f64;
+            let lc = m * ratio.ln();
+            // Guard against NaN/negative from floating-point edge cases.
+            if lc.is_finite() && lc >= 0.0 {
+                return lc as u64;
+            }
+            return raw_estimate.max(0.0) as u64;
         }
 
         // Large range correction is unnecessary for 64-bit hashes

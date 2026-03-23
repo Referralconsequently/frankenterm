@@ -42,9 +42,24 @@ impl Default for CmsConfig {
 
 impl CmsConfig {
     /// Create config from desired error parameters.
-    /// ε = e/width, δ = e^(-depth)
+    ///
+    /// `epsilon` — additive error factor, must be in `(0, 1)`.
+    /// `delta` — failure probability, must be in `(0, 1)`.
+    ///
+    /// Out-of-range inputs are clamped to safe defaults.
     #[must_use]
     pub fn from_error_params(epsilon: f64, delta: f64) -> Self {
+        // Clamp to valid ranges to prevent inf/NaN from bad inputs.
+        let epsilon = if epsilon > 0.0 && epsilon < 1.0 {
+            epsilon
+        } else {
+            0.01 // safe default: 1% error
+        };
+        let delta = if delta > 0.0 && delta < 1.0 {
+            delta
+        } else {
+            0.01 // safe default: 1% failure probability
+        };
         let width = (std::f64::consts::E / epsilon).ceil() as usize;
         let depth = (1.0 / delta).ln().ceil() as usize;
         Self {
