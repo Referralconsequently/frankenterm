@@ -93,6 +93,22 @@ impl AlertLevel {
             None
         }
     }
+
+    /// Determine alert level for a low-watermark threshold based on the
+    /// fraction of the configured minimum that is still remaining.
+    fn from_low_watermark_ratio(remaining_ratio: f64) -> Option<AlertLevel> {
+        if remaining_ratio <= 0.0 {
+            Some(AlertLevel::Exceeded)
+        } else if remaining_ratio <= 0.5 {
+            Some(AlertLevel::Critical)
+        } else if remaining_ratio <= 0.75 {
+            Some(AlertLevel::Warning)
+        } else if remaining_ratio < 1.0 {
+            Some(AlertLevel::Info)
+        } else {
+            None
+        }
+    }
 }
 
 impl std::fmt::Display for AlertLevel {
@@ -235,14 +251,11 @@ impl AlertRule {
         }
         match self.metric {
             AlertMetric::AccountBalance => {
-                // For balance alerts, threshold is min_percent_remaining
-                // current_value is the current percent remaining
-                // Alert when balance drops below threshold
-                if current_value <= 0.0 {
-                    return Some(AlertLevel::Exceeded);
-                }
-                let inverse_percent = 1.0 - (current_value / self.threshold);
-                AlertLevel::from_percent(inverse_percent)
+                // Account balance thresholds are lower bounds rather than
+                // upper bounds: alert as soon as remaining balance drops below
+                // the configured minimum, then escalate as the minimum is
+                // further depleted.
+                AlertLevel::from_low_watermark_ratio(current_value / self.threshold)
             }
             _ => {
                 let percent = current_value / self.threshold;
@@ -265,7 +278,9 @@ pub struct TriggeredAlert {
     pub current_value: f64,
     /// Configured threshold
     pub threshold: f64,
-    /// Percentage of threshold (0.0 to 1.0+)
+    /// Percentage of threshold (0.0 to 1.0+). Account balance alerts store
+    /// the deficit relative to the configured minimum (0.0 = at threshold,
+    /// 1.0 = fully depleted).
     pub percent_of_threshold: f64,
     /// Period this alert covers
     pub period: AlertPeriod,
@@ -473,6 +488,44 @@ mod tests {
     }
 
     #[test]
+    fn alert_level_from_low_watermark_ratio_thresholds() {
+        assert_eq!(AlertLevel::from_low_watermark_ratio(1.1), None);
+        assert_eq!(AlertLevel::from_low_watermark_ratio(1.0), None);
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(0.99),
+            Some(AlertLevel::Info)
+        );
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(0.76),
+            Some(AlertLevel::Info)
+        );
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(0.75),
+            Some(AlertLevel::Warning)
+        );
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(0.51),
+            Some(AlertLevel::Warning)
+        );
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(0.5),
+            Some(AlertLevel::Critical)
+        );
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(0.01),
+            Some(AlertLevel::Critical)
+        );
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(0.0),
+            Some(AlertLevel::Exceeded)
+        );
+        assert_eq!(
+            AlertLevel::from_low_watermark_ratio(-0.1),
+            Some(AlertLevel::Exceeded)
+        );
+    }
+
+    #[test]
     fn alert_level_ordering() {
         assert!(AlertLevel::Info < AlertLevel::Warning);
         assert!(AlertLevel::Warning < AlertLevel::Critical);
@@ -511,10 +564,16 @@ mod tests {
         let rule = AlertRule::account_balance("balance-low", 20.0, None);
         // threshold=20%, current=100% → not triggered
         assert_eq!(rule.check(100.0), None);
-        // current=15% → triggered (below 20%)
-        assert_eq!(rule.check(10.0), Some(AlertLevel::Info));
-        // current=5% → critical
-        assert_eq!(rule.check(2.0), Some(AlertLevel::Critical));
+        // current=20% → still at threshold, not yet below the minimum
+        assert_eq!(rule.check(20.0), None);
+        // current=19% → just below threshold, info
+        assert_eq!(rule.check(19.0), Some(AlertLevel::Info));
+        // current=15% → 75% of the minimum remaining, warning
+        assert_eq!(rule.check(15.0), Some(AlertLevel::Warning));
+        // current=10% → half the minimum remaining, critical
+        assert_eq!(rule.check(10.0), Some(AlertLevel::Critical));
+        // current=5% → still critical
+        assert_eq!(rule.check(5.0), Some(AlertLevel::Critical));
         // current=0% → exceeded
         assert_eq!(rule.check(0.0), Some(AlertLevel::Exceeded));
     }
