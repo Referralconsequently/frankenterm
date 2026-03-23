@@ -313,6 +313,56 @@ impl FleetScrollbackCoordinator {
         updated
     }
 
+    /// Build pressure signals from raw runtime queue metrics.
+    ///
+    /// This is the bridge between the runtime health snapshot (which already
+    /// computes capture/write queue depths) and the fleet memory controller.
+    /// The caller provides the raw values already available in the maintenance
+    /// loop, and this method maps them to the correct tier enums.
+    #[must_use]
+    pub fn signals_from_queue_depths(
+        capture_depth: usize,
+        capture_capacity: usize,
+        write_depth: usize,
+        write_capacity: usize,
+        pane_count: usize,
+        paused_pane_count: usize,
+    ) -> PressureSignals {
+        // Map queue fill ratios to backpressure tier.
+        // Thresholds aligned with runtime.rs classify_backpressure_tier:
+        // Green < 50%, Yellow 50-80%, Red 80-95%, Black >= 95%
+        let bp_tier = {
+            let cap_ratio = if capture_capacity > 0 {
+                capture_depth as f64 / capture_capacity as f64
+            } else {
+                0.0
+            };
+            let write_ratio = if write_capacity > 0 {
+                write_depth as f64 / write_capacity as f64
+            } else {
+                0.0
+            };
+            let worst_ratio = cap_ratio.max(write_ratio);
+            if worst_ratio >= 0.95 {
+                BackpressureTier::Black
+            } else if worst_ratio >= 0.80 {
+                BackpressureTier::Red
+            } else if worst_ratio >= 0.50 {
+                BackpressureTier::Yellow
+            } else {
+                BackpressureTier::Green
+            }
+        };
+
+        PressureSignals {
+            backpressure: bp_tier,
+            memory_pressure: MemoryPressureTier::Green, // memory pressure requires sysinfo
+            worst_budget: BudgetLevel::Normal,          // budget requires per-pane accounting
+            pane_count,
+            paused_pane_count,
+        }
+    }
+
     /// Build default pressure signals for testing or fallback.
     #[must_use]
     pub fn default_signals(pane_count: usize) -> PressureSignals {
@@ -959,5 +1009,50 @@ mod tests {
         assert_eq!(updated, 1); // Only pane 0 was updated
 
         assert!(registry.stats(99).is_none());
+    }
+
+    // ── signals_from_queue_depths ─────────────────────────────────────
+
+    #[test]
+    fn signals_from_queue_depths_green_when_empty() {
+        let signals = FleetScrollbackCoordinator::signals_from_queue_depths(0, 1000, 0, 100, 50, 0);
+        assert_eq!(signals.backpressure, BackpressureTier::Green);
+        assert_eq!(signals.pane_count, 50);
+    }
+
+    #[test]
+    fn signals_from_queue_depths_yellow_at_50_percent() {
+        let signals =
+            FleetScrollbackCoordinator::signals_from_queue_depths(500, 1000, 0, 100, 100, 0);
+        assert_eq!(signals.backpressure, BackpressureTier::Yellow);
+    }
+
+    #[test]
+    fn signals_from_queue_depths_red_at_80_percent() {
+        let signals =
+            FleetScrollbackCoordinator::signals_from_queue_depths(800, 1000, 0, 100, 100, 0);
+        assert_eq!(signals.backpressure, BackpressureTier::Red);
+    }
+
+    #[test]
+    fn signals_from_queue_depths_black_at_95_percent() {
+        let signals =
+            FleetScrollbackCoordinator::signals_from_queue_depths(960, 1000, 0, 100, 100, 0);
+        assert_eq!(signals.backpressure, BackpressureTier::Black);
+    }
+
+    #[test]
+    fn signals_from_queue_depths_uses_worst_of_queues() {
+        // Write queue at 90% even though capture is empty
+        let signals =
+            FleetScrollbackCoordinator::signals_from_queue_depths(0, 1000, 90, 100, 50, 0);
+        assert_eq!(signals.backpressure, BackpressureTier::Red);
+    }
+
+    #[test]
+    fn signals_from_queue_depths_zero_capacity_is_green() {
+        // Edge case: zero capacity should not panic
+        let signals = FleetScrollbackCoordinator::signals_from_queue_depths(0, 0, 0, 0, 10, 0);
+        assert_eq!(signals.backpressure, BackpressureTier::Green);
     }
 }
