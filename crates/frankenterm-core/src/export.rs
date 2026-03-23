@@ -235,8 +235,9 @@ fn write_header<W: Write>(
 ) -> crate::Result<()> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0);
 
     let header = ExportHeader {
         export: true,

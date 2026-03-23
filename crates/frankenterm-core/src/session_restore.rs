@@ -388,8 +388,9 @@ fn save_restore_checkpoint(
     let mut conn = open_conn(db_path)?;
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0);
 
     let metadata = serde_json::json!({
         "old_to_new": pane_id_map.iter()
