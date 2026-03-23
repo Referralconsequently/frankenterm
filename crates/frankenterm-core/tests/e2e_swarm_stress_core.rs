@@ -848,3 +848,220 @@ mod lifecycle_churn {
         assert_eq!(snap2, snap3);
     }
 }
+
+// =============================================================================
+// Module: FleetScrollbackCoordinator stress tests
+// =============================================================================
+
+mod coordinator_stress {
+    use super::*;
+    use frankenterm_core::fleet_memory_controller::{
+        FleetMemoryConfig, FleetPressureTier, PaneScrollbackInfo, PressureSignals,
+    };
+    use frankenterm_core::fleet_scrollback_coordinator::{
+        CoordinatorConfig, FleetScrollbackCoordinator,
+    };
+    use frankenterm_core::memory_budget::BudgetLevel;
+    use frankenterm_core::memory_pressure::MemoryPressureTier;
+    use std::collections::HashMap;
+
+    fn make_swarm(pane_count: usize, lines_per_pane: usize) -> HashMap<u64, TieredScrollback> {
+        let mut map = HashMap::new();
+        for pane_id in 0..pane_count {
+            let mut sb = TieredScrollback::new(stress_config());
+            for line_no in 0..lines_per_pane {
+                sb.push_line(agent_line(pane_id, line_no));
+            }
+            map.insert(pane_id as u64, sb);
+        }
+        map
+    }
+
+    fn swarm_infos(map: &HashMap<u64, TieredScrollback>) -> Vec<PaneScrollbackInfo> {
+        map.iter()
+            .map(|(&id, sb)| {
+                let snap = sb.snapshot();
+                PaneScrollbackInfo {
+                    pane_id: id,
+                    activity_counter: snap.activity_counter,
+                    warm_bytes: snap.warm_bytes,
+                    warm_pages: snap.warm_pages,
+                    estimated_memory_bytes: sb.estimated_memory_bytes(),
+                }
+            })
+            .collect()
+    }
+
+    /// Coordinator handles 200-pane emergency eviction and clears all warm data.
+    #[test]
+    fn coordinator_emergency_at_200_panes() {
+        let mut coord = FleetScrollbackCoordinator::new(
+            CoordinatorConfig {
+                emergency_evict_all: true,
+                min_fleet_warm_bytes_for_eviction: 0,
+                ..CoordinatorConfig::default()
+            },
+            FleetMemoryConfig {
+                escalation_threshold: 1,
+                deescalation_threshold: 1,
+                ..FleetMemoryConfig::default()
+            },
+        );
+
+        let mut swarm = make_swarm(200, 5000);
+
+        // Verify warm data exists
+        let total_warm_before: usize = swarm.values().map(|sb| sb.snapshot().warm_bytes).sum();
+        assert!(total_warm_before > 0);
+
+        let signals = PressureSignals {
+            backpressure: BackpressureTier::Black,
+            memory_pressure: MemoryPressureTier::Red,
+            worst_budget: BudgetLevel::OverBudget,
+            pane_count: 200,
+            paused_pane_count: 0,
+        };
+
+        let infos = swarm_infos(&swarm);
+        let result = coord.evaluate(&signals, &infos, &mut swarm);
+
+        assert_eq!(result.compound_tier, FleetPressureTier::Emergency);
+
+        // All warm data should be evicted
+        let total_warm_after: usize = swarm.values().map(|sb| sb.snapshot().warm_bytes).sum();
+        assert_eq!(total_warm_after, 0, "Emergency should clear all warm");
+
+        // No data loss — all lines tracked across tiers
+        for sb in swarm.values() {
+            assert_eq!(sb.total_line_count(), 5000);
+        }
+
+        // Total memory should be dramatically reduced
+        let total_mem_after: usize = swarm.values().map(|sb| sb.estimated_memory_bytes()).sum();
+        let total_mem_mb = total_mem_after / (1024 * 1024);
+        assert!(
+            total_mem_mb < 200,
+            "After emergency eviction, fleet memory should be under 200 MB: {total_mem_mb} MB"
+        );
+    }
+
+    /// Multiple coordinator ticks with escalating pressure simulating a real pressure event.
+    #[test]
+    fn coordinator_multi_tick_escalation_scenario() {
+        let mut coord = FleetScrollbackCoordinator::new(
+            CoordinatorConfig {
+                min_fleet_warm_bytes_for_eviction: 0,
+                max_targets_per_cycle: 50,
+                ..CoordinatorConfig::default()
+            },
+            FleetMemoryConfig {
+                escalation_threshold: 1,
+                deescalation_threshold: 1,
+                ..FleetMemoryConfig::default()
+            },
+        );
+
+        let mut swarm = make_swarm(100, 3000);
+
+        // Tick 1: Normal — no eviction
+        let normal = PressureSignals {
+            backpressure: BackpressureTier::Green,
+            memory_pressure: MemoryPressureTier::Green,
+            worst_budget: BudgetLevel::Normal,
+            pane_count: 100,
+            paused_pane_count: 0,
+        };
+        let infos = swarm_infos(&swarm);
+        let r1 = coord.evaluate(&normal, &infos, &mut swarm);
+        assert_eq!(r1.compound_tier, FleetPressureTier::Normal);
+        assert_eq!(r1.pages_evicted, 0);
+
+        // Tick 2: Elevated — throttle + evict warm
+        let elevated = PressureSignals {
+            backpressure: BackpressureTier::Yellow,
+            memory_pressure: MemoryPressureTier::Yellow,
+            worst_budget: BudgetLevel::Normal,
+            pane_count: 100,
+            paused_pane_count: 0,
+        };
+        let infos = swarm_infos(&swarm);
+        let r2 = coord.evaluate(&elevated, &infos, &mut swarm);
+        assert_eq!(r2.compound_tier, FleetPressureTier::Elevated);
+
+        // Tick 3: Critical — aggressive eviction
+        let critical = PressureSignals {
+            backpressure: BackpressureTier::Red,
+            memory_pressure: MemoryPressureTier::Orange,
+            worst_budget: BudgetLevel::Normal,
+            pane_count: 100,
+            paused_pane_count: 0,
+        };
+        let infos = swarm_infos(&swarm);
+        let r3 = coord.evaluate(&critical, &infos, &mut swarm);
+        assert_eq!(r3.compound_tier, FleetPressureTier::Critical);
+
+        // After 3 ticks of escalating pressure, warm data should have decreased
+        let total_warm_final: usize = swarm.values().map(|sb| sb.snapshot().warm_bytes).sum();
+        let total_warm_initial: usize = make_swarm(100, 3000)
+            .values()
+            .map(|sb| sb.snapshot().warm_bytes)
+            .sum();
+
+        assert!(
+            total_warm_final < total_warm_initial,
+            "Warm bytes should decrease after escalating pressure: initial={total_warm_initial}, final={total_warm_final}"
+        );
+
+        // Telemetry should track the progression
+        assert!(coord.telemetry().ticks == 3);
+        assert!(coord.telemetry().elevated_ticks >= 2);
+    }
+
+    /// Coordinator correctly recovers: pressure goes down, eviction stops.
+    #[test]
+    fn coordinator_recovery_after_pressure_subsides() {
+        let mut coord = FleetScrollbackCoordinator::new(
+            CoordinatorConfig {
+                min_fleet_warm_bytes_for_eviction: 0,
+                ..CoordinatorConfig::default()
+            },
+            FleetMemoryConfig {
+                escalation_threshold: 1,
+                deescalation_threshold: 1,
+                ..FleetMemoryConfig::default()
+            },
+        );
+
+        let mut swarm = make_swarm(50, 2000);
+
+        // Phase 1: Apply pressure
+        let critical = PressureSignals {
+            backpressure: BackpressureTier::Red,
+            memory_pressure: MemoryPressureTier::Orange,
+            worst_budget: BudgetLevel::Normal,
+            pane_count: 50,
+            paused_pane_count: 0,
+        };
+        let infos = swarm_infos(&swarm);
+        coord.evaluate(&critical, &infos, &mut swarm);
+
+        let pages_after_pressure = coord.telemetry().pages_evicted;
+
+        // Phase 2: Pressure subsides — add new data first
+        for sb in swarm.values_mut() {
+            for i in 0..500 {
+                sb.push_line(format!("recovery-line-{i}"));
+            }
+        }
+
+        let normal = FleetScrollbackCoordinator::default_signals(50);
+        let infos = swarm_infos(&swarm);
+        let result = coord.evaluate(&normal, &infos, &mut swarm);
+
+        assert_eq!(result.compound_tier, FleetPressureTier::Normal);
+        assert_eq!(result.pages_evicted, 0);
+
+        // No new evictions after recovery
+        assert_eq!(coord.telemetry().pages_evicted, pages_after_pressure);
+    }
+}
