@@ -1069,8 +1069,9 @@ fn normalize_pack_key(key: &str, packs: &[PatternPack]) -> Option<String> {
         return Some(key.to_string());
     }
 
-    if let Some(stripped) = key.strip_prefix("builtin:") {
-        let candidate = format!("builtin:{stripped}");
+    // Try finding a builtin pack by prefixing with "builtin:" if the key doesn't have it
+    if !key.starts_with("builtin:") {
+        let candidate = format!("builtin:{key}");
         if packs.iter().any(|p| p.name == candidate) {
             return Some(candidate);
         }

@@ -192,10 +192,8 @@ pub struct FleetMemoryController {
     config: FleetMemoryConfig,
     /// Current compound tier.
     compound_tier: FleetPressureTier,
-    /// Raw (un-hysteresis'd) tier from last evaluation.
-    raw_tier: FleetPressureTier,
-    /// Consecutive evaluations where raw tier matches.
-    consecutive_raw: u64,
+    /// Recent raw tiers to compute sliding window hysteresis.
+    recent_raw_tiers: VecDeque<FleetPressureTier>,
     /// Total evaluations.
     total_evaluations: u64,
     /// Total tier transitions.
@@ -215,8 +213,7 @@ impl FleetMemoryController {
         Self {
             config,
             compound_tier: FleetPressureTier::Normal,
-            raw_tier: FleetPressureTier::Normal,
-            consecutive_raw: 0,
+            recent_raw_tiers: VecDeque::new(),
             total_evaluations: 0,
             total_transitions: 0,
             consecutive_at_tier: 0,
@@ -287,28 +284,41 @@ impl FleetMemoryController {
         // Compound: worst-of all subsystems
         let raw = backpressure_tier.max(mem_pressure_tier).max(budget_tier);
 
-        // Hysteresis: require consecutive readings before transitioning
-        if raw == self.raw_tier {
-            self.consecutive_raw += 1;
-        } else {
-            self.raw_tier = raw;
-            self.consecutive_raw = 1;
+        // Hysteresis: require sustained readings before transitioning
+        self.recent_raw_tiers.push_back(raw);
+        let max_history = self.config.escalation_threshold.max(self.config.deescalation_threshold) as usize;
+        if self.recent_raw_tiers.len() > max_history {
+            self.recent_raw_tiers.pop_front();
         }
 
-        let should_transition = match raw.cmp(&self.compound_tier) {
-            std::cmp::Ordering::Greater => {
-                // Escalation: require fewer consecutive readings
-                self.consecutive_raw >= self.config.escalation_threshold
-            }
-            std::cmp::Ordering::Less => {
-                // De-escalation: require more consecutive readings
-                self.consecutive_raw >= self.config.deescalation_threshold
-            }
-            std::cmp::Ordering::Equal => false,
+        let esc_thresh = self.config.escalation_threshold as usize;
+        let sustained_high = if self.recent_raw_tiers.len() >= esc_thresh && esc_thresh > 0 {
+            *self.recent_raw_tiers.iter().rev().take(esc_thresh).min().unwrap()
+        } else {
+            FleetPressureTier::Normal
         };
 
+        let deesc_thresh = self.config.deescalation_threshold as usize;
+        let sustained_low = if self.recent_raw_tiers.len() >= deesc_thresh && deesc_thresh > 0 {
+            *self.recent_raw_tiers.iter().rev().take(deesc_thresh).max().unwrap()
+        } else {
+            self.compound_tier
+        };
+
+        let mut target_tier = self.compound_tier;
+        let mut should_transition = false;
+
+        // Escalation takes precedence
+        if sustained_high > self.compound_tier {
+            should_transition = true;
+            target_tier = sustained_high;
+        } else if sustained_low < self.compound_tier {
+            should_transition = true;
+            target_tier = sustained_low;
+        }
+
         if should_transition {
-            self.compound_tier = raw;
+            self.compound_tier = target_tier;
             self.total_transitions += 1;
             self.consecutive_at_tier = 1;
         } else {
@@ -337,8 +347,7 @@ impl FleetMemoryController {
     /// Reset the controller to initial state.
     pub fn reset(&mut self) {
         self.compound_tier = FleetPressureTier::Normal;
-        self.raw_tier = FleetPressureTier::Normal;
-        self.consecutive_raw = 0;
+        self.recent_raw_tiers.clear();
         self.total_evaluations = 0;
         self.total_transitions = 0;
         self.consecutive_at_tier = 0;
