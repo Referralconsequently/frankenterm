@@ -186,20 +186,47 @@ impl<'a> ApprovalStore<'a> {
         input: &PolicyInput,
         plan_hash: &str,
     ) -> Result<Option<ApprovalTokenRecord>> {
-        let record = self.consume(allow_once_code, input).await?;
+        self.consume_for_plan_with_context(allow_once_code, input, plan_hash, None)
+            .await
+    }
+
+    /// Consume a plan-bound approval with optional audit context.
+    ///
+    /// If a token was issued with a `plan_hash`, the presented hash must match.
+    /// A mismatch still consumes the token to invalidate a potential TOCTOU reuse.
+    pub async fn consume_for_plan_with_context(
+        &self,
+        allow_once_code: &str,
+        input: &PolicyInput,
+        plan_hash: &str,
+        audit_context: Option<ApprovalAuditContext>,
+    ) -> Result<Option<ApprovalTokenRecord>> {
+        let code_hash = hash_allow_once_code(allow_once_code);
+        let fingerprint = fingerprint_for_input(input);
+        let record = self
+            .storage
+            .consume_approval_token(
+                &code_hash,
+                &self.workspace_id,
+                input.action.as_str(),
+                input.pane_id,
+                &fingerprint,
+            )
+            .await?;
+
         match record {
-            Some(ref token) => {
-                // If the token was issued with a plan_hash, validate it matches
-                if let Some(ref stored_hash) = token.plan_hash {
-                    if stored_hash != plan_hash {
-                        // Plan changed since approval — reject.
-                        // The token is already consumed, which is intentional:
-                        // a mismatched plan_hash is a potential TOCTOU attack
-                        // and the token should be invalidated.
-                        return Ok(None);
-                    }
+            Some(token) => {
+                if token
+                    .plan_hash
+                    .as_deref()
+                    .is_some_and(|stored| stored != plan_hash)
+                {
+                    return Ok(None);
                 }
-                Ok(record)
+
+                self.audit_approval_grant(input, &code_hash, &fingerprint, audit_context.as_ref())
+                    .await?;
+                Ok(Some(token))
             }
             None => Ok(None),
         }
@@ -1516,6 +1543,94 @@ mod tests {
                 .await
                 .unwrap();
             assert!(consumed.is_none(), "Mismatched plan_hash must be rejected");
+
+            cleanup_storage(storage, &db_path).await;
+        });
+    }
+
+    #[test]
+    fn consume_for_plan_with_context_records_audit_for_matching_hash() {
+        run_async_test(async {
+            let (storage, db_path) = setup_test_storage("plan_ctx_match").await;
+            let store = ApprovalStore::new(&storage, ApprovalConfig::default(), "ws");
+            let input = base_input();
+            let plan_hash = "sha256:planctxmatch";
+            let correlation_id = "sha256:planctxmatchcorr".to_string();
+
+            let request = store
+                .issue_for_plan(&input, plan_hash, Some(7), Some("Plan-bound".to_string()))
+                .await
+                .unwrap();
+
+            let consumed = store
+                .consume_for_plan_with_context(
+                    &request.allow_once_code,
+                    &input,
+                    plan_hash,
+                    Some(ApprovalAuditContext {
+                        correlation_id: Some(correlation_id.clone()),
+                        decision_context: Some("{\"stage\":\"approval\"}".to_string()),
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(consumed.is_some(), "matching plan_hash should succeed");
+
+            let audits = storage
+                .get_audit_actions(AuditQuery {
+                    correlation_id: Some(correlation_id),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(audits.len(), 1);
+            assert_eq!(
+                audits[0].decision_context.as_deref(),
+                Some("{\"stage\":\"approval\"}")
+            );
+
+            cleanup_storage(storage, &db_path).await;
+        });
+    }
+
+    #[test]
+    fn consume_for_plan_with_context_skips_grant_audit_on_plan_hash_mismatch() {
+        run_async_test(async {
+            let (storage, db_path) = setup_test_storage("plan_ctx_mismatch").await;
+            let store = ApprovalStore::new(&storage, ApprovalConfig::default(), "ws");
+            let input = base_input();
+            let correlation_id = "sha256:planctxmismatchcorr".to_string();
+
+            let request = store
+                .issue_for_plan(&input, "sha256:originalplanctx", Some(3), None)
+                .await
+                .unwrap();
+
+            let consumed = store
+                .consume_for_plan_with_context(
+                    &request.allow_once_code,
+                    &input,
+                    "sha256:differentplanctx",
+                    Some(ApprovalAuditContext {
+                        correlation_id: Some(correlation_id.clone()),
+                        decision_context: Some("{\"stage\":\"approval\"}".to_string()),
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(consumed.is_none(), "mismatched plan_hash must be rejected");
+
+            let audits = storage
+                .get_audit_actions(AuditQuery {
+                    correlation_id: Some(correlation_id),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert!(
+                audits.is_empty(),
+                "rejected mismatches must not emit grant audits"
+            );
 
             cleanup_storage(storage, &db_path).await;
         });

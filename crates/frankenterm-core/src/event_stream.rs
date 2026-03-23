@@ -171,14 +171,15 @@ impl EventStreamFilter {
             return false;
         }
 
-        // Rule ID filter (only applies to PatternDetected)
+        // Rule ID filter only applies to detections. Combined predicates stay
+        // conjunctive, so non-detection events can never satisfy an explicit
+        // rule filter even if their event type matches.
         if !self.rule_ids.is_empty() {
             if let Event::PatternDetected { detection, .. } = event {
                 if !self.rule_ids.contains(&detection.rule_id) {
                     return false;
                 }
-            } else if self.event_types.is_empty() {
-                // If no event_type filter but rule_ids specified, only match detections
+            } else {
                 return false;
             }
         }
@@ -1119,6 +1120,24 @@ mod tests {
         assert!(!filter.matches_event(&make_pattern_event(2, "test.rule", None)));
         // Wrong rule
         assert!(!filter.matches_event(&make_pattern_event(1, "other.rule", None)));
+    }
+
+    #[test]
+    fn rule_filter_rejects_non_detections_even_if_event_type_matches() {
+        let filter = EventStreamFilter::builder()
+            .rule_id("test.rule".to_string())
+            .event_types(vec![
+                "pattern_detected".to_string(),
+                "pane_discovered".to_string(),
+            ])
+            .build();
+
+        assert!(filter.matches_event(&make_pattern_event(1, "test.rule", None)));
+        assert!(!filter.matches_event(&Event::PaneDiscovered {
+            pane_id: 1,
+            domain: "local".to_string(),
+            title: "test".to_string(),
+        }));
     }
 
     #[test]

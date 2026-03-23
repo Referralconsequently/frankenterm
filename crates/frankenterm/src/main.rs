@@ -25152,34 +25152,6 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     input = input.with_pane_cwd(cwd.clone());
                 }
 
-                let decision = engine.authorize(&input);
-                let (decision, approval_request) = if decision.requires_approval() {
-                    let store = frankenterm_core::approval::ApprovalStore::new(
-                        &storage,
-                        config.safety.approval.clone(),
-                        workspace_id.clone(),
-                    );
-                    let decision = match store
-                        .attach_to_decision(decision, &input, Some(summary.clone()))
-                        .await
-                    {
-                        Ok(updated) => updated,
-                        Err(e) => {
-                            eprintln!("Error: Failed to issue approval token: {e}");
-                            std::process::exit(1);
-                        }
-                    };
-                    let approval_request = decision.approval_request().cloned();
-                    (decision, approval_request)
-                } else {
-                    (decision, None)
-                };
-                if decision.is_denied() {
-                    let reason = decision.reason().unwrap_or("denied by policy");
-                    eprintln!("Error: Action denied by policy: {reason}");
-                    std::process::exit(1);
-                }
-
                 let plan = build_prepare_send_plan(
                     &workspace_id,
                     pane_id,
@@ -25195,6 +25167,37 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 let redacted_plan = redact_prepare_plan(&plan);
                 let plan_json =
                     serde_json::to_string(&redacted_plan).unwrap_or_else(|_| "{}".to_string());
+                let decision = engine.authorize(&input);
+                let (decision, approval_request) = if decision.requires_approval() {
+                    let store = frankenterm_core::approval::ApprovalStore::new(
+                        &storage,
+                        config.safety.approval.clone(),
+                        workspace_id.clone(),
+                    );
+                    let approval = match store
+                        .issue_for_plan(
+                            &input,
+                            &plan_hash,
+                            i32::try_from(plan.plan_version).ok(),
+                            Some(summary.clone()),
+                        )
+                        .await
+                    {
+                        Ok(request) => request,
+                        Err(e) => {
+                            eprintln!("Error: Failed to issue approval token: {e}");
+                            std::process::exit(1);
+                        }
+                    };
+                    (decision.with_approval(approval.clone()), Some(approval))
+                } else {
+                    (decision, None)
+                };
+                if decision.is_denied() {
+                    let reason = decision.reason().unwrap_or("denied by policy");
+                    eprintln!("Error: Action denied by policy: {reason}");
+                    std::process::exit(1);
+                }
                 let params = PreparedPlanParams::SendText {
                     pane_id,
                     no_paste,
@@ -25399,18 +25402,22 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             config.safety.approval.clone(),
                             workspace_id.clone(),
                         );
-                        let decision = match store
-                            .attach_to_decision(decision, &input, Some(name.clone()))
+                        let approval = match store
+                            .issue_for_plan(
+                                &input,
+                                &plan_hash,
+                                i32::try_from(plan.plan_version).ok(),
+                                Some(name.clone()),
+                            )
                             .await
                         {
-                            Ok(updated) => updated,
+                            Ok(request) => request,
                             Err(e) => {
                                 eprintln!("Error: Failed to issue approval token: {e}");
                                 std::process::exit(1);
                             }
                         };
-                        let approval_request = decision.approval_request().cloned();
-                        (decision, approval_request)
+                        (decision.with_approval(approval.clone()), Some(approval))
                     } else {
                         (decision, None)
                     };
@@ -25717,7 +25724,12 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             ),
                         };
                         match store
-                            .consume_with_context(code, &input, Some(approval_context))
+                            .consume_for_plan_with_context(
+                                code,
+                                &input,
+                                &plan_hash,
+                                Some(approval_context),
+                            )
                             .await
                         {
                             Ok(Some(_)) => {
@@ -25962,7 +25974,12 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             ),
                         };
                         match store
-                            .consume_with_context(code, &input, Some(approval_context))
+                            .consume_for_plan_with_context(
+                                code,
+                                &input,
+                                &plan_hash,
+                                Some(approval_context),
+                            )
                             .await
                         {
                             Ok(Some(_)) => {
@@ -31408,10 +31425,7 @@ fn resolve_config_path_for_edit(cli_config: Option<&str>) -> PathBuf {
         return cwd_config;
     }
 
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("ft")
-        .join("ft.toml")
+    frankenterm_core::config::default_config_dir().join("ft.toml")
 }
 
 fn update_patterns_in_doc(
@@ -32409,10 +32423,7 @@ async fn handle_config_command(
                 if cwd_config.exists() || std::env::current_dir().is_ok() {
                     cwd_config
                 } else {
-                    dirs::config_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                        .join("ft")
-                        .join("ft.toml")
+                    frankenterm_core::config::default_config_dir().join("ft.toml")
                 }
             };
 
@@ -32569,10 +32580,7 @@ async fn handle_config_command(
                 if cwd_config.exists() {
                     cwd_config
                 } else {
-                    dirs::config_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                        .join("ft")
-                        .join("ft.toml")
+                    frankenterm_core::config::default_config_dir().join("ft.toml")
                 }
             };
 
@@ -32696,10 +32704,7 @@ async fn handle_config_command(
                 if cwd_config.exists() {
                     cwd_config
                 } else {
-                    dirs::config_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-                        .join("ft")
-                        .join("ft.toml")
+                    frankenterm_core::config::default_config_dir().join("ft.toml")
                 }
             };
 
