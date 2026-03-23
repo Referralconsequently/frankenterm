@@ -467,6 +467,53 @@ impl TieredScrollback {
         self.cold_uncompressed_bytes = 0;
     }
 
+    /// Retrieve a line from the cold tier via a [`ColdTierRetriever`].
+    ///
+    /// `hint` must be a `ScrollbackLocationHint::Cold` obtained from
+    /// [`locate_offset`](Self::locate_offset).
+    ///
+    /// Returns the specific line from the cold page, or an error if the
+    /// page cannot be retrieved.
+    pub fn cold_line(
+        &self,
+        hint: &ScrollbackLocationHint,
+        retriever: &dyn ColdTierRetriever,
+    ) -> Result<String, ColdRetrievalError> {
+        match hint {
+            ScrollbackLocationHint::Cold {
+                page_index,
+                line_index_in_page,
+                ..
+            } => {
+                let data = retriever.retrieve_page(*page_index)?;
+                data.lines.get(*line_index_in_page).cloned().ok_or(
+                    ColdRetrievalError::PageNotFound {
+                        page_index: *page_index,
+                    },
+                )
+            }
+            _ => Err(ColdRetrievalError::PageNotFound { page_index: 0 }),
+        }
+    }
+
+    /// Retrieve a full cold page via a [`ColdTierRetriever`].
+    ///
+    /// `page_index` is the stable page identifier from eviction time.
+    pub fn cold_page(
+        &self,
+        page_index: u64,
+        retriever: &dyn ColdTierRetriever,
+    ) -> Result<ColdPageData, ColdRetrievalError> {
+        retriever.retrieve_page(page_index)
+    }
+
+    /// Number of cold pages that would need to be fetched to resolve all
+    /// cold-tier lines.
+    #[must_use]
+    pub fn cold_page_count(&self) -> u64 {
+        self.cold_page_count
+    }
+
     /// Compression ratio for the warm tier (uncompressed / compressed).
     ///
     /// Returns `None` if the warm tier is empty.
@@ -534,6 +581,82 @@ impl TieredScrollback {
 impl Default for TieredScrollback {
     fn default() -> Self {
         Self::new(ScrollbackConfig::default())
+    }
+}
+
+// =============================================================================
+// Cold tier retrieval
+// =============================================================================
+
+/// Error type for cold tier page retrieval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ColdRetrievalError {
+    /// The requested page index was not found in cold storage.
+    PageNotFound { page_index: u64 },
+    /// Cold storage is temporarily unavailable (e.g., database locked).
+    StorageUnavailable { reason: String },
+    /// Decompression of the cold page data failed.
+    DecompressionFailed { page_index: u64, reason: String },
+}
+
+impl std::fmt::Display for ColdRetrievalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PageNotFound { page_index } => {
+                write!(f, "cold page {page_index} not found")
+            }
+            Self::StorageUnavailable { reason } => {
+                write!(f, "cold storage unavailable: {reason}")
+            }
+            Self::DecompressionFailed { page_index, reason } => {
+                write!(f, "cold page {page_index} decompression failed: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ColdRetrievalError {}
+
+/// Result of retrieving a cold tier page.
+#[derive(Debug, Clone)]
+pub struct ColdPageData {
+    /// The stable page index that was requested.
+    pub page_index: u64,
+    /// Lines from the page, ordered oldest to newest.
+    pub lines: Vec<String>,
+}
+
+/// Trait for backends that can serve cold-tier scrollback page reads.
+///
+/// Implementations fetch page data from the capture pipeline's storage
+/// (typically SQLite via the `storage` module). The trait is object-safe
+/// and designed for synchronous use — callers that need async should wrap
+/// in `spawn_blocking` or equivalent.
+///
+/// # Contract
+///
+/// - `retrieve_page` must return the *exact* lines that were in the page
+///   when it was evicted, in the same order.
+/// - If the page was never written to cold storage (e.g., cold eviction
+///   is disabled or the storage pipeline hasn't flushed), return
+///   `Err(ColdRetrievalError::PageNotFound)`.
+/// - Implementations must be safe to call concurrently from multiple
+///   panes' access paths.
+pub trait ColdTierRetriever: Send + Sync {
+    /// Retrieve a single cold page by its stable page index.
+    fn retrieve_page(&self, page_index: u64) -> Result<ColdPageData, ColdRetrievalError>;
+}
+
+/// A no-op cold tier retriever that always returns `PageNotFound`.
+///
+/// Used as a default when cold storage is not configured or available.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullColdRetriever;
+
+impl ColdTierRetriever for NullColdRetriever {
+    fn retrieve_page(&self, page_index: u64) -> Result<ColdPageData, ColdRetrievalError> {
+        Err(ColdRetrievalError::PageNotFound { page_index })
     }
 }
 
@@ -1214,5 +1337,160 @@ mod tests {
     fn estimated_memory_bytes_empty() {
         let sb = TieredScrollback::new(small_config());
         assert_eq!(sb.estimated_memory_bytes(), 0);
+    }
+
+    // ── Cold tier retrieval ───────────────────────────────────────────
+
+    /// Mock cold retriever that serves a fixed set of pages.
+    struct MockColdRetriever {
+        pages: std::collections::HashMap<u64, Vec<String>>,
+    }
+
+    impl MockColdRetriever {
+        fn new() -> Self {
+            Self {
+                pages: std::collections::HashMap::new(),
+            }
+        }
+
+        fn insert(&mut self, page_index: u64, lines: Vec<String>) {
+            self.pages.insert(page_index, lines);
+        }
+    }
+
+    impl ColdTierRetriever for MockColdRetriever {
+        fn retrieve_page(&self, page_index: u64) -> Result<ColdPageData, ColdRetrievalError> {
+            self.pages
+                .get(&page_index)
+                .cloned()
+                .map(|lines| ColdPageData { page_index, lines })
+                .ok_or(ColdRetrievalError::PageNotFound { page_index })
+        }
+    }
+
+    #[test]
+    fn null_retriever_returns_page_not_found() {
+        let retriever = NullColdRetriever;
+        let result = retriever.retrieve_page(0);
+        assert!(matches!(
+            result,
+            Err(ColdRetrievalError::PageNotFound { page_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn mock_retriever_serves_inserted_pages() {
+        let mut retriever = MockColdRetriever::new();
+        retriever.insert(0, vec!["hello".to_string(), "world".to_string()]);
+
+        let page = retriever.retrieve_page(0).expect("page 0 should exist");
+        assert_eq!(page.page_index, 0);
+        assert_eq!(page.lines, vec!["hello", "world"]);
+
+        // Non-existent page
+        assert!(matches!(
+            retriever.retrieve_page(99),
+            Err(ColdRetrievalError::PageNotFound { page_index: 99 })
+        ));
+    }
+
+    #[test]
+    fn cold_line_retrieves_from_evicted_page() {
+        let mut sb = TieredScrollback::new(ScrollbackConfig {
+            hot_lines: 10,
+            page_size: 5,
+            warm_max_bytes: 50, // tiny cap forces cold eviction
+            ..small_config()
+        });
+
+        // Push enough to create cold pages
+        for i in 0..100 {
+            sb.push_line(line(i));
+        }
+
+        assert!(sb.cold_line_count() > 0, "Should have cold lines");
+
+        // Find a cold offset
+        let total = sb.total_line_count() as usize;
+        let cold_offset = total - 1; // oldest line
+
+        if let Some(hint) = sb.locate_offset(cold_offset) {
+            if matches!(hint, ScrollbackLocationHint::Cold { .. }) {
+                // Use mock retriever with the expected page data
+                let mut retriever = MockColdRetriever::new();
+                if let ScrollbackLocationHint::Cold { page_index, .. } = &hint {
+                    retriever.insert(*page_index, (0..5).map(|i| line(i)).collect());
+                }
+
+                let result = sb.cold_line(&hint, &retriever);
+                assert!(result.is_ok(), "Should retrieve cold line: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cold_line_with_null_retriever_returns_error() {
+        let sb = TieredScrollback::default();
+        let hint = ScrollbackLocationHint::Cold {
+            page_index: 42,
+            page_offset_from_newest: 0,
+            line_index_in_page: 0,
+            page_line_count: 5,
+        };
+
+        let result = sb.cold_line(&hint, &NullColdRetriever);
+        assert!(matches!(
+            result,
+            Err(ColdRetrievalError::PageNotFound { page_index: 42 })
+        ));
+    }
+
+    #[test]
+    fn cold_page_delegates_to_retriever() {
+        let sb = TieredScrollback::default();
+        let mut retriever = MockColdRetriever::new();
+        retriever.insert(7, vec!["a".to_string(), "b".to_string()]);
+
+        let page = sb.cold_page(7, &retriever).expect("should retrieve");
+        assert_eq!(page.page_index, 7);
+        assert_eq!(page.lines.len(), 2);
+    }
+
+    #[test]
+    fn cold_retrieval_error_display() {
+        let e1 = ColdRetrievalError::PageNotFound { page_index: 42 };
+        assert!(e1.to_string().contains("42"));
+
+        let e2 = ColdRetrievalError::StorageUnavailable {
+            reason: "locked".to_string(),
+        };
+        assert!(e2.to_string().contains("locked"));
+
+        let e3 = ColdRetrievalError::DecompressionFailed {
+            page_index: 5,
+            reason: "corrupt".to_string(),
+        };
+        assert!(e3.to_string().contains("5"));
+        assert!(e3.to_string().contains("corrupt"));
+    }
+
+    #[test]
+    fn cold_retrieval_error_serde_roundtrip() {
+        let errors = vec![
+            ColdRetrievalError::PageNotFound { page_index: 42 },
+            ColdRetrievalError::StorageUnavailable {
+                reason: "db locked".to_string(),
+            },
+            ColdRetrievalError::DecompressionFailed {
+                page_index: 7,
+                reason: "bad zstd".to_string(),
+            },
+        ];
+
+        for err in &errors {
+            let json = serde_json::to_string(err).expect("serialize");
+            let back: ColdRetrievalError = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(*err, back);
+        }
     }
 }
