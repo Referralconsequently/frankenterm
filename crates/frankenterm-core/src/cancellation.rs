@@ -1190,7 +1190,7 @@ impl ShutdownCoordinator {
         let shutdown_requested_at = node.shutdown_requested_at_ms.unwrap_or(timestamp_ms);
         let drain_elapsed = node
             .started_at_ms
-            .map(|s| timestamp_ms - s.max(shutdown_requested_at))
+            .map(|s| (timestamp_ms - s.max(shutdown_requested_at)).max(0))
             .unwrap_or(0);
 
         // Collect finalizer stats
@@ -1201,7 +1201,7 @@ impl ShutdownCoordinator {
 
         self.telemetry.shutdowns_completed += 1;
 
-        let total_elapsed = timestamp_ms - shutdown_requested_at;
+        let total_elapsed = (timestamp_ms - shutdown_requested_at).max(0);
 
         self.emit_event(
             scope_id.clone(),
@@ -1237,7 +1237,7 @@ impl ShutdownCoordinator {
             scope_id: scope_id.clone(),
             reason,
             drain_elapsed_ms: drain_elapsed,
-            finalize_elapsed_ms: total_elapsed - drain_elapsed,
+            finalize_elapsed_ms: (total_elapsed - drain_elapsed).max(0),
             total_elapsed_ms: total_elapsed,
             finalizers_run: finalizer_stats.0,
             finalizers_succeeded: finalizer_stats.1,

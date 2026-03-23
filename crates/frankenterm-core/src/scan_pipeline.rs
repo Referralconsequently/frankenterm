@@ -204,9 +204,13 @@ impl ChunkedPipelineState {
     }
 
     /// Whether the buffer is full and should be flushed.
+    ///
+    /// Checks both the compression buffer and the trigger accumulation buffer
+    /// to prevent unbounded memory growth when triggers are enabled.
     #[must_use]
     pub fn should_flush(&self) -> bool {
         self.uncompressed_buffer.len() >= self.max_buffer_bytes
+            || self.trigger_data_buffer.len() >= self.max_buffer_bytes
     }
 
     /// Current accumulated trigger counts.
@@ -413,10 +417,16 @@ impl ScanPipeline {
         // Stage 1: Stateful SIMD metrics scan (cross-boundary aware)
         let chunk_metrics = scan_newlines_and_ansi_with_state(bytes, &mut state.scan_state);
 
-        // Accumulate metrics
-        state.accumulated_metrics.newline_count += chunk_metrics.newline_count;
-        state.accumulated_metrics.ansi_byte_count += chunk_metrics.ansi_byte_count;
-        state.total_bytes += bytes.len() as u64;
+        // Accumulate metrics (saturating to prevent wrap in release builds)
+        state.accumulated_metrics.newline_count = state
+            .accumulated_metrics
+            .newline_count
+            .saturating_add(chunk_metrics.newline_count);
+        state.accumulated_metrics.ansi_byte_count = state
+            .accumulated_metrics
+            .ansi_byte_count
+            .saturating_add(chunk_metrics.ansi_byte_count);
+        state.total_bytes = state.total_bytes.saturating_add(bytes.len() as u64);
         if !bytes.is_empty() {
             state.saw_any_bytes = true;
             state.ends_with_newline = bytes.last() == Some(&b'\n');
@@ -427,9 +437,12 @@ impl ScanPipeline {
             // Incremental scan with overlap for real-time feedback
             let chunk_triggers =
                 self.scan_chunk_triggers_with_overlap(bytes, &state.trigger_overlap_buffer);
-            state.total_trigger_matches += chunk_triggers.total_matches;
+            state.total_trigger_matches = state
+                .total_trigger_matches
+                .saturating_add(chunk_triggers.total_matches);
             for (cat, count) in &chunk_triggers.counts {
-                *state.accumulated_triggers.entry(*cat).or_insert(0) += count;
+                let entry = state.accumulated_triggers.entry(*cat).or_insert(0);
+                *entry = entry.saturating_add(*count);
             }
 
             update_trigger_overlap_buffer(

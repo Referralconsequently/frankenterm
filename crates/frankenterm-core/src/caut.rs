@@ -667,14 +667,25 @@ fn redact_and_truncate(input: &str, max_len: usize) -> String {
     }
 
     // `max_len` is byte-oriented (CLI/output budgets). Truncate on a UTF-8
-    // boundary so we never exceed that byte budget while keeping valid UTF-8.
-    let mut end = max_len.min(redacted.len());
+    // boundary so the total output (including "..." ellipsis) stays within
+    // the byte budget.
+    let ellipsis = "...";
+    if max_len <= ellipsis.len() {
+        // Not enough room for ellipsis; just truncate to max_len bytes.
+        let mut end = max_len.min(redacted.len());
+        while end > 0 && !redacted.is_char_boundary(end) {
+            end -= 1;
+        }
+        return redacted[..end].to_string();
+    }
+    let budget = max_len - ellipsis.len();
+    let mut end = budget.min(redacted.len());
     while end > 0 && !redacted.is_char_boundary(end) {
         end -= 1;
     }
 
     let mut truncated = redacted[..end].to_string();
-    truncated.push_str("...");
+    truncated.push_str(ellipsis);
     truncated
 }
 
@@ -826,16 +837,16 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(40))]
 
         #[test]
-        fn redact_and_truncate_never_exceeds_limit_plus_ellipsis(
+        fn redact_and_truncate_never_exceeds_limit(
             input in "\\PC*",
             max_len in 0usize..256usize,
         ) {
             let redacted = redact_and_truncate(&input, max_len);
             prop_assert!(
-                redacted.len() <= max_len + 3,
-                "redacted length {} should be <= limit+ellipsis {}",
+                redacted.len() <= max_len,
+                "redacted length {} should be <= max_len {}",
                 redacted.len(),
-                max_len + 3
+                max_len
             );
         }
 
@@ -863,10 +874,10 @@ mod tests {
             match err {
                 CautError::InvalidJson { preview, .. } => {
                     prop_assert!(
-                        preview.len() <= max_preview + 3,
-                        "preview length {} should be <= {}",
+                        preview.len() <= max_preview,
+                        "preview length {} should be <= max_preview {}",
                         preview.len(),
-                        max_preview + 3
+                        max_preview
                     );
                 }
                 other => prop_assert!(false, "expected InvalidJson, got {:?}", other),
@@ -1566,7 +1577,7 @@ mod tests {
     #[test]
     fn redact_and_truncate_zero_max_len() {
         let result = redact_and_truncate("some text", 0);
-        assert_eq!(result, "...");
+        assert_eq!(result, ""); // No room for any content or ellipsis
     }
 
     #[test]
@@ -1586,6 +1597,6 @@ mod tests {
     fn redact_and_truncate_one_over_limit() {
         let input = "abcdef"; // 6 bytes
         let result = redact_and_truncate(input, 5);
-        assert_eq!(result, "abcde...");
+        assert_eq!(result, "ab..."); // 2 content bytes + 3 ellipsis = 5 total
     }
 }
