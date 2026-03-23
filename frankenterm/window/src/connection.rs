@@ -1,9 +1,12 @@
 use crate::screen::Screens;
 use crate::{Appearance, Connection, GeometryOrigin, RequestedWindowGeometry, ResolvedGeometry};
 use anyhow::Result as Fallible;
-use config::keyassignment::KeyAssignment;
+use anyhow::anyhow;
 use config::DimensionContext;
+use config::keyassignment::KeyAssignment;
+use promise::{Future, Promise};
 use std::cell::RefCell;
+use std::fmt::Display;
 use std::rc::Rc;
 use std::sync::Mutex;
 
@@ -14,6 +17,27 @@ thread_local! {
 fn nop_event_handler(_event: ApplicationEvent) {}
 
 static EVENT_HANDLER: Mutex<fn(ApplicationEvent)> = Mutex::new(nop_event_handler);
+
+pub(crate) fn new_window_op_promise<T>() -> (Promise<T>, Future<T>)
+where
+    T: Send + 'static,
+{
+    let mut promise = Promise::new();
+    let future = promise
+        .get_future()
+        .expect("window operation promise should always create a future");
+    (promise, future)
+}
+
+pub(crate) fn fail_window_op_for_destroyed_window<T>(
+    promise: &mut Promise<T>,
+    platform: &'static str,
+    window_id: impl Display,
+) where
+    T: Send + 'static,
+{
+    promise.err(anyhow!("{platform} window {window_id} has been destroyed"));
+}
 
 pub fn shutdown() {
     CONN.with(|m| drop(m.borrow_mut().take()));
@@ -94,11 +118,11 @@ pub trait ConnectionOps {
                         Some(info) => info.rect,
                         None => {
                             log::error!(
-                            "Requested display {} was not found; available displays are: {:?}. \
+                                "Requested display {} was not found; available displays are: {:?}. \
                              Using primary display instead",
-                            name,
-                            screens.by_name,
-                        );
+                                name,
+                                screens.by_name,
+                            );
                             screens.main.rect
                         }
                     },
@@ -132,6 +156,35 @@ pub trait ConnectionOps {
             y,
             width,
             height,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fail_window_op_for_destroyed_window, new_window_op_promise};
+    use std::future::Future as StdFuture;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    #[test]
+    fn destroyed_window_operation_fails_closed() {
+        let (mut promise, mut future) = new_window_op_promise::<()>();
+        let waker = Waker::noop().clone();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            StdFuture::poll(Pin::new(&mut future), &mut cx),
+            Poll::Pending
+        ));
+
+        fail_window_op_for_destroyed_window(&mut promise, "Wayland", 42);
+
+        match StdFuture::poll(Pin::new(&mut future), &mut cx) {
+            Poll::Ready(Err(err)) => {
+                assert_eq!(err.to_string(), "Wayland window 42 has been destroyed");
+            }
+            other => panic!("expected Ready(Err), got {other:?}"),
         }
     }
 }

@@ -488,7 +488,7 @@ impl WindowOps for WaylandWindow {
         let mut promise = Promise::new();
         let future = promise.get_future().unwrap();
         let promise = Arc::new(Mutex::new(promise));
-        WaylandConnection::with_window_inner(self.0, move |inner| {
+        let window_future = WaylandConnection::with_window_inner(self.0, move |inner| {
             let read = inner
                 .copy_and_paste
                 .lock()
@@ -512,6 +512,14 @@ impl WindowOps for WaylandWindow {
             });
             Ok(())
         });
+        let promise_on_error = Arc::clone(&promise);
+        promise::spawn::spawn(async move {
+            if let Err(err) = window_future.await {
+                let mut promise = promise_on_error.lock().unwrap();
+                promise.err(err);
+            }
+        })
+        .detach();
         future
     }
 

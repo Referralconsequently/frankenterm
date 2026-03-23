@@ -4,7 +4,7 @@ use std::os::fd::AsRawFd;
 use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use wayland_client::backend::WaylandError;
@@ -13,10 +13,13 @@ use wayland_client::{Connection as WConnection, EventQueue};
 
 use crate::screen::{ScreenInfo, Screens};
 use crate::spawn::SPAWN_QUEUE;
-use crate::{Appearance, Connection, ConnectionOps, ScreenRect};
+use crate::{
+    Appearance, Connection, ConnectionOps, ScreenRect,
+    connection::{fail_window_op_for_destroyed_window, new_window_op_promise},
+};
 
-use super::state::WaylandState;
 use super::WaylandWindowInner;
+use super::state::WaylandState;
 
 pub struct WaylandConnection {
     pub(crate) should_terminate: RefCell<bool>,
@@ -142,13 +145,14 @@ impl WaylandConnection {
     where
         R: Send + 'static,
     {
-        let mut prom = promise::Promise::new();
-        let future = prom.get_future().unwrap();
+        let (mut prom, future) = new_window_op_promise();
 
         promise::spawn::spawn_into_main_thread(async move {
             if let Some(handle) = Connection::get().unwrap().wayland().window_by_id(window) {
                 let mut inner = handle.borrow_mut();
                 prom.result(f(&mut inner));
+            } else {
+                fail_window_op_for_destroyed_window(&mut prom, "Wayland", window);
             }
         })
         .detach();

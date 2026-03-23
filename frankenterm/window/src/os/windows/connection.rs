@@ -1,6 +1,8 @@
 //! The connection to the GUI subsystem
 use super::{HWindow, WindowInner};
-use crate::connection::ConnectionOps;
+use crate::connection::{
+    ConnectionOps, fail_window_op_for_destroyed_window, new_window_op_promise,
+};
 use crate::screen::{ScreenInfo, Screens};
 use crate::spawn::*;
 use crate::{Appearance, ScreenRect};
@@ -23,13 +25,13 @@ use winapi::um::wingdi::{
 use winapi::um::winnt::HANDLE;
 use winapi::um::winuser::*;
 use windows::Win32::Devices::Display::{
-    DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
     DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
     DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
-    DISPLAYCONFIG_TARGET_DEVICE_NAME,
+    DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
+    QueryDisplayConfig,
 };
-use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
+use winreg::enums::HKEY_CURRENT_USER;
 
 pub struct Connection {
     event_handle: HANDLE,
@@ -154,8 +156,7 @@ impl Connection {
     where
         R: Send + 'static,
     {
-        let mut prom = promise::Promise::new();
-        let future = prom.get_future().unwrap();
+        let (mut prom, future) = new_window_op_promise();
         promise::spawn::spawn_into_main_thread(async move {
             if let Some(handle) = Connection::get()
                 .expect("Connection::init has not been called")
@@ -163,6 +164,8 @@ impl Connection {
             {
                 let mut inner = handle.borrow_mut();
                 prom.result(f(&mut inner));
+            } else {
+                fail_window_op_for_destroyed_window(&mut prom, "Windows", window.0);
             }
         })
         .detach();

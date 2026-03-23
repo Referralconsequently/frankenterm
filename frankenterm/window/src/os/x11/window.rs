@@ -1,14 +1,14 @@
 use super::*;
 use crate::bitmaps::*;
 use crate::connection::ConnectionOps;
-use crate::os::{xkeysyms, Connection, Window};
+use crate::os::{Connection, Window, xkeysyms};
 use crate::{
     Appearance, Clipboard, DeadKeyStatus, Dimensions, MouseButtons, MouseCursor, MouseEvent,
     MouseEventKind, MousePress, Point, Rect, RequestedWindowGeometry, ResizeIncrement,
     ResolvedGeometry, ScreenPoint, ScreenRect, WindowDecorations, WindowEvent, WindowEventSender,
     WindowOps, WindowState,
 };
-use anyhow::{anyhow, Context as _};
+use anyhow::{Context as _, anyhow};
 use async_trait::async_trait;
 use config::ConfigHandle;
 use promise::{Future, Promise};
@@ -764,8 +764,8 @@ impl XWindowInner {
             }
             Event::X(xcb::x::Event::ClientMessage(msg)) => {
                 let type_atom_name = conn.atom_name(msg.r#type());
-                use xcb::x::ClientMessageData;
                 use xcb::XidNew;
+                use xcb::x::ClientMessageData;
                 let xdnd_msgtype_atoms = [
                     conn.atom_xdndenter,
                     conn.atom_xdndposition,
@@ -2121,9 +2121,10 @@ impl WindowOps for XWindow {
         log::trace!("SEL: window_id={window_id:?} Window::get_clipboard {clipboard:?} called");
         let mut promise = Promise::new();
         let future = promise.get_future().unwrap();
-        let mut promise = Some(promise);
+        let pending_promise = Arc::new(Mutex::new(Some(promise)));
 
-        XConnection::with_window_inner(window_id, move |inner| {
+        let promise_for_request = Arc::clone(&pending_promise);
+        let window_future = XConnection::with_window_inner(window_id, move |inner| {
             // In theory, we could simply consult inner.copy_and_paste to see
             // if we think we own the clipboard, but there are some situations
             // where the selection owner moves between two wezterm windows
@@ -2131,7 +2132,7 @@ impl WindowOps for XWindow {
             // invalidate that state, so we always ask the X server to for
             // the selection, even if it is a little slower.
             // <https://github.com/wezterm/wezterm/issues/2110>
-            let promise = promise.take().unwrap();
+            let promise = promise_for_request.lock().unwrap().take().unwrap();
             log::debug!(
                 "SEL: window_id={window_id:?} Window::get_clipboard: \
                         {clipboard:?}, prepare promise, time={}",
@@ -2152,6 +2153,15 @@ impl WindowOps for XWindow {
             });
             Ok(())
         });
+        let promise_on_error = Arc::clone(&pending_promise);
+        promise::spawn::spawn(async move {
+            if let Err(err) = window_future.await {
+                if let Some(mut promise) = promise_on_error.lock().unwrap().take() {
+                    promise.err(err);
+                }
+            }
+        })
+        .detach();
 
         future
     }
@@ -2246,10 +2256,6 @@ enum NetWmStateAction {
 
 impl NetWmStateAction {
     fn with_bool(enable: bool) -> Self {
-        if enable {
-            Self::Add
-        } else {
-            Self::Remove
-        }
+        if enable { Self::Add } else { Self::Remove }
     }
 }

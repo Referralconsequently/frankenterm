@@ -1,12 +1,14 @@
 use super::keyboard::{Keyboard, KeyboardWithFallback};
-use crate::connection::ConnectionOps;
+use crate::connection::{
+    ConnectionOps, fail_window_op_for_destroyed_window, new_window_op_promise,
+};
+use crate::os::Connection;
 use crate::os::x11::window::XWindowInner;
 use crate::os::x11::xsettings::*;
-use crate::os::Connection;
 use crate::screen::{ScreenInfo, Screens};
 use crate::spawn::*;
 use crate::{Appearance, DeadKeyStatus, ScreenRect};
-use anyhow::{anyhow, bail, Context as _};
+use anyhow::{Context as _, anyhow, bail};
 use mio::event::Source;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token};
@@ -17,7 +19,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use x11::xlib;
 use xcb::x::Atom;
-use xcb::{dri2, Raw, Xid};
+use xcb::{Raw, Xid, dri2};
 
 enum ScreenResources {
     Current(xcb::randr::GetScreenResourcesCurrentReply),
@@ -997,17 +999,18 @@ impl XConnection {
     where
         R: Send + 'static,
     {
-        let mut prom = promise::Promise::new();
-        let future = prom.get_future().unwrap();
+        let (mut prom, future) = new_window_op_promise();
 
         promise::spawn::spawn_into_main_thread(async move {
             if let Some(handle) = Connection::get().unwrap().x11().window_by_id(window) {
                 let mut inner = handle.lock().unwrap();
                 if inner.window_id != window {
-                    prom.result(Err(anyhow!("window {window:?} has been destroyed")));
+                    fail_window_op_for_destroyed_window(&mut prom, "X11", window.resource_id());
                 } else {
                     prom.result(f(&mut inner));
                 }
+            } else {
+                fail_window_op_for_destroyed_window(&mut prom, "X11", window.resource_id());
             }
         })
         .detach();
