@@ -190,7 +190,8 @@ impl SystemInfo {
         let load_average = detect_load_average();
         let detected_at_epoch_ms = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_millis()).ok())
             .unwrap_or(0);
 
         Self {

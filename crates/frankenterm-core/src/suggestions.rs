@@ -1187,8 +1187,9 @@ impl SuggestionEngine {
 fn now_epoch_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn is_rate_limit_event(event: &StoredEvent) -> bool {
