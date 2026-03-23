@@ -20,7 +20,6 @@ work_dir="$ROOT_DIR/tests/e2e/tmp/${run_id}"
 mkdir -p "$work_dir"
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-RCH_PROBE_LOG="${LOG_DIR}/replay_artifact_write_read_${run_id}.probe.log"
 RCH_SMOKE_LOG="${LOG_DIR}/replay_artifact_write_read_${run_id}.smoke.log"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 TIMEOUT_BIN=""
@@ -36,7 +35,7 @@ log_json() {
     --arg component "$component" \
     --arg run_id "$run_id" \
     --arg correlation_id "$run_id" \
-    --arg artifact_path "${json_log#$ROOT_DIR/}" \
+    --arg artifact_path "${json_log#"$ROOT_DIR"/}" \
     --argjson payload "$payload" \
     '{
       timestamp: $timestamp,
@@ -69,7 +68,7 @@ probe_rch_workers() {
   local probe_log="$raw_dir/${run_id}.rch_probe.json"
   local probe_json
 
-  log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"running\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"running\",\"artifact_path\":\"${probe_log#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"running\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"running\",\"artifact_path\":\"${probe_log#"$ROOT_DIR"/}\"}"
 
   set +e
   env TMPDIR="$local_tmpdir" rch workers probe --all --json >"$probe_log" 2>&1
@@ -77,7 +76,7 @@ probe_rch_workers() {
   set -e
 
   if [[ $probe_rc -ne 0 ]]; then
-    log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"failed\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_probe_failed\",\"error_code\":\"RCH-E100\",\"artifact_path\":\"${probe_log#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"failed\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_probe_failed\",\"error_code\":\"RCH-E100\",\"artifact_path\":\"${probe_log#"$ROOT_DIR"/}\"}"
     echo "rch workers probe failed" >&2
     exit 2
   fi
@@ -86,12 +85,12 @@ probe_rch_workers() {
   local healthy_workers
   healthy_workers="$(printf '%s\n' "$probe_json" | jq '[.data[]? | select(.status == "ok" or .status == "healthy" or .status == "reachable")] | length' 2>/dev/null || echo 0)"
   if [[ "$healthy_workers" -lt 1 ]]; then
-    log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"failed\",\"decision_path\":\"preflight\",\"inputs\":{\"healthy_workers\":$healthy_workers},\"outcome\":\"failed\",\"reason_code\":\"rch_workers_unreachable\",\"error_code\":\"RCH-E100\",\"artifact_path\":\"${probe_log#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"failed\",\"decision_path\":\"preflight\",\"inputs\":{\"healthy_workers\":$healthy_workers},\"outcome\":\"failed\",\"reason_code\":\"rch_workers_unreachable\",\"error_code\":\"RCH-E100\",\"artifact_path\":\"${probe_log#"$ROOT_DIR"/}\"}"
     echo "no reachable rch workers; refusing local fallback" >&2
     exit 2
   fi
 
-  log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"passed\",\"decision_path\":\"preflight\",\"inputs\":{\"healthy_workers\":$healthy_workers},\"outcome\":\"pass\",\"reason_code\":\"workers_reachable\",\"artifact_path\":\"${probe_log#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"rch_probe\",\"status\":\"passed\",\"decision_path\":\"preflight\",\"inputs\":{\"healthy_workers\":$healthy_workers},\"outcome\":\"pass\",\"reason_code\":\"workers_reachable\",\"artifact_path\":\"${probe_log#"$ROOT_DIR"/}\"}"
 }
 
 fatal() { echo "FATAL: $1" >&2; exit 1; }
@@ -264,7 +263,7 @@ require_cmd shasum
 probe_rch_workers
 ensure_rch_ready
 
-log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"start\",\"status\":\"running\",\"decision_path\":\"suite\",\"inputs\":{},\"outcome\":\"running\",\"artifact_path\":\"${json_log#$ROOT_DIR/}\"}"
+log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"start\",\"status\":\"running\",\"decision_path\":\"suite\",\"inputs\":{},\"outcome\":\"running\",\"artifact_path\":\"${json_log#"$ROOT_DIR"/}\"}"
 
 # Scenario 1: basic write + read integrity checks
 scenario1_src="$work_dir/scenario1/incidents"
@@ -274,17 +273,17 @@ write_fixture "$scenario1_src/incident_base.jsonl" 120 yes "base"
 
 scenario1_stdout="$raw_dir/scenario1.stdout.json"
 scenario1_stderr="$raw_dir/scenario1.stderr.log"
-log_json "{\"scenario_id\":\"1\",\"step\":\"run_harvest\",\"status\":\"running\",\"decision_path\":\"scenario_1.harvest\",\"inputs\":{\"source_dir\":\"${scenario1_src#$ROOT_DIR/}\",\"output_dir\":\"${scenario1_out#$ROOT_DIR/}\",\"filter\":\"incident-only\"},\"outcome\":\"running\",\"artifact_path\":\"${scenario1_stdout#$ROOT_DIR/}\"}"
+log_json "{\"scenario_id\":\"1\",\"step\":\"run_harvest\",\"status\":\"running\",\"decision_path\":\"scenario_1.harvest\",\"inputs\":{\"source_dir\":\"${scenario1_src#"$ROOT_DIR"/}\",\"output_dir\":\"${scenario1_out#"$ROOT_DIR"/}\",\"filter\":\"incident-only\"},\"outcome\":\"running\",\"artifact_path\":\"${scenario1_stdout#"$ROOT_DIR"/}\"}"
 set +e
 run_harvest_command "$scenario1_src" "$scenario1_out" "incident-only" "$scenario1_stdout" "$scenario1_stderr"
 rc=$?
 set -e
 if [[ $rc -ne 0 ]]; then
   if [[ $rc -eq 97 ]]; then
-    log_json "{\"scenario_id\":\"1\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_1.harvest\",\"inputs\":{\"source_dir\":\"${scenario1_src#$ROOT_DIR/}\",\"output_dir\":\"${scenario1_out#$ROOT_DIR/}\",\"filter\":\"incident-only\",\"error_context\":\"rch local fallback detected\"},\"outcome\":\"failed\",\"reason_code\":\"rch_fail_open_local_fallback\",\"error_code\":\"RCH-LOCAL-FALLBACK\",\"artifact_path\":\"${scenario1_stderr#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"1\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_1.harvest\",\"inputs\":{\"source_dir\":\"${scenario1_src#"$ROOT_DIR"/}\",\"output_dir\":\"${scenario1_out#"$ROOT_DIR"/}\",\"filter\":\"incident-only\",\"error_context\":\"rch local fallback detected\"},\"outcome\":\"failed\",\"reason_code\":\"rch_fail_open_local_fallback\",\"error_code\":\"RCH-LOCAL-FALLBACK\",\"artifact_path\":\"${scenario1_stderr#"$ROOT_DIR"/}\"}"
     echo "rch fell back to local execution; failing per offload-only policy" >&2
   else
-    log_json "{\"scenario_id\":\"1\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_1.harvest\",\"inputs\":{\"source_dir\":\"${scenario1_src#$ROOT_DIR/}\",\"output_dir\":\"${scenario1_out#$ROOT_DIR/}\",\"filter\":\"incident-only\",\"error_context\":\"harvest command failed\"},\"outcome\":\"failed\",\"reason_code\":\"harvest_command_failed\",\"error_code\":\"$rc\",\"artifact_path\":\"${scenario1_stderr#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"1\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_1.harvest\",\"inputs\":{\"source_dir\":\"${scenario1_src#"$ROOT_DIR"/}\",\"output_dir\":\"${scenario1_out#"$ROOT_DIR"/}\",\"filter\":\"incident-only\",\"error_context\":\"harvest command failed\"},\"outcome\":\"failed\",\"reason_code\":\"harvest_command_failed\",\"error_code\":\"$rc\",\"artifact_path\":\"${scenario1_stderr#"$ROOT_DIR"/}\"}"
     tail -n 120 "$scenario1_stderr" >&2 || true
   fi
   exit 1
@@ -292,7 +291,7 @@ fi
 
 scenario1_harvested=$(jq -r '.harvested' "$scenario1_stdout")
 if [[ "$scenario1_harvested" -ne 1 ]]; then
-  log_json "{\"scenario_id\":\"1\",\"step\":\"assert_harvested\",\"status\":\"failed\",\"decision_path\":\"scenario_1.assert_harvested\",\"inputs\":{\"harvested\":$scenario1_harvested,\"error_context\":\"expected one harvested artifact\"},\"outcome\":\"failed\",\"reason_code\":\"unexpected_harvest_count\",\"error_code\":\"unexpected_harvest_count\",\"artifact_path\":\"${scenario1_stdout#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"1\",\"step\":\"assert_harvested\",\"status\":\"failed\",\"decision_path\":\"scenario_1.assert_harvested\",\"inputs\":{\"harvested\":$scenario1_harvested,\"error_context\":\"expected one harvested artifact\"},\"outcome\":\"failed\",\"reason_code\":\"unexpected_harvest_count\",\"error_code\":\"unexpected_harvest_count\",\"artifact_path\":\"${scenario1_stdout#"$ROOT_DIR"/}\"}"
   tail -n 120 "$scenario1_stderr" >&2 || true
   exit 1
 fi
@@ -306,28 +305,28 @@ fi
 header_json="$(extract_section_json_line "$artifact_path" "--- ftreplay-header ---")"
 footer_json="$(extract_section_json_line "$artifact_path" "--- ftreplay-footer ---")"
 if [[ -z "$header_json" || -z "$footer_json" ]]; then
-  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_sections\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_sections\",\"inputs\":{\"error_context\":\"missing header/footer sections\"},\"outcome\":\"failed\",\"reason_code\":\"missing_required_sections\",\"error_code\":\"missing_required_sections\",\"artifact_path\":\"${artifact_path#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_sections\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_sections\",\"inputs\":{\"error_context\":\"missing header/footer sections\"},\"outcome\":\"failed\",\"reason_code\":\"missing_required_sections\",\"error_code\":\"missing_required_sections\",\"artifact_path\":\"${artifact_path#"$ROOT_DIR"/}\"}"
   exit 1
 fi
 
 expected_timeline_sha="$(jq -r '.integrity.timeline_sha256' <<<"$header_json")"
 actual_timeline_sha="$(compute_timeline_sha "$artifact_path")"
 if [[ "$expected_timeline_sha" != "$actual_timeline_sha" ]]; then
-  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_integrity\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_integrity\",\"inputs\":{\"expected\":\"$expected_timeline_sha\",\"actual\":\"$actual_timeline_sha\"},\"outcome\":\"failed\",\"reason_code\":\"timeline_sha_mismatch\",\"error_code\":\"timeline_sha_mismatch\",\"artifact_path\":\"${artifact_path#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_integrity\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_integrity\",\"inputs\":{\"expected\":\"$expected_timeline_sha\",\"actual\":\"$actual_timeline_sha\"},\"outcome\":\"failed\",\"reason_code\":\"timeline_sha_mismatch\",\"error_code\":\"timeline_sha_mismatch\",\"artifact_path\":\"${artifact_path#"$ROOT_DIR"/}\"}"
   exit 1
 fi
 
 if ! jq -e '.schema_version == "ftreplay.v1" and (.content.event_count >= 100) and (.content.decision_count >= 1)' <<<"$header_json" >/dev/null; then
-  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_header\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_header\",\"inputs\":{\"error_context\":\"header schema/content assertion failed\"},\"outcome\":\"failed\",\"reason_code\":\"invalid_header_schema\",\"error_code\":\"invalid_header_schema\",\"artifact_path\":\"${artifact_path#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_header\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_header\",\"inputs\":{\"error_context\":\"header schema/content assertion failed\"},\"outcome\":\"failed\",\"reason_code\":\"invalid_header_schema\",\"error_code\":\"invalid_header_schema\",\"artifact_path\":\"${artifact_path#"$ROOT_DIR"/}\"}"
   exit 1
 fi
 
 if ! jq -e '.schema_version == "ftreplay.v1" and (.event_count_verified >= 100) and (.integrity_check.timeline_sha256_match == true)' <<<"$footer_json" >/dev/null; then
-  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_footer\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_footer\",\"inputs\":{\"error_context\":\"footer schema/content assertion failed\"},\"outcome\":\"failed\",\"reason_code\":\"invalid_footer_schema\",\"error_code\":\"invalid_footer_schema\",\"artifact_path\":\"${artifact_path#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"1\",\"step\":\"validate_footer\",\"status\":\"failed\",\"decision_path\":\"scenario_1.validate_footer\",\"inputs\":{\"error_context\":\"footer schema/content assertion failed\"},\"outcome\":\"failed\",\"reason_code\":\"invalid_footer_schema\",\"error_code\":\"invalid_footer_schema\",\"artifact_path\":\"${artifact_path#"$ROOT_DIR"/}\"}"
   exit 1
 fi
 
-log_json "{\"scenario_id\":\"1\",\"step\":\"validate_sections_and_integrity\",\"status\":\"passed\",\"decision_path\":\"scenario_1.validate_sections_and_integrity\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"assertions_satisfied\",\"artifact_path\":\"${artifact_path#$ROOT_DIR/}\"}"
+log_json "{\"scenario_id\":\"1\",\"step\":\"validate_sections_and_integrity\",\"status\":\"passed\",\"decision_path\":\"scenario_1.validate_sections_and_integrity\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"assertions_satisfied\",\"artifact_path\":\"${artifact_path#"$ROOT_DIR"/}\"}"
 
 # Scenario 2: failure injection by tampering timeline content
 tampered_path="$work_dir/scenario2_tampered.ftreplay"
@@ -344,10 +343,10 @@ tampered_header="$(extract_section_json_line "$tampered_path" "--- ftreplay-head
 tampered_expected_sha="$(jq -r '.integrity.timeline_sha256' <<<"$tampered_header")"
 tampered_actual_sha="$(compute_timeline_sha "$tampered_path")"
 if [[ "$tampered_expected_sha" == "$tampered_actual_sha" ]]; then
-  log_json "{\"scenario_id\":\"2\",\"step\":\"tamper_detection\",\"status\":\"failed\",\"decision_path\":\"scenario_2.tamper_detection\",\"inputs\":{\"error_context\":\"tampering did not alter digest\"},\"outcome\":\"failed\",\"reason_code\":\"tamper_not_detected\",\"error_code\":\"tamper_not_detected\",\"artifact_path\":\"${tampered_path#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"2\",\"step\":\"tamper_detection\",\"status\":\"failed\",\"decision_path\":\"scenario_2.tamper_detection\",\"inputs\":{\"error_context\":\"tampering did not alter digest\"},\"outcome\":\"failed\",\"reason_code\":\"tamper_not_detected\",\"error_code\":\"tamper_not_detected\",\"artifact_path\":\"${tampered_path#"$ROOT_DIR"/}\"}"
   exit 1
 fi
-log_json "{\"scenario_id\":\"2\",\"step\":\"tamper_detection\",\"status\":\"passed\",\"decision_path\":\"scenario_2.tamper_detection\",\"inputs\":{\"expected\":\"$tampered_expected_sha\",\"actual\":\"$tampered_actual_sha\"},\"outcome\":\"pass\",\"reason_code\":\"tamper_detected\",\"artifact_path\":\"${tampered_path#$ROOT_DIR/}\"}"
+log_json "{\"scenario_id\":\"2\",\"step\":\"tamper_detection\",\"status\":\"passed\",\"decision_path\":\"scenario_2.tamper_detection\",\"inputs\":{\"expected\":\"$tampered_expected_sha\",\"actual\":\"$tampered_actual_sha\"},\"outcome\":\"pass\",\"reason_code\":\"tamper_detected\",\"artifact_path\":\"${tampered_path#"$ROOT_DIR"/}\"}"
 
 # Scenario 3: recovery path (fresh output rerun restores valid artifact)
 scenario3_out="$work_dir/scenario3_recovery/out"
@@ -360,10 +359,10 @@ rc=$?
 set -e
 if [[ $rc -ne 0 ]]; then
   if [[ $rc -eq 97 ]]; then
-    log_json "{\"scenario_id\":\"3\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_3.recovery_harvest\",\"inputs\":{\"error_context\":\"rch local fallback detected\"},\"outcome\":\"failed\",\"reason_code\":\"rch_fail_open_local_fallback\",\"error_code\":\"RCH-LOCAL-FALLBACK\",\"artifact_path\":\"${scenario3_stderr#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"3\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_3.recovery_harvest\",\"inputs\":{\"error_context\":\"rch local fallback detected\"},\"outcome\":\"failed\",\"reason_code\":\"rch_fail_open_local_fallback\",\"error_code\":\"RCH-LOCAL-FALLBACK\",\"artifact_path\":\"${scenario3_stderr#"$ROOT_DIR"/}\"}"
     echo "rch fell back to local execution; failing per offload-only policy" >&2
   else
-    log_json "{\"scenario_id\":\"3\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_3.recovery_harvest\",\"inputs\":{\"error_context\":\"harvest command failed\"},\"outcome\":\"failed\",\"reason_code\":\"harvest_command_failed\",\"error_code\":\"$rc\",\"artifact_path\":\"${scenario3_stderr#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"3\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_3.recovery_harvest\",\"inputs\":{\"error_context\":\"harvest command failed\"},\"outcome\":\"failed\",\"reason_code\":\"harvest_command_failed\",\"error_code\":\"$rc\",\"artifact_path\":\"${scenario3_stderr#"$ROOT_DIR"/}\"}"
     tail -n 120 "$scenario3_stderr" >&2 || true
   fi
   exit 1
@@ -379,10 +378,10 @@ recovered_header="$(extract_section_json_line "$recovered_artifact" "--- ftrepla
 recovered_expected_sha="$(jq -r '.integrity.timeline_sha256' <<<"$recovered_header")"
 recovered_actual_sha="$(compute_timeline_sha "$recovered_artifact")"
 if [[ "$recovered_expected_sha" != "$recovered_actual_sha" ]]; then
-  log_json "{\"scenario_id\":\"3\",\"step\":\"recovery\",\"status\":\"failed\",\"decision_path\":\"scenario_3.recovery\",\"inputs\":{\"error_context\":\"recovered artifact integrity mismatch\"},\"outcome\":\"failed\",\"reason_code\":\"recovery_integrity_mismatch\",\"error_code\":\"recovery_integrity_mismatch\",\"artifact_path\":\"${recovered_artifact#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"3\",\"step\":\"recovery\",\"status\":\"failed\",\"decision_path\":\"scenario_3.recovery\",\"inputs\":{\"error_context\":\"recovered artifact integrity mismatch\"},\"outcome\":\"failed\",\"reason_code\":\"recovery_integrity_mismatch\",\"error_code\":\"recovery_integrity_mismatch\",\"artifact_path\":\"${recovered_artifact#"$ROOT_DIR"/}\"}"
   exit 1
 fi
-log_json "{\"scenario_id\":\"3\",\"step\":\"recovery\",\"status\":\"passed\",\"decision_path\":\"scenario_3.recovery\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"recovery_integrity_verified\",\"artifact_path\":\"${recovered_artifact#$ROOT_DIR/}\"}"
+log_json "{\"scenario_id\":\"3\",\"step\":\"recovery\",\"status\":\"passed\",\"decision_path\":\"scenario_3.recovery\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"recovery_integrity_verified\",\"artifact_path\":\"${recovered_artifact#"$ROOT_DIR"/}\"}"
 
 # Scenario 4: chunking path (>100k events)
 scenario4_src="$work_dir/scenario4/incidents"
@@ -398,10 +397,10 @@ rc=$?
 set -e
 if [[ $rc -ne 0 ]]; then
   if [[ $rc -eq 97 ]]; then
-    log_json "{\"scenario_id\":\"4\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunk_harvest\",\"inputs\":{\"error_context\":\"rch local fallback detected\"},\"outcome\":\"failed\",\"reason_code\":\"rch_fail_open_local_fallback\",\"error_code\":\"RCH-LOCAL-FALLBACK\",\"artifact_path\":\"${scenario4_stderr#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"4\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunk_harvest\",\"inputs\":{\"error_context\":\"rch local fallback detected\"},\"outcome\":\"failed\",\"reason_code\":\"rch_fail_open_local_fallback\",\"error_code\":\"RCH-LOCAL-FALLBACK\",\"artifact_path\":\"${scenario4_stderr#"$ROOT_DIR"/}\"}"
     echo "rch fell back to local execution; failing per offload-only policy" >&2
   else
-    log_json "{\"scenario_id\":\"4\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunk_harvest\",\"inputs\":{\"error_context\":\"harvest command failed\"},\"outcome\":\"failed\",\"reason_code\":\"harvest_command_failed\",\"error_code\":\"$rc\",\"artifact_path\":\"${scenario4_stderr#$ROOT_DIR/}\"}"
+    log_json "{\"scenario_id\":\"4\",\"step\":\"run_harvest\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunk_harvest\",\"inputs\":{\"error_context\":\"harvest command failed\"},\"outcome\":\"failed\",\"reason_code\":\"harvest_command_failed\",\"error_code\":\"$rc\",\"artifact_path\":\"${scenario4_stderr#"$ROOT_DIR"/}\"}"
     tail -n 120 "$scenario4_stderr" >&2 || true
   fi
   exit 1
@@ -415,7 +414,7 @@ fi
 
 chunk_count="$(jq -r '.chunk_count' "$manifest_path")"
 if [[ "$chunk_count" -lt 2 ]]; then
-  log_json "{\"scenario_id\":\"4\",\"step\":\"chunking\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunking\",\"inputs\":{\"chunk_count\":$chunk_count},\"outcome\":\"failed\",\"reason_code\":\"chunk_count_too_small\",\"error_code\":\"chunk_count_too_small\",\"artifact_path\":\"${manifest_path#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"4\",\"step\":\"chunking\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunking\",\"inputs\":{\"chunk_count\":$chunk_count},\"outcome\":\"failed\",\"reason_code\":\"chunk_count_too_small\",\"error_code\":\"chunk_count_too_small\",\"artifact_path\":\"${manifest_path#"$ROOT_DIR"/}\"}"
   exit 1
 fi
 
@@ -427,11 +426,11 @@ while IFS= read -r chunk_rel; do
   fi
 done < <(jq -r '.chunks[].path' "$manifest_path")
 if [[ "$missing_chunk" -ne 0 ]]; then
-  log_json "{\"scenario_id\":\"4\",\"step\":\"chunking\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunking\",\"inputs\":{\"error_context\":\"manifest references missing chunk\"},\"outcome\":\"failed\",\"reason_code\":\"chunk_file_missing\",\"error_code\":\"chunk_file_missing\",\"artifact_path\":\"${manifest_path#$ROOT_DIR/}\"}"
+  log_json "{\"scenario_id\":\"4\",\"step\":\"chunking\",\"status\":\"failed\",\"decision_path\":\"scenario_4.chunking\",\"inputs\":{\"error_context\":\"manifest references missing chunk\"},\"outcome\":\"failed\",\"reason_code\":\"chunk_file_missing\",\"error_code\":\"chunk_file_missing\",\"artifact_path\":\"${manifest_path#"$ROOT_DIR"/}\"}"
   exit 1
 fi
 
-log_json "{\"scenario_id\":\"4\",\"step\":\"chunking\",\"status\":\"passed\",\"decision_path\":\"scenario_4.chunking\",\"inputs\":{\"chunk_count\":$chunk_count},\"outcome\":\"pass\",\"reason_code\":\"chunk_manifest_valid\",\"artifact_path\":\"${manifest_path#$ROOT_DIR/}\"}"
+log_json "{\"scenario_id\":\"4\",\"step\":\"chunking\",\"status\":\"passed\",\"decision_path\":\"scenario_4.chunking\",\"inputs\":{\"chunk_count\":$chunk_count},\"outcome\":\"pass\",\"reason_code\":\"chunk_manifest_valid\",\"artifact_path\":\"${manifest_path#"$ROOT_DIR"/}\"}"
 
-log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"complete\",\"status\":\"passed\",\"decision_path\":\"suite\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"all_checks_passed\",\"artifact_path\":\"${json_log#$ROOT_DIR/}\"}"
-echo "Replay artifact write/read e2e passed. Logs: ${json_log#$ROOT_DIR/}"
+log_json "{\"scenario_id\":\"$scenario_id\",\"step\":\"complete\",\"status\":\"passed\",\"decision_path\":\"suite\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"all_checks_passed\",\"artifact_path\":\"${json_log#"$ROOT_DIR"/}\"}"
+echo "Replay artifact write/read e2e passed. Logs: ${json_log#"$ROOT_DIR"/}"
