@@ -996,6 +996,8 @@ pub struct ObservationRuntime {
     cursors: Arc<RwLock<HashMap<u64, PaneCursor>>>,
     /// Per-pane detection contexts for deduplication
     detection_contexts: Arc<RwLock<HashMap<u64, DetectionContext>>>,
+    /// Best-effort per-pane output activity tracker for health snapshots.
+    pane_activity_tracker: Arc<RwLock<HashMap<u64, PaneActivityState>>>,
     /// Shutdown flag for signaling tasks
     shutdown_flag: Arc<AtomicBool>,
     /// Runtime metrics for health/shutdown
@@ -1061,6 +1063,7 @@ impl ObservationRuntime {
             registry: Arc::new(RwLock::new(registry)),
             cursors: Arc::new(RwLock::new(HashMap::new())),
             detection_contexts: Arc::new(RwLock::new(HashMap::new())),
+            pane_activity_tracker: Arc::new(RwLock::new(HashMap::new())),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             metrics,
             config_tx: Arc::new(config_tx),
@@ -1246,6 +1249,7 @@ impl ObservationRuntime {
             metrics: Arc::clone(&self.metrics),
             registry: Arc::clone(&self.registry),
             cursors: Arc::clone(&self.cursors),
+            pane_activity_tracker: Arc::clone(&self.pane_activity_tracker),
             start_time: Instant::now(),
             config_tx: Arc::clone(&self.config_tx),
             event_bus: self.event_bus.clone(),
@@ -1382,6 +1386,7 @@ impl ObservationRuntime {
         let registry = Arc::clone(&self.registry);
         let cursors = Arc::clone(&self.cursors);
         let detection_contexts = Arc::clone(&self.detection_contexts);
+        let pane_activity_tracker = Arc::clone(&self.pane_activity_tracker);
         let metrics = Arc::clone(&self.metrics);
         let scheduler_snapshot = Arc::clone(&self.scheduler_snapshot);
 
@@ -1583,34 +1588,16 @@ impl ObservationRuntime {
                 }
 
                 if now.duration_since(last_health_snapshot) >= health_interval {
-                    let (observed_panes, last_activity_by_pane) = {
+                    let health_panes = {
                         let reg = registry.read().await;
-                        let ids = reg.observed_pane_ids();
-                        let activity: Vec<(u64, u64)> = reg
-                            .entries()
-                            .filter(|(_, e)| e.should_observe())
-                            .map(|(id, e)| {
-                                #[allow(clippy::cast_sign_loss)]
-                                (*id, e.last_seen_at as u64)
-                            })
-                            .collect();
-                        (ids.len(), activity)
-                    };
-
-                    let (last_seq_by_pane, cursor_snapshot_bytes): (Vec<(u64, i64)>, u64) = {
                         let cursors = cursors.read().await;
-                        let mut total_bytes = 0u64;
-                        let seqs = cursors
-                            .iter()
-                            .map(|(pane_id, cursor)| {
-                                total_bytes = total_bytes.saturating_add(
-                                    u64::try_from(cursor.last_snapshot.len()).unwrap_or(u64::MAX),
-                                );
-                                (*pane_id, cursor.last_seq())
-                            })
-                            .collect();
-                        (seqs, total_bytes)
+                        let mut tracker = pane_activity_tracker.write().await;
+                        build_health_pane_snapshot(&reg, &cursors, &mut tracker, epoch_ms_u64())
                     };
+                    let observed_panes = health_panes.observed_panes;
+                    let last_activity_by_pane = health_panes.last_activity_by_pane;
+                    let last_seq_by_pane = health_panes.last_seq_by_pane;
+                    let cursor_snapshot_bytes = health_panes.cursor_snapshot_bytes;
                     metrics.record_cursor_snapshot_memory(cursor_snapshot_bytes);
 
                     let capture_cap = mpsc_max_capacity(&capture_tx);
@@ -3127,6 +3114,8 @@ pub struct RuntimeHandle {
     pub registry: Arc<RwLock<PaneRegistry>>,
     /// Per-pane cursors
     pub cursors: Arc<RwLock<HashMap<u64, PaneCursor>>>,
+    /// Best-effort per-pane output activity tracker for health snapshots.
+    pane_activity_tracker: Arc<RwLock<HashMap<u64, PaneActivityState>>>,
     /// Runtime start time
     pub start_time: Instant,
     /// Hot-reload config sender for broadcasting updates
@@ -3162,9 +3151,63 @@ const SNAPSHOT_TRIGGER_BRIDGE_TICK_SECS: u64 = 30;
 const SNAPSHOT_IDLE_WINDOW_SECS: u64 = 5 * 60;
 /// Minimum interval between `MemoryPressure` trigger emissions.
 const SNAPSHOT_MEMORY_TRIGGER_COOLDOWN_SECS: u64 = 2 * 60;
-/// Coarse page-size estimate used when only logical pane accounting is
-/// available and direct warm-tier page counts are not.
-const FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES: usize = 4096;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PaneActivityState {
+    last_seq: i64,
+    last_output_at_ms: u64,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HealthPaneSnapshot {
+    observed_panes: usize,
+    last_activity_by_pane: Vec<(u64, u64)>,
+    last_seq_by_pane: Vec<(u64, i64)>,
+    cursor_snapshot_bytes: u64,
+}
+
+fn build_health_pane_snapshot(
+    registry: &PaneRegistry,
+    cursors: &HashMap<u64, PaneCursor>,
+    activity_tracker: &mut HashMap<u64, PaneActivityState>,
+    now_ms: u64,
+) -> HealthPaneSnapshot {
+    let observed_ids = registry.observed_pane_ids();
+    let observed_set: HashSet<u64> = observed_ids.iter().copied().collect();
+    activity_tracker.retain(|pane_id, _| observed_set.contains(pane_id));
+
+    let mut last_activity_by_pane = Vec::with_capacity(observed_ids.len());
+    let mut last_seq_by_pane = Vec::with_capacity(observed_ids.len());
+    let mut cursor_snapshot_bytes = 0u64;
+
+    for pane_id in observed_ids {
+        let current_seq = cursors.get(&pane_id).map_or(-1, PaneCursor::last_seq);
+        if let Some(cursor) = cursors.get(&pane_id) {
+            cursor_snapshot_bytes = cursor_snapshot_bytes
+                .saturating_add(u64::try_from(cursor.last_snapshot.len()).unwrap_or(u64::MAX));
+        }
+
+        let state = activity_tracker
+            .entry(pane_id)
+            .or_insert(PaneActivityState {
+                last_seq: current_seq,
+                last_output_at_ms: now_ms,
+            });
+        if state.last_seq != current_seq {
+            state.last_seq = current_seq;
+            state.last_output_at_ms = now_ms;
+        }
+
+        last_seq_by_pane.push((pane_id, current_seq));
+        last_activity_by_pane.push((pane_id, state.last_output_at_ms));
+    }
+
+    HealthPaneSnapshot {
+        observed_panes: last_seq_by_pane.len(),
+        last_activity_by_pane,
+        last_seq_by_pane,
+        cursor_snapshot_bytes,
+    }
+}
 
 fn build_fleet_pressure_signals(
     backpressure_manager: &BackpressureManager,
@@ -3189,17 +3232,23 @@ fn fleet_pane_infos_from_registry(registry: &PaneRegistry) -> Vec<PaneScrollback
         .entries()
         .filter(|(_, entry)| entry.should_observe())
         .map(|(pane_id, entry)| {
-            let tracked_bytes = registry
+            let estimated_memory_bytes = registry
                 .pane_arena_stats(*pane_id)
                 .map(|stats| stats.tracked_bytes)
                 .unwrap_or_else(|| entry.estimated_bytes());
+            let activity_counter = registry
+                .get_cursor(*pane_id)
+                .map_or(0, |cursor| cursor.next_seq);
 
             PaneScrollbackInfo {
                 pane_id: *pane_id,
-                activity_counter: u64::try_from(entry.last_seen_at).unwrap_or_default(),
-                warm_bytes: tracked_bytes,
-                warm_pages: tracked_bytes.div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES),
-                estimated_memory_bytes: tracked_bytes,
+                // Runtime maintenance currently does not hold live TieredScrollback
+                // instances, so only use cursor sequence growth as an activity signal.
+                // Arena accounting is metadata/allocator usage, not evictable warm pages.
+                activity_counter,
+                warm_bytes: 0,
+                warm_pages: 0,
+                estimated_memory_bytes,
             }
         })
         .collect()
@@ -3394,34 +3443,16 @@ impl RuntimeHandle {
     ///
     /// Call this periodically (e.g., every 30s) to keep crash reports useful.
     pub async fn update_health_snapshot(&self) {
-        let (observed_panes, last_activity_by_pane) = {
+        let health_panes = {
             let reg = self.registry.read().await;
-            let ids = reg.observed_pane_ids();
-            let activity: Vec<(u64, u64)> = reg
-                .entries()
-                .filter(|(_, e)| e.should_observe())
-                .map(|(id, e)| {
-                    #[allow(clippy::cast_sign_loss)]
-                    (*id, e.last_seen_at as u64)
-                })
-                .collect();
-            (ids.len(), activity)
-        };
-
-        let (last_seq_by_pane, cursor_snapshot_bytes): (Vec<(u64, i64)>, u64) = {
             let cursors = self.cursors.read().await;
-            let mut total_bytes = 0u64;
-            let seqs = cursors
-                .iter()
-                .map(|(pane_id, cursor)| {
-                    total_bytes = total_bytes.saturating_add(
-                        u64::try_from(cursor.last_snapshot.len()).unwrap_or(u64::MAX),
-                    );
-                    (*pane_id, cursor.last_seq())
-                })
-                .collect();
-            (seqs, total_bytes)
+            let mut tracker = self.pane_activity_tracker.write().await;
+            build_health_pane_snapshot(&reg, &cursors, &mut tracker, epoch_ms_u64())
         };
+        let observed_panes = health_panes.observed_panes;
+        let last_activity_by_pane = health_panes.last_activity_by_pane;
+        let last_seq_by_pane = health_panes.last_seq_by_pane;
+        let cursor_snapshot_bytes = health_panes.cursor_snapshot_bytes;
         self.metrics
             .record_cursor_snapshot_memory(cursor_snapshot_bytes);
 
@@ -4567,12 +4598,25 @@ mod tests {
         }
     }
 
+    fn cursor_map_from_registry(registry: &PaneRegistry) -> HashMap<u64, PaneCursor> {
+        registry
+            .observed_pane_ids()
+            .into_iter()
+            .filter_map(|pane_id| {
+                registry
+                    .get_cursor(pane_id)
+                    .cloned()
+                    .map(|cursor| (pane_id, cursor))
+            })
+            .collect()
+    }
+
     #[test]
-    fn fleet_pane_infos_from_registry_uses_arena_accounting() {
+    fn fleet_pane_infos_from_registry_uses_cursor_activity_and_arena_accounting() {
         let mut registry = PaneRegistry::new();
         registry.discovery_tick(vec![make_pane(1, "bash"), make_pane(2, "vim")]);
-        registry.get_entry_mut(1).expect("pane 1").last_seen_at = 111;
-        registry.get_entry_mut(2).expect("pane 2").last_seen_at = 222;
+        registry.get_cursor_mut(1).expect("pane 1 cursor").next_seq = 111;
+        registry.get_cursor_mut(2).expect("pane 2 cursor").next_seq = 222;
 
         let stats1 = registry.pane_arena_stats(1).expect("pane 1 arena stats");
         let stats2 = registry.pane_arena_stats(2).expect("pane 2 arena stats");
@@ -4583,25 +4627,107 @@ mod tests {
         assert_eq!(infos.len(), 2);
         assert_eq!(infos[0].pane_id, 1);
         assert_eq!(infos[0].activity_counter, 111);
-        assert_eq!(infos[0].warm_bytes, stats1.tracked_bytes);
+        assert_eq!(infos[0].warm_bytes, 0);
+        assert_eq!(infos[0].warm_pages, 0);
         assert_eq!(infos[0].estimated_memory_bytes, stats1.tracked_bytes);
-        assert_eq!(
-            infos[0].warm_pages,
-            stats1
-                .tracked_bytes
-                .div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES)
-        );
 
         assert_eq!(infos[1].pane_id, 2);
         assert_eq!(infos[1].activity_counter, 222);
-        assert_eq!(infos[1].warm_bytes, stats2.tracked_bytes);
+        assert_eq!(infos[1].warm_bytes, 0);
+        assert_eq!(infos[1].warm_pages, 0);
         assert_eq!(infos[1].estimated_memory_bytes, stats2.tracked_bytes);
-        assert_eq!(
-            infos[1].warm_pages,
-            stats2
-                .tracked_bytes
-                .div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES)
+    }
+
+    #[test]
+    fn health_pane_snapshot_ignores_discovery_heartbeats_without_new_output() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash")]);
+        registry.get_cursor_mut(1).expect("pane 1 cursor").next_seq = 7;
+
+        let mut tracker = HashMap::new();
+        let first = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            1_000,
         );
+        assert_eq!(first.last_activity_by_pane, vec![(1, 1_000)]);
+        assert_eq!(first.last_seq_by_pane, vec![(1, 6)]);
+
+        registry
+            .get_entry_mut(1)
+            .expect("pane 1 entry")
+            .last_seen_at = 9_000;
+        let second = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            9_000,
+        );
+
+        assert_eq!(second.last_seq_by_pane, vec![(1, 6)]);
+        assert_eq!(
+            second.last_activity_by_pane,
+            vec![(1, 1_000)],
+            "discovery heartbeats must not reset pane activity without new cursor progress"
+        );
+    }
+
+    #[test]
+    fn health_pane_snapshot_updates_activity_when_cursor_progresses() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash")]);
+        registry.get_cursor_mut(1).expect("pane 1 cursor").next_seq = 3;
+
+        let mut tracker = HashMap::new();
+        let first = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            2_000,
+        );
+        assert_eq!(first.last_activity_by_pane, vec![(1, 2_000)]);
+        assert_eq!(first.last_seq_by_pane, vec![(1, 2)]);
+
+        registry.get_cursor_mut(1).expect("pane 1 cursor").next_seq = 4;
+        let second = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            8_000,
+        );
+
+        assert_eq!(second.last_seq_by_pane, vec![(1, 3)]);
+        assert_eq!(second.last_activity_by_pane, vec![(1, 8_000)]);
+    }
+
+    #[test]
+    fn health_pane_snapshot_drops_closed_panes_from_tracker() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash"), make_pane(2, "vim")]);
+
+        let mut tracker = HashMap::new();
+        let first = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            5_000,
+        );
+        assert_eq!(first.observed_panes, 2);
+        assert_eq!(tracker.len(), 2);
+
+        registry.discovery_tick(vec![make_pane(1, "bash")]);
+        let second = build_health_pane_snapshot(
+            &registry,
+            &cursor_map_from_registry(&registry),
+            &mut tracker,
+            6_000,
+        );
+
+        assert_eq!(second.observed_panes, 1);
+        assert_eq!(second.last_activity_by_pane.len(), 1);
+        assert_eq!(tracker.len(), 1);
+        assert!(!tracker.contains_key(&2));
     }
 
     #[test]
@@ -6265,17 +6391,23 @@ mod tests {
     }
 
     #[test]
-    fn fleet_pane_infos_warm_pages_divides_correctly() {
+    fn fleet_pane_infos_without_live_tiers_report_zero_warm_pages() {
         let mut registry = PaneRegistry::new();
         registry.discovery_tick(vec![make_pane(1, "test")]);
 
         let infos = fleet_pane_infos_from_registry(&registry);
         assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].warm_bytes, 0);
+        assert_eq!(infos[0].warm_pages, 0);
+    }
 
-        // warm_pages should be div_ceil(warm_bytes, 4096)
-        let expected_pages = infos[0]
-            .warm_bytes
-            .div_ceil(FLEET_SCROLLBACK_ESTIMATED_PAGE_BYTES);
-        assert_eq!(infos[0].warm_pages, expected_pages);
+    #[test]
+    fn fleet_pane_infos_activity_defaults_to_zero_without_cursor_progress() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "idle")]);
+
+        let infos = fleet_pane_infos_from_registry(&registry);
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].activity_counter, 0);
     }
 }

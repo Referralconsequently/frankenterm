@@ -74,8 +74,8 @@ pub struct HealthSnapshot {
     #[serde(default)]
     pub backpressure_tier: Option<String>,
 
-    /// Per-pane last activity timestamp (epoch ms) for stuck pane detection.
-    /// Each entry is `(pane_id, last_seen_at_epoch_ms)`.
+    /// Best-effort per-pane output activity timestamp (epoch ms) for stuck pane
+    /// detection. Each entry is `(pane_id, last_output_progress_epoch_ms)`.
     #[serde(default)]
     pub last_activity_by_pane: Vec<(u64, u64)>,
 
@@ -327,6 +327,17 @@ pub fn write_crash_bundle(
 
     let mut files = Vec::new();
     let mut total_size: u64 = 0;
+    let mut maybe_write_bounded = |file_name: &str, bytes: &[u8]| -> std::io::Result<bool> {
+        let prospective_total = total_size.saturating_add(bytes.len() as u64);
+        if prospective_total > MAX_BUNDLE_SIZE as u64 {
+            return Ok(false);
+        }
+
+        write_file_sync(&tmp_dir.join(file_name), bytes)?;
+        total_size = prospective_total;
+        files.push(file_name.to_string());
+        Ok(true)
+    };
 
     // 1. Write crash_report.json (redacted)
     {
@@ -340,25 +351,14 @@ pub fn write_crash_bundle(
         };
         let json = serde_json::to_string_pretty(&redacted_report).map_err(std::io::Error::other)?;
         let bytes = json.as_bytes();
-        total_size += bytes.len() as u64;
-        if total_size <= MAX_BUNDLE_SIZE as u64 {
-            write_file_sync(&tmp_dir.join("crash_report.json"), bytes)?;
-            files.push("crash_report.json".to_string());
-        }
+        let _ = maybe_write_bounded("crash_report.json", bytes)?;
     }
 
     // 2. Write health_snapshot.json (if available)
     let has_health = if let Some(snap) = health {
         let json = serde_json::to_string_pretty(snap).map_err(std::io::Error::other)?;
         let bytes = json.as_bytes();
-        total_size += bytes.len() as u64;
-        if total_size <= MAX_BUNDLE_SIZE as u64 {
-            write_file_sync(&tmp_dir.join("health_snapshot.json"), bytes)?;
-            files.push("health_snapshot.json".to_string());
-            true
-        } else {
-            false
-        }
+        maybe_write_bounded("health_snapshot.json", bytes)?
     } else {
         false
     };
@@ -367,14 +367,7 @@ pub fn write_crash_bundle(
     let has_resize_forensics = if let Some(ctx) = resize_forensics {
         let json = serde_json::to_string_pretty(ctx).map_err(std::io::Error::other)?;
         let bytes = json.as_bytes();
-        total_size += bytes.len() as u64;
-        if total_size <= MAX_BUNDLE_SIZE as u64 {
-            write_file_sync(&tmp_dir.join("resize_forensics.json"), bytes)?;
-            files.push("resize_forensics.json".to_string());
-            true
-        } else {
-            false
-        }
+        maybe_write_bounded("resize_forensics.json", bytes)?
     } else {
         false
     };
@@ -2129,6 +2122,50 @@ mod tests {
             "oversized report should be skipped, files: {:?}",
             manifest.files
         );
+    }
+
+    #[test]
+    fn skipped_oversized_optional_file_does_not_consume_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let crash_dir = tmp.path().join("crash");
+
+        let report = CrashReport {
+            message: "small panic".to_string(),
+            location: None,
+            backtrace: None,
+            timestamp: 1_700_000_000,
+            pid: 1,
+            thread_name: None,
+        };
+
+        let mut health = test_snapshot();
+        health.warnings = vec!["x".repeat(MAX_BUNDLE_SIZE + 1024)];
+
+        let resize = crate::resize_crash_forensics::ResizeCrashContextBuilder::new(42).build();
+
+        let bundle_path =
+            write_crash_bundle(&crash_dir, &report, Some(&health), Some(&resize)).unwrap();
+
+        let manifest_json = fs::read_to_string(bundle_path.join("manifest.json")).unwrap();
+        let manifest: CrashManifest = serde_json::from_str(&manifest_json).unwrap();
+
+        assert!(manifest.files.contains(&"crash_report.json".to_string()));
+        assert!(!manifest.files.contains(&"health_snapshot.json".to_string()));
+        assert!(
+            manifest
+                .files
+                .contains(&"resize_forensics.json".to_string())
+        );
+        assert!(!manifest.has_health_snapshot);
+        assert!(manifest.has_resize_forensics);
+
+        let actual_bytes: u64 = manifest
+            .files
+            .iter()
+            .map(|name| fs::metadata(bundle_path.join(name)).unwrap().len())
+            .sum();
+        assert_eq!(manifest.bundle_size_bytes, actual_bytes);
+        assert!(manifest.bundle_size_bytes < MAX_BUNDLE_SIZE as u64);
     }
 
     #[test]
