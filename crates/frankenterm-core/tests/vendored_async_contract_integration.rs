@@ -5,7 +5,12 @@
 //! compliance and audit infrastructure to prove that contract invariants
 //! hold at the integration level — not just in isolation.
 
-use frankenterm_core::{runtime_compat::SURFACE_CONTRACT_V1, vendored_async_contracts::*};
+use std::collections::BTreeSet;
+
+use frankenterm_core::{
+    runtime_compat::{SURFACE_CONTRACT_V1, SurfaceDisposition},
+    vendored_async_contracts::*,
+};
 
 // =============================================================================
 // Contract Infrastructure Integration
@@ -307,6 +312,48 @@ fn misaligned_mappings_have_reasons() {
     assert!(
         misaligned.len() >= 3,
         "at least 3 misaligned mappings expected"
+    );
+}
+
+#[test]
+fn misaligned_mappings_match_non_keep_surface_contracts_exactly() {
+    let mappings = standard_compatibility_mappings();
+    let misaligned: BTreeSet<_> = mappings
+        .iter()
+        .filter(|mapping| !mapping.disposition_aligned)
+        .map(|mapping| mapping.compat_api.as_str())
+        .collect();
+    let non_keep_surfaces: BTreeSet<_> = SURFACE_CONTRACT_V1
+        .iter()
+        .filter(|entry| entry.disposition != SurfaceDisposition::Keep)
+        .map(|entry| entry.api)
+        .collect();
+
+    assert_eq!(
+        misaligned, non_keep_surfaces,
+        "non-aligned compatibility mappings must stay in exact lockstep with non-Keep runtime surfaces"
+    );
+}
+
+#[test]
+fn zero_contract_mappings_are_exactly_detached_or_retired_surfaces() {
+    let zero_contract_mappings: BTreeSet<_> = standard_compatibility_mappings()
+        .into_iter()
+        .filter(|mapping| mapping.satisfies_contracts.is_empty())
+        .map(|mapping| mapping.compat_api)
+        .collect();
+    let expected: BTreeSet<String> = [
+        "CompatRuntime::spawn_detached",
+        "process::Command",
+        "signal",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    assert_eq!(
+        zero_contract_mappings, expected,
+        "only detached-task and retired tokio-only surfaces should be contractless"
     );
 }
 

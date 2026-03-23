@@ -34,6 +34,7 @@ echo ""
 
 PASS=0; FAIL=0
 TEST_FILE="${ROOT_DIR}/crates/frankenterm-core/tests/vendored_async_contract_verification.rs"
+INTEGRATION_FILE="${ROOT_DIR}/crates/frankenterm-core/tests/vendored_async_contract_integration.rs"
 CONTRACT_FILE="${ROOT_DIR}/crates/frankenterm-core/src/vendored_async_contracts.rs"
 BOUNDARY_HARNESS="${ROOT_DIR}/tests/e2e/test_vendored_async_contract_boundary.sh"
 
@@ -51,6 +52,14 @@ if [ -f "${CONTRACT_FILE}" ]; then
   echo "PASS"; emit_log "pass" "contract_file" "exists" "" "${CONTRACT_FILE}" ""; PASS=$((PASS+1))
 else
   echo "FAIL"; emit_log "fail" "contract_file" "missing" "E_FILE" "${CONTRACT_FILE}" ""; FAIL=$((FAIL+1))
+fi
+
+# S2b: Integration test file exists
+echo -n "S2b: Contract integration test file exists... "
+if [ -f "${INTEGRATION_FILE}" ]; then
+  echo "PASS"; emit_log "pass" "integration_file" "exists" "" "${INTEGRATION_FILE}" ""; PASS=$((PASS+1))
+else
+  echo "FAIL"; emit_log "fail" "integration_file" "missing" "E_FILE" "${INTEGRATION_FILE}" ""; FAIL=$((FAIL+1))
 fi
 
 # S3: Test count >= 25
@@ -134,6 +143,15 @@ if [ "${RCH_EXEC_REFS}" -ge 1 ] && [ "${RCH_GUARD_REFS}" -ge 2 ] && [ "${VENDORE
   echo "PASS (rch_exec_refs=${RCH_EXEC_REFS}, guard_refs=${RCH_GUARD_REFS}, vendored_refs=${VENDORED_PHASE_REFS})"; emit_log "pass" "boundary_harness_rch" "offload_guard_present" "" "${BOUNDARY_HARNESS}" "rch_exec_refs=${RCH_EXEC_REFS};guard_refs=${RCH_GUARD_REFS};vendored_refs=${VENDORED_PHASE_REFS}"; PASS=$((PASS+1))
 else
   echo "FAIL"; emit_log "fail" "boundary_harness_rch" "offload_guard_missing" "E_RCH_GUARD" "${BOUNDARY_HARNESS}" "rch_exec_refs=${RCH_EXEC_REFS};guard_refs=${RCH_GUARD_REFS};vendored_refs=${VENDORED_PHASE_REFS}"; FAIL=$((FAIL+1))
+fi
+
+# S12: Integration suite enforces exact non-Keep/misaligned surface lockstep
+echo -n "S12: Integration suite exact surface-matrix anchors... "
+EXACT_SURFACE_REFS=$(grep -c 'misaligned_mappings_match_non_keep_surface_contracts_exactly\|zero_contract_mappings_are_exactly_detached_or_retired_surfaces' "${INTEGRATION_FILE}" || true)
+if [ "${EXACT_SURFACE_REFS}" -ge 2 ]; then
+  echo "PASS (${EXACT_SURFACE_REFS} exact-surface anchors)"; emit_log "pass" "exact_surface_matrix" "present" "" "${INTEGRATION_FILE}" "refs=${EXACT_SURFACE_REFS}"; PASS=$((PASS+1))
+else
+  echo "FAIL"; emit_log "fail" "exact_surface_matrix" "missing" "E_SURFACE_MATRIX" "${INTEGRATION_FILE}" "refs=${EXACT_SURFACE_REFS}"; FAIL=$((FAIL+1))
 fi
 
 echo ""
