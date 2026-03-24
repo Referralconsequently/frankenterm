@@ -1031,7 +1031,12 @@ pub mod process {
 #[cfg(feature = "asupersync-runtime")]
 pub mod process {
     use std::ffi::OsStr;
-    use std::process::Output;
+    use std::process::{Output, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
     /// Async-compatible process command wrapper backed by `std::process::Command`.
     ///
@@ -1039,12 +1044,37 @@ pub mod process {
     /// `new`, `args`, `arg`, `env`, `kill_on_drop`, and async `output`.
     pub struct Command {
         inner: std::process::Command,
+        kill_on_drop: bool,
+    }
+
+    struct KillOnDropGuard {
+        cancel: Arc<AtomicBool>,
+        enabled: bool,
+    }
+
+    impl KillOnDropGuard {
+        fn new(cancel: Arc<AtomicBool>, enabled: bool) -> Self {
+            Self { cancel, enabled }
+        }
+
+        fn disarm(&mut self) {
+            self.enabled = false;
+        }
+    }
+
+    impl Drop for KillOnDropGuard {
+        fn drop(&mut self) {
+            if self.enabled {
+                self.cancel.store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     impl Command {
         pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
             Self {
                 inner: std::process::Command::new(program),
+                kill_on_drop: false,
             }
         }
 
@@ -1071,9 +1101,10 @@ pub mod process {
             self
         }
 
-        /// No-op for compatibility. `std::process::Command` does not support
-        /// `kill_on_drop`; callers already guard with timeouts.
-        pub fn kill_on_drop(&mut self, _kill: bool) -> &mut Self {
+        /// When enabled, dropping the future returned by [`output`] will signal
+        /// the worker loop to terminate the child process promptly.
+        pub fn kill_on_drop(&mut self, kill: bool) -> &mut Self {
+            self.kill_on_drop = kill;
             self
         }
 
@@ -1085,16 +1116,16 @@ pub mod process {
             let program = self.get_program();
             let args = self.get_args();
             let envs = self.get_envs();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut kill_guard = KillOnDropGuard::new(Arc::clone(&cancel), self.kill_on_drop);
 
-            let mut cmd = std::process::Command::new(program);
-            cmd.args(args);
-            for (k, v) in envs {
-                cmd.env(k, v);
-            }
+            let result =
+                super::spawn_blocking(move || run_output_command(program, args, envs, cancel))
+                    .await
+                    .map_err(std::io::Error::other)?;
 
-            super::spawn_blocking(move || cmd.output())
-                .await
-                .map_err(std::io::Error::other)?
+            kill_guard.disarm();
+            result
         }
     }
 
@@ -1113,6 +1144,92 @@ pub mod process {
                 .filter_map(|(k, v)| v.map(|v| (k.to_os_string(), v.to_os_string())))
                 .collect()
         }
+    }
+
+    fn run_output_command(
+        program: std::ffi::OsString,
+        args: Vec<std::ffi::OsString>,
+        envs: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+        cancel: Arc<AtomicBool>,
+    ) -> std::io::Result<Output> {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
+        let mut child = cmd.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .expect("process::Command::output should always pipe stdout");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("process::Command::output should always pipe stderr");
+
+        let stdout_handle = std::thread::spawn(move || read_pipe_to_end(stdout));
+        let stderr_handle = std::thread::spawn(move || read_pipe_to_end(stderr));
+
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                terminate_child_process(&mut child);
+                let _ = child.wait();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "process command cancelled",
+                ));
+            }
+
+            match child.try_wait()? {
+                Some(status) => {
+                    let stdout = stdout_handle.join().unwrap_or_default();
+                    let stderr = stderr_handle.join().unwrap_or_default();
+                    return Ok(Output {
+                        status,
+                        stdout,
+                        stderr,
+                    });
+                }
+                None => std::thread::sleep(PROCESS_POLL_INTERVAL),
+            }
+        }
+    }
+
+    fn read_pipe_to_end<R: std::io::Read>(mut reader: R) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    }
+
+    fn terminate_child_process(child: &mut std::process::Child) {
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(format!("-{}", child.id()))
+                .status();
+        }
+
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .status();
+        }
+
+        let _ = child.kill();
     }
 }
 
@@ -3686,6 +3803,58 @@ mod tests {
             .expect("echo should succeed");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("a b c"));
+    }
+
+    #[cfg(all(feature = "asupersync-runtime", unix))]
+    #[test]
+    fn process_command_kill_on_drop_stops_timed_out_child() {
+        let marker_dir = tempfile::tempdir().expect("tempdir");
+        let marker_path = marker_dir.path().join("should_not_exist.txt");
+        let script = format!("sleep 1; echo done > {}", marker_path.display());
+        let rt = RuntimeBuilder::current_thread().build().unwrap();
+
+        rt.block_on(async {
+            let mut cmd = process::Command::new("sh");
+            cmd.arg("-c");
+            cmd.arg(&script);
+            cmd.kill_on_drop(true);
+
+            let result = timeout(Duration::from_millis(50), cmd.output()).await;
+            assert!(result.is_err(), "command should time out");
+
+            sleep(Duration::from_millis(1500)).await;
+        });
+
+        assert!(
+            !marker_path.exists(),
+            "timed-out child should have been terminated before writing output"
+        );
+    }
+
+    #[cfg(all(feature = "asupersync-runtime", unix))]
+    #[test]
+    fn process_command_output_matches_stdlib_stdin_null_behavior() {
+        let script = "if [ /dev/null -ef /dev/fd/0 ]; then printf null; else printf inherited; fi";
+        let expected = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .expect("stdlib command should succeed");
+        assert_eq!(String::from_utf8_lossy(&expected.stdout), "null");
+
+        let rt = RuntimeBuilder::current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut cmd = process::Command::new("sh");
+            cmd.arg("-c");
+            cmd.arg(script);
+
+            let output = cmd
+                .output()
+                .await
+                .expect("runtime_compat command should succeed");
+            assert_eq!(output.stdout, expected.stdout);
+            assert_eq!(output.stderr, expected.stderr);
+        });
     }
 
     // ========================================================================
