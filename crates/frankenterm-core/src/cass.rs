@@ -10,6 +10,7 @@
 use crate::agent_provider::AgentProvider;
 use crate::error::Remediation;
 use crate::policy::Redactor;
+use crate::runtime_compat::process::Command;
 use crate::runtime_compat::timeout;
 #[cfg(feature = "cass-export")]
 use crate::storage::{AgentSessionRecord, ExportQuery, Segment, SegmentScanQuery, StorageHandle};
@@ -20,7 +21,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use tokio::process::Command;
 
 /// Supported cass agents for filtering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
