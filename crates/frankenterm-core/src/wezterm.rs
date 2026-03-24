@@ -99,6 +99,17 @@ pub trait WeztermInterface: Send + Sync {
     fn watchdog_warnings(&self) -> WeztermFuture<'_, Vec<String>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+
+    /// Best-effort tiered scrollback summary for a pane.
+    ///
+    /// This is only available from backends that can expose mux-side pane
+    /// telemetry directly. CLI-only implementations should return `Ok(None)`.
+    fn pane_tiered_scrollback_summary(
+        &self,
+        _pane_id: u64,
+    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// Create a default WezTerm interface handle.
@@ -366,6 +377,39 @@ impl PaneInfo {
     #[must_use]
     pub fn effective_title(&self) -> &str {
         self.title.as_deref().unwrap_or("")
+    }
+}
+
+/// Stable tiered scrollback telemetry surfaced by pane backends.
+///
+/// This intentionally carries only the fields used by runtime maintenance so
+/// the `WeztermInterface` can expose it even when the vendored mux types are
+/// not compiled in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneTieredScrollbackSummary {
+    pub tiering_enabled: bool,
+    pub configured_scrollback_rows: usize,
+    pub configured_hot_lines: usize,
+    pub configured_warm_max_bytes: usize,
+    pub visible_rows: usize,
+    pub in_memory_scrollback_rows: usize,
+    pub warm_resident_lines: usize,
+    pub warm_resident_bytes: usize,
+}
+
+#[cfg(all(feature = "vendored", unix))]
+impl From<mux::renderable::PaneTieredScrollbackStatus> for PaneTieredScrollbackSummary {
+    fn from(status: mux::renderable::PaneTieredScrollbackStatus) -> Self {
+        Self {
+            tiering_enabled: status.tiering_enabled,
+            configured_scrollback_rows: status.configured_scrollback_rows,
+            configured_hot_lines: status.configured_hot_lines,
+            configured_warm_max_bytes: status.configured_warm_max_bytes,
+            visible_rows: status.visible_rows,
+            in_memory_scrollback_rows: status.in_memory_scrollback_rows,
+            warm_resident_lines: status.warm_resident_lines,
+            warm_resident_bytes: status.warm_resident_bytes,
+        }
     }
 }
 
@@ -787,6 +831,37 @@ impl WeztermClient {
             args.push("--escapes");
         }
         self.run_cli_with_pane_check_retry(&args, pane_id).await
+    }
+
+    /// Read the mux-side tiered scrollback summary for a pane when available.
+    ///
+    /// This is a best-effort telemetry path used by runtime maintenance. It
+    /// deliberately does not fall back to the CLI because `wezterm cli` does
+    /// not expose the tiered scrollback status.
+    pub async fn pane_tiered_scrollback_summary(
+        &self,
+        pane_id: u64,
+    ) -> Result<Option<PaneTieredScrollbackSummary>> {
+        #[cfg(all(feature = "vendored", unix))]
+        if let Some(ref pool) = self.mux_pool {
+            if self.mux_circuit_guard() {
+                match pool.get_pane_render_changes(pane_id).await {
+                    Ok(changes) => {
+                        self.mux_circuit_record_success();
+                        return Ok(changes.tiered_scrollback_status.map(Into::into));
+                    }
+                    Err(err) => {
+                        self.mux_circuit_record_failure(&err);
+                        return Err(WeztermError::CommandFailed(format!(
+                            "failed to read tiered scrollback status for pane {pane_id}: {err}"
+                        ))
+                        .into());
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     /// Send text to a pane using paste mode (default, faster for multi-char input)
@@ -1519,6 +1594,13 @@ impl WeztermInterface for WeztermClient {
             Ok(warnings)
         })
     }
+
+    fn pane_tiered_scrollback_summary(
+        &self,
+        pane_id: u64,
+    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+        Box::pin(async move { WeztermClient::pane_tiered_scrollback_summary(self, pane_id).await })
+    }
 }
 
 impl WeztermInterface for Arc<dyn WeztermInterface> {
@@ -1614,6 +1696,13 @@ impl WeztermInterface for Arc<dyn WeztermInterface> {
 
     fn watchdog_warnings(&self) -> WeztermFuture<'_, Vec<String>> {
         self.as_ref().watchdog_warnings()
+    }
+
+    fn pane_tiered_scrollback_summary(
+        &self,
+        pane_id: u64,
+    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+        self.as_ref().pane_tiered_scrollback_summary(pane_id)
     }
 }
 
@@ -3856,6 +3945,13 @@ impl WeztermInterface for UnifiedClient {
 
     fn watchdog_warnings(&self) -> WeztermFuture<'_, Vec<String>> {
         self.inner.watchdog_warnings()
+    }
+
+    fn pane_tiered_scrollback_summary(
+        &self,
+        pane_id: u64,
+    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+        self.inner.pane_tiered_scrollback_summary(pane_id)
     }
 }
 

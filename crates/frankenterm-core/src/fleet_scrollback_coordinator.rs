@@ -402,7 +402,9 @@ impl FleetScrollbackCoordinator {
 
             total_pages += evicted as u64;
             total_bytes += bytes_freed;
-            applied += 1;
+            if evicted > 0 || bytes_freed > 0 {
+                applied += 1;
+            }
         }
 
         self.telemetry.targets_applied += applied as u64;
@@ -426,11 +428,23 @@ impl FleetScrollbackCoordinator {
             if info.warm_pages == 0 {
                 continue;
             }
-            let before_bytes = info.warm_bytes as u64;
+            let before = panes.snapshot(info.pane_id);
             panes.evict_all_warm(info.pane_id);
-            total_pages += info.warm_pages as u64;
-            total_bytes += before_bytes;
-            targets += 1;
+            let after = panes.snapshot(info.pane_id);
+
+            let (pages_evicted, bytes_freed) = match (before, after) {
+                (Some(b), Some(a)) => (
+                    b.warm_pages.saturating_sub(a.warm_pages) as u64,
+                    b.warm_bytes.saturating_sub(a.warm_bytes) as u64,
+                ),
+                _ => (0, 0),
+            };
+
+            total_pages += pages_evicted;
+            total_bytes += bytes_freed;
+            if pages_evicted > 0 || bytes_freed > 0 {
+                targets += 1;
+            }
         }
 
         self.telemetry.targets_applied += targets as u64;
@@ -1166,5 +1180,88 @@ mod tests {
             coord.evaluate(&signals, &[], &mut null_panes);
         }
         assert_eq!(coord.telemetry().ticks, 5);
+    }
+
+    #[test]
+    fn proportional_eviction_with_null_panes_does_not_claim_applied_targets() {
+        let mut coord = FleetScrollbackCoordinator::new(
+            CoordinatorConfig {
+                min_fleet_warm_bytes_for_eviction: 0,
+                ..CoordinatorConfig::default()
+            },
+            FleetMemoryConfig::default(),
+        );
+        let infos: Vec<PaneScrollbackInfo> = (0..5)
+            .map(|i| PaneScrollbackInfo {
+                pane_id: i,
+                activity_counter: 0,
+                warm_bytes: 128_000,
+                warm_pages: 4,
+                estimated_memory_bytes: 128_000,
+            })
+            .collect();
+        let signals = PressureSignals {
+            backpressure: BackpressureTier::Red,
+            memory_pressure: MemoryPressureTier::Orange,
+            worst_budget: BudgetLevel::Normal,
+            pane_count: infos.len(),
+            paused_pane_count: 0,
+        };
+        let mut null_panes = NullPaneScrollbackAccess;
+
+        for _ in 0..4 {
+            coord.evaluate(&signals, &infos, &mut null_panes);
+        }
+
+        let result = coord.evaluate(&signals, &infos, &mut null_panes);
+        assert_eq!(result.compound_tier, FleetPressureTier::Critical);
+        assert_eq!(result.pages_evicted, 0);
+        assert_eq!(result.bytes_reclaimed, 0);
+        assert_eq!(result.targets_applied, 0);
+        assert_eq!(coord.telemetry().targets_applied, 0);
+        assert_eq!(coord.telemetry().pages_evicted, 0);
+        assert_eq!(coord.telemetry().bytes_reclaimed, 0);
+    }
+
+    #[test]
+    fn emergency_eviction_with_null_panes_does_not_claim_applied_targets() {
+        let mut coord = FleetScrollbackCoordinator::new(
+            CoordinatorConfig {
+                emergency_evict_all: true,
+                min_fleet_warm_bytes_for_eviction: 0,
+                ..CoordinatorConfig::default()
+            },
+            FleetMemoryConfig::default(),
+        );
+        let infos: Vec<PaneScrollbackInfo> = (0..5)
+            .map(|i| PaneScrollbackInfo {
+                pane_id: i,
+                activity_counter: 0,
+                warm_bytes: 128_000,
+                warm_pages: 4,
+                estimated_memory_bytes: 128_000,
+            })
+            .collect();
+        let signals = PressureSignals {
+            backpressure: BackpressureTier::Black,
+            memory_pressure: MemoryPressureTier::Red,
+            worst_budget: BudgetLevel::OverBudget,
+            pane_count: infos.len(),
+            paused_pane_count: 0,
+        };
+        let mut null_panes = NullPaneScrollbackAccess;
+
+        for _ in 0..4 {
+            coord.evaluate(&signals, &infos, &mut null_panes);
+        }
+
+        let result = coord.evaluate(&signals, &infos, &mut null_panes);
+        assert_eq!(result.compound_tier, FleetPressureTier::Emergency);
+        assert_eq!(result.pages_evicted, 0);
+        assert_eq!(result.bytes_reclaimed, 0);
+        assert_eq!(result.targets_applied, 0);
+        assert_eq!(coord.telemetry().targets_applied, 0);
+        assert_eq!(coord.telemetry().pages_evicted, 0);
+        assert_eq!(coord.telemetry().bytes_reclaimed, 0);
     }
 }

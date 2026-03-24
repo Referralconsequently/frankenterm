@@ -20,8 +20,8 @@ use crate::patterns::AgentType;
 use crate::runtime_compat::RwLock;
 use crate::watchdog::HealthStatus;
 use crate::wezterm::{
-    MoveDirection, PaneInfo, SpawnTarget, SplitDirection, WeztermFuture, WeztermHandle,
-    WeztermInterface,
+    MoveDirection, PaneInfo, PaneTieredScrollbackSummary, SpawnTarget, SplitDirection,
+    WeztermFuture, WeztermHandle, WeztermInterface,
 };
 
 // =============================================================================
@@ -1025,6 +1025,28 @@ impl WeztermInterface for ShardedWeztermClient {
 
     fn watchdog_warnings(&self) -> WeztermFuture<'_, Vec<String>> {
         Box::pin(async move { Ok(self.shard_watchdog_warnings().await) })
+    }
+
+    fn pane_tiered_scrollback_summary(
+        &self,
+        pane_id: u64,
+    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+        Box::pin(async move {
+            let route = self.route_for_global_pane_id(pane_id).await?;
+            let backend = self.backend_for_id(route.shard_id)?;
+            backend
+                .handle
+                .pane_tiered_scrollback_summary(route.local_pane_id)
+                .await
+                .map_err(|err| {
+                    self.backend_error(
+                        route.shard_id,
+                        "pane_tiered_scrollback_summary",
+                        Some(pane_id),
+                        err,
+                    )
+                })
+        })
     }
 }
 

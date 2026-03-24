@@ -73,7 +73,8 @@ use crate::vendored::subscribe_pane_output_with_inherited_cx;
 use crate::vendored::{DirectMuxClient, DirectMuxClientConfig, PaneDelta, SubscriptionConfig};
 use crate::watchdog::HeartbeatRegistry;
 use crate::wezterm::{
-    PaneInfo, WeztermHandle, WeztermHandleSource, WeztermInterface, wezterm_handle_with_timeout,
+    PaneInfo, PaneTieredScrollbackSummary, WeztermHandle, WeztermHandleSource, WeztermInterface,
+    wezterm_handle_with_timeout,
 };
 
 fn config_update_pending(rx: &watch::Receiver<HotReloadableConfig>) -> bool {
@@ -1691,10 +1692,23 @@ impl ObservationRuntime {
                         BudgetLevel::Normal,
                         observed_panes,
                     );
+                    let observed_pane_ids = {
+                        let reg = registry.read().await;
+                        reg.observed_pane_ids()
+                    };
+                    let tiered_scrollback_fetch = collect_pane_tiered_scrollback_summaries(
+                        &wezterm_handle,
+                        &observed_pane_ids,
+                    )
+                    .await;
                     let fleet_pane_infos = {
                         let reg = registry.read().await;
                         let cur = cursors.read().await;
-                        fleet_pane_infos_from_registry(&reg, &cur)
+                        fleet_pane_infos_from_registry(
+                            &reg,
+                            &cur,
+                            &tiered_scrollback_fetch.summaries,
+                        )
                     };
 
                     let mut null_panes = NullPaneScrollbackAccess;
@@ -1733,6 +1747,8 @@ impl ObservationRuntime {
                             "targets_applied": fleet_eval.targets_applied,
                             "actions": fleet_eval.actions.len(),
                             "observed_panes": observed_panes,
+                            "pane_status_snapshots": tiered_scrollback_fetch.summaries.len(),
+                            "pane_status_errors": tiered_scrollback_fetch.errors,
                             "cumulative_ticks": telem.ticks,
                             "cumulative_elevated_ticks": telem.elevated_ticks,
                             "cumulative_pages_evicted": telem.pages_evicted,
@@ -3247,27 +3263,97 @@ fn build_fleet_pressure_signals(
     }
 }
 
+#[derive(Default)]
+struct PaneTieredScrollbackFetch {
+    summaries: HashMap<u64, PaneTieredScrollbackSummary>,
+    errors: usize,
+}
+
+async fn collect_pane_tiered_scrollback_summaries(
+    wezterm_handle: &WeztermHandle,
+    pane_ids: &[u64],
+) -> PaneTieredScrollbackFetch {
+    let mut fetch = PaneTieredScrollbackFetch::default();
+
+    for &pane_id in pane_ids {
+        match wezterm_handle.pane_tiered_scrollback_summary(pane_id).await {
+            Ok(Some(summary)) => {
+                fetch.summaries.insert(pane_id, summary);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                fetch.errors = fetch.errors.saturating_add(1);
+                debug!(
+                    pane_id,
+                    error = %err,
+                    "failed to collect tiered scrollback summary"
+                );
+            }
+        }
+    }
+
+    fetch
+}
+
+fn approximate_warm_page_count(summary: &PaneTieredScrollbackSummary) -> usize {
+    // The mux telemetry exposes resident warm lines/bytes but not the backing
+    // page granularity. Approximate with the current TieredScrollback default
+    // page size so the fleet controller can reason about warm capacity until
+    // page-size telemetry is surfaced explicitly.
+    const DEFAULT_WARM_PAGE_LINES: usize = 256;
+
+    if summary.warm_resident_bytes == 0 {
+        return 0;
+    }
+
+    if summary.warm_resident_lines == 0 {
+        return 1;
+    }
+
+    summary
+        .warm_resident_lines
+        .div_ceil(DEFAULT_WARM_PAGE_LINES)
+}
+
+fn estimated_memory_bytes_from_tiered_scrollback(summary: &PaneTieredScrollbackSummary) -> usize {
+    // Runtime arena accounting already tracks captured segments; augment it
+    // with mux-side warm tier bytes and the in-memory scrollback rows that are
+    // not represented in the compressed warm tier.
+    const APPROX_IN_MEMORY_SCROLLBACK_LINE_BYTES: usize = 200;
+
+    summary.warm_resident_bytes.saturating_add(
+        summary
+            .in_memory_scrollback_rows
+            .saturating_mul(APPROX_IN_MEMORY_SCROLLBACK_LINE_BYTES),
+    )
+}
+
 fn fleet_pane_infos_from_registry(
     registry: &PaneRegistry,
     cursors: &HashMap<u64, PaneCursor>,
+    tiered_scrollback_by_pane: &HashMap<u64, PaneTieredScrollbackSummary>,
 ) -> Vec<PaneScrollbackInfo> {
     registry
         .entries()
         .filter(|(_, entry)| entry.should_observe())
         .map(|(pane_id, entry)| {
-            let estimated_memory_bytes = registry
+            let base_estimated_memory_bytes = registry
                 .pane_arena_stats(*pane_id)
                 .map(|stats| stats.tracked_bytes)
                 .unwrap_or_else(|| entry.estimated_bytes());
-            let activity_counter = cursors
-                .get(pane_id)
-                .map_or(0, |cursor| cursor.next_seq);
+            let tiered_scrollback = tiered_scrollback_by_pane.get(pane_id);
+            let estimated_memory_bytes = tiered_scrollback
+                .map(estimated_memory_bytes_from_tiered_scrollback)
+                .map_or(base_estimated_memory_bytes, |bytes| {
+                    base_estimated_memory_bytes.max(bytes)
+                });
+            let activity_counter = cursors.get(pane_id).map_or(0, |cursor| cursor.next_seq);
 
             PaneScrollbackInfo {
                 pane_id: *pane_id,
                 activity_counter,
-                warm_bytes: 0,
-                warm_pages: 0,
+                warm_bytes: tiered_scrollback.map_or(0, |summary| summary.warm_resident_bytes),
+                warm_pages: tiered_scrollback.map_or(0, approximate_warm_page_count),
                 estimated_memory_bytes,
             }
         })
@@ -4648,7 +4734,7 @@ mod tests {
         let stats1 = registry.pane_arena_stats(1).expect("pane 1 arena stats");
         let stats2 = registry.pane_arena_stats(2).expect("pane 2 arena stats");
 
-        let mut infos = fleet_pane_infos_from_registry(&registry, &ext_cursors);
+        let mut infos = fleet_pane_infos_from_registry(&registry, &ext_cursors, &HashMap::new());
         infos.sort_by_key(|info| info.pane_id);
 
         assert_eq!(infos.len(), 2);
@@ -6394,7 +6480,7 @@ mod tests {
     fn fleet_pane_infos_from_empty_registry() {
         let registry = PaneRegistry::new();
         let cursors: HashMap<u64, PaneCursor> = HashMap::new();
-        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors, &HashMap::new());
         assert!(infos.is_empty());
     }
 
@@ -6412,7 +6498,7 @@ mod tests {
         }
 
         let cursors: HashMap<u64, PaneCursor> = HashMap::new();
-        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors, &HashMap::new());
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].pane_id, 1);
     }
@@ -6486,7 +6572,7 @@ mod tests {
         registry.discovery_tick(vec![make_pane(1, "test")]);
 
         let cursors: HashMap<u64, PaneCursor> = HashMap::new();
-        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors, &HashMap::new());
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].warm_bytes, 0);
         assert_eq!(infos[0].warm_pages, 0);
@@ -6498,8 +6584,42 @@ mod tests {
         registry.discovery_tick(vec![make_pane(1, "idle")]);
 
         let cursors: HashMap<u64, PaneCursor> = HashMap::new();
-        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors, &HashMap::new());
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].activity_counter, 0);
+    }
+
+    #[test]
+    fn fleet_pane_infos_merge_live_tiered_scrollback_status() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash")]);
+
+        let mut ext_cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let mut cursor = PaneCursor::new(1);
+        cursor.next_seq = 7;
+        ext_cursors.insert(1, cursor);
+
+        let mut tiered_scrollback = HashMap::new();
+        tiered_scrollback.insert(
+            1,
+            PaneTieredScrollbackSummary {
+                tiering_enabled: true,
+                configured_scrollback_rows: 10_000,
+                configured_hot_lines: 1_024,
+                configured_warm_max_bytes: 2_000_000,
+                visible_rows: 40,
+                in_memory_scrollback_rows: 64,
+                warm_resident_lines: 600,
+                warm_resident_bytes: 120_000,
+            },
+        );
+
+        let infos = fleet_pane_infos_from_registry(&registry, &ext_cursors, &tiered_scrollback);
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].pane_id, 1);
+        assert_eq!(infos[0].activity_counter, 7);
+        assert_eq!(infos[0].warm_bytes, 120_000);
+        assert_eq!(infos[0].warm_pages, 3);
+        assert_eq!(infos[0].estimated_memory_bytes, 132_800);
     }
 }
