@@ -40,13 +40,21 @@ impl Default for CmsConfig {
     }
 }
 
+const MIN_CMS_WIDTH: usize = 4;
+const MIN_CMS_DEPTH: usize = 1;
+const MAX_CMS_DEPTH: usize = 64;
+const MAX_CMS_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CMS_CELLS: usize = MAX_CMS_MEMORY_BYTES / std::mem::size_of::<u64>();
+
 impl CmsConfig {
     /// Create config from desired error parameters.
     ///
     /// `epsilon` — additive error factor, must be in `(0, 1)`.
     /// `delta` — failure probability, must be in `(0, 1)`.
     ///
-    /// Out-of-range inputs are clamped to safe defaults.
+    /// Out-of-range inputs are clamped to safe defaults. Extremely tight
+    /// finite inputs are also capped to a bounded table size so they
+    /// cannot trigger pathological allocations.
     #[must_use]
     pub fn from_error_params(epsilon: f64, delta: f64) -> Self {
         // Clamp to valid ranges to prevent inf/NaN from bad inputs.
@@ -62,10 +70,8 @@ impl CmsConfig {
         };
         let width = (std::f64::consts::E / epsilon).ceil() as usize;
         let depth = (1.0 / delta).ln().ceil() as usize;
-        Self {
-            width: width.max(4),
-            depth: depth.max(1),
-        }
+        let (width, depth) = normalize_cms_dimensions(width, depth);
+        Self { width, depth }
     }
 }
 
@@ -112,17 +118,13 @@ impl CountMinSketch {
     /// Create with specified width and depth.
     #[must_use]
     pub fn with_dimensions(width: usize, depth: usize) -> Self {
-        Self::with_config(CmsConfig {
-            width: width.max(4),
-            depth: depth.max(1),
-        })
+        Self::with_config(CmsConfig { width, depth })
     }
 
     /// Create from config.
     #[must_use]
     pub fn with_config(config: CmsConfig) -> Self {
-        let width = config.width.max(4);
-        let depth = config.depth.max(1);
+        let (width, depth) = normalize_cms_dimensions(config.width, config.depth);
         let table = vec![vec![0u64; width]; depth];
 
         // Deterministic seeds for reproducibility
@@ -197,7 +199,9 @@ impl CountMinSketch {
     /// Memory used by table in bytes.
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
-        self.width * self.depth * std::mem::size_of::<u64>()
+        self.width
+            .saturating_mul(self.depth)
+            .saturating_mul(std::mem::size_of::<u64>())
     }
 
     /// Error bound ε = e/width.
@@ -312,6 +316,13 @@ fn splitmix64(mut x: u64) -> u64 {
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
     x ^ (x >> 31)
+}
+
+fn normalize_cms_dimensions(width: usize, depth: usize) -> (usize, usize) {
+    let depth = depth.clamp(MIN_CMS_DEPTH, MAX_CMS_DEPTH);
+    let max_width_for_depth = (MAX_CMS_CELLS / depth).max(MIN_CMS_WIDTH);
+    let width = width.clamp(MIN_CMS_WIDTH, max_width_for_depth);
+    (width, depth)
 }
 
 #[cfg(test)]
@@ -611,6 +622,25 @@ mod tests {
         let cms = CountMinSketch::from_error_params(1.0, 0.5);
         assert!(cms.width() >= 4); // clamped minimum
         assert!(cms.depth() >= 1);
+    }
+
+    #[test]
+    fn error_params_extremely_small_inputs_respect_allocation_budget() {
+        let cms = CountMinSketch::from_error_params(f64::MIN_POSITIVE, f64::MIN_POSITIVE);
+        assert!(cms.depth() <= MAX_CMS_DEPTH);
+        assert!(cms.memory_bytes() <= MAX_CMS_MEMORY_BYTES);
+        assert!(cms.width() >= MIN_CMS_WIDTH);
+    }
+
+    #[test]
+    fn pathological_config_dimensions_are_capped_before_allocation() {
+        let cms = CountMinSketch::with_config(CmsConfig {
+            width: usize::MAX,
+            depth: usize::MAX,
+        });
+        assert_eq!(cms.depth(), MAX_CMS_DEPTH);
+        assert!(cms.memory_bytes() <= MAX_CMS_MEMORY_BYTES);
+        assert!(cms.width() >= MIN_CMS_WIDTH);
     }
 
     #[test]
