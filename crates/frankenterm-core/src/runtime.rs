@@ -1693,7 +1693,8 @@ impl ObservationRuntime {
                     );
                     let fleet_pane_infos = {
                         let reg = registry.read().await;
-                        fleet_pane_infos_from_registry(&reg)
+                        let cur = cursors.read().await;
+                        fleet_pane_infos_from_registry(&reg, &cur)
                     };
 
                     let mut null_panes = NullPaneScrollbackAccess;
@@ -3246,12 +3247,10 @@ fn build_fleet_pressure_signals(
     }
 }
 
-// NOTE: `activity_counter` below reads from PaneRegistry's own cursor map,
-// which may not reflect the runtime's capture pipeline cursors. When
-// TieredScrollback is wired in, this should be refactored to accept the
-// runtime's `cursors: &HashMap<u64, PaneCursor>` parameter so the fleet
-// coordinator sees real output-sequence progress.
-fn fleet_pane_infos_from_registry(registry: &PaneRegistry) -> Vec<PaneScrollbackInfo> {
+fn fleet_pane_infos_from_registry(
+    registry: &PaneRegistry,
+    cursors: &HashMap<u64, PaneCursor>,
+) -> Vec<PaneScrollbackInfo> {
     registry
         .entries()
         .filter(|(_, entry)| entry.should_observe())
@@ -3260,15 +3259,12 @@ fn fleet_pane_infos_from_registry(registry: &PaneRegistry) -> Vec<PaneScrollback
                 .pane_arena_stats(*pane_id)
                 .map(|stats| stats.tracked_bytes)
                 .unwrap_or_else(|| entry.estimated_bytes());
-            let activity_counter = registry
-                .get_cursor(*pane_id)
+            let activity_counter = cursors
+                .get(pane_id)
                 .map_or(0, |cursor| cursor.next_seq);
 
             PaneScrollbackInfo {
                 pane_id: *pane_id,
-                // Runtime maintenance currently does not hold live TieredScrollback
-                // instances, so only use cursor sequence growth as an activity signal.
-                // Arena accounting is metadata/allocator usage, not evictable warm pages.
                 activity_counter,
                 warm_bytes: 0,
                 warm_pages: 0,
@@ -4639,13 +4635,20 @@ mod tests {
     fn fleet_pane_infos_from_registry_uses_cursor_activity_and_arena_accounting() {
         let mut registry = PaneRegistry::new();
         registry.discovery_tick(vec![make_pane(1, "bash"), make_pane(2, "vim")]);
-        registry.get_cursor_mut(1).expect("pane 1 cursor").next_seq = 111;
-        registry.get_cursor_mut(2).expect("pane 2 cursor").next_seq = 222;
+
+        // Build an external cursor map simulating real capture-pipeline state.
+        let mut ext_cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let mut c1 = PaneCursor::new(1);
+        c1.next_seq = 111;
+        ext_cursors.insert(1, c1);
+        let mut c2 = PaneCursor::new(2);
+        c2.next_seq = 222;
+        ext_cursors.insert(2, c2);
 
         let stats1 = registry.pane_arena_stats(1).expect("pane 1 arena stats");
         let stats2 = registry.pane_arena_stats(2).expect("pane 2 arena stats");
 
-        let mut infos = fleet_pane_infos_from_registry(&registry);
+        let mut infos = fleet_pane_infos_from_registry(&registry, &ext_cursors);
         infos.sort_by_key(|info| info.pane_id);
 
         assert_eq!(infos.len(), 2);
@@ -6390,7 +6393,8 @@ mod tests {
     #[test]
     fn fleet_pane_infos_from_empty_registry() {
         let registry = PaneRegistry::new();
-        let infos = fleet_pane_infos_from_registry(&registry);
+        let cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
         assert!(infos.is_empty());
     }
 
@@ -6407,7 +6411,8 @@ mod tests {
             };
         }
 
-        let infos = fleet_pane_infos_from_registry(&registry);
+        let cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].pane_id, 1);
     }
@@ -6480,7 +6485,8 @@ mod tests {
         let mut registry = PaneRegistry::new();
         registry.discovery_tick(vec![make_pane(1, "test")]);
 
-        let infos = fleet_pane_infos_from_registry(&registry);
+        let cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].warm_bytes, 0);
         assert_eq!(infos[0].warm_pages, 0);
@@ -6491,7 +6497,8 @@ mod tests {
         let mut registry = PaneRegistry::new();
         registry.discovery_tick(vec![make_pane(1, "idle")]);
 
-        let infos = fleet_pane_infos_from_registry(&registry);
+        let cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let infos = fleet_pane_infos_from_registry(&registry, &cursors);
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].activity_counter, 0);
     }
