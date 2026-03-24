@@ -20,7 +20,7 @@ work_dir="$ROOT_DIR/tests/e2e/tmp/${run_id}"
 mkdir -p "$work_dir"
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-RCH_SMOKE_LOG="${LOG_DIR}/replay_artifact_write_read_${run_id}.smoke.log"
+RCH_SMOKE_LOG="${LOG_DIR}/${run_id}.smoke.log"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 TIMEOUT_BIN=""
 
@@ -145,13 +145,36 @@ run_rch_cargo_logged() {
     return "${rc}"
 }
 
+run_rch_smoke_logged() {
+    local output_file="$1"
+    set +e
+    (
+        cd "${ROOT_DIR}"
+        env TMPDIR=/tmp "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${RCH_STEP_TIMEOUT_SECS}" \
+            rch exec -- env \
+            "TMPDIR=$remote_tmpdir" \
+            "CARGO_HOME=$cargo_home" \
+            "CARGO_TARGET_DIR=$cargo_target_dir" \
+            sh -lc 'cargo --version && rustc --version'
+    ) >"${output_file}" 2>&1
+    local rc=$?
+    set -e
+    check_rch_fallback "${output_file}"
+    if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+        local queue_log
+        queue_log="$(capture_rch_queue_timeout_log "${output_file}")"
+        fatal "RCH-REMOTE-STALL: rch remote smoke command timed out after ${RCH_STEP_TIMEOUT_SECS}s. See ${queue_log}"
+    fi
+    return "${rc}"
+}
+
 ensure_rch_ready() {
     resolve_timeout_bin
     if [[ -z "${TIMEOUT_BIN}" ]]; then
         fatal "timeout or gtimeout is required to fail closed on stalled remote execution."
     fi
     set +e
-    run_rch_cargo_logged "${RCH_SMOKE_LOG}" env CARGO_TARGET_DIR="${cargo_target_dir}" cargo check --help
+    run_rch_smoke_logged "${RCH_SMOKE_LOG}"
     local smoke_rc=$?
     set -e
     if [[ ${smoke_rc} -ne 0 ]]; then

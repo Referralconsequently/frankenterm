@@ -15,7 +15,7 @@ remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
 cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-decision-e2e-${run_id}}"
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-RCH_SMOKE_LOG="${LOG_DIR}/replay_decision_capture_${run_id}.smoke.log"
+RCH_SMOKE_LOG="${LOG_DIR}/${run_id}.smoke.log"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 TIMEOUT_BIN=""
 
@@ -117,17 +117,48 @@ run_rch_cargo_logged() {
     return "${rc}"
 }
 
+run_rch_smoke_logged() {
+    local output_file="$1"
+    set +e
+    (
+        cd "${ROOT_DIR}"
+        env TMPDIR=/tmp "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${RCH_STEP_TIMEOUT_SECS}" \
+            rch exec -- env \
+            "TMPDIR=$remote_tmpdir" \
+            "CARGO_HOME=$cargo_home" \
+            "CARGO_TARGET_DIR=$cargo_target_dir" \
+            sh -lc 'cargo --version && rustc --version'
+    ) >"${output_file}" 2>&1
+    local rc=$?
+    set -e
+    check_rch_fallback "${output_file}"
+    if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+        local queue_log
+        queue_log="$(capture_rch_queue_timeout_log "${output_file}")"
+        fatal "RCH-REMOTE-STALL: rch remote smoke command timed out after ${RCH_STEP_TIMEOUT_SECS}s. See ${queue_log}"
+    fi
+    return "${rc}"
+}
+
 ensure_rch_ready() {
     resolve_timeout_bin
     if [[ -z "${TIMEOUT_BIN}" ]]; then
         fatal "timeout or gtimeout is required to fail closed on stalled remote execution."
     fi
     set +e
-    run_rch_cargo_logged "${RCH_SMOKE_LOG}" env CARGO_TARGET_DIR="${cargo_target_dir}" cargo check --help
+    run_rch_smoke_logged "${RCH_SMOKE_LOG}"
     local smoke_rc=$?
     set -e
     if [[ ${smoke_rc} -ne 0 ]]; then
         fatal "rch remote smoke preflight failed. See ${RCH_SMOKE_LOG}"
+    fi
+}
+
+assert_nonzero_tests_ran() {
+    local output_file="$1"
+    if grep -Eq 'running 0 tests|0 passed; 0 failed' "$output_file" 2>/dev/null; then
+        echo "cargo test completed without executing any tests. See ${output_file}" >&2
+        return 65
     fi
 }
 
@@ -175,13 +206,19 @@ run_scenario() {
     return "$rc"
   fi
 
+  if ! assert_nonzero_tests_ran "$raw_log"; then
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"${scenario_num}:${scenario_id}\",\"pane_id\":null,\"step\":\"cargo_test\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"cargo_test\",\"inputs\":{\"test\":\"decision_capture\",\"scenario\":$scenario_num,\"cargo_test\":\"$test_name\",\"error_context\":\"cargo test ran zero tests\"},\"outcome\":\"failed\",\"reason_code\":\"zero_tests_executed\",\"error_code\":65,\"artifact_path\":\"${raw_log#"$ROOT_DIR"/}\"}"
+    tail -n 80 "$raw_log" >&2 || true
+    return 65
+  fi
+
   log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"${scenario_num}:${scenario_id}\",\"pane_id\":null,\"step\":\"cargo_test\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"cargo_test\",\"inputs\":{\"test\":\"decision_capture\",\"scenario\":$scenario_num,\"cargo_test\":\"$test_name\"},\"outcome\":\"pass\",\"reason_code\":\"assertions_satisfied\",\"error_code\":null,\"event_count\":1,\"definition_hashes\":[\"validated\"],\"artifact_path\":\"${raw_log#"$ROOT_DIR"/}\"}"
 }
 
-run_scenario 1 "pattern_engine_capture" "runtime_emits_replay_capture_events_when_adapter_is_enabled"
+run_scenario 1 "ingress_tap_capture" "test_ingress_tap_impl_records_ingress_and_decision_marker"
 run_scenario 2 "workflow_step_capture" "workflow_runner_emits_step_and_policy_decision_capture_events"
 run_scenario 3 "policy_engine_capture" "injector_emits_policy_decision_to_replay_capture"
-run_scenario 4 "capture_disabled" "test_capture_decision_disabled_adapter_is_noop"
+run_scenario 4 "capture_disabled" "test_disabled_adapter_captures_nothing"
 
 log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"suite\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"suite\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"all_checks_passed\",\"error_code\":null,\"artifact_path\":\"${json_log#"$ROOT_DIR"/}\"}"
 

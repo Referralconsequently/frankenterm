@@ -15,8 +15,8 @@ remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
 cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-redaction-e2e-${run_id}}"
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-RCH_PROBE_LOG="${LOG_DIR}/replay_redaction_${run_id}.probe.log"
-RCH_SMOKE_LOG="${LOG_DIR}/replay_redaction_${run_id}.smoke.log"
+RCH_PROBE_LOG="${LOG_DIR}/${run_id}.probe.log"
+RCH_SMOKE_LOG="${LOG_DIR}/${run_id}.smoke.log"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 TIMEOUT_BIN=""
 
@@ -83,6 +83,32 @@ run_rch_cargo_logged() {
     return "${rc}"
 }
 
+run_rch_smoke_logged() {
+    local output_file="$1"
+    set +e
+    (
+        cd "$ROOT_DIR"
+        env TMPDIR="$local_tmpdir" "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${RCH_STEP_TIMEOUT_SECS}" \
+            rch exec -- env \
+            TMPDIR="$remote_tmpdir" \
+            CARGO_HOME="$cargo_home" \
+            CARGO_TARGET_DIR="$cargo_target_dir" \
+            sh -lc 'cargo --version && rustc --version'
+    ) >"${output_file}" 2>&1
+    local rc=$?
+    set -e
+
+    check_rch_fallback "${output_file}"
+    if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+        local queue_log="${output_file%.log}.rch_queue_timeout.log"
+        if ! run_rch queue >"${queue_log}" 2>&1; then
+            queue_log="${output_file}"
+        fi
+        fatal "RCH-REMOTE-STALL: rch remote smoke command timed out after ${RCH_STEP_TIMEOUT_SECS}s; refusing stalled remote execution. See ${queue_log}"
+    fi
+    return "${rc}"
+}
+
 ensure_rch_ready() {
     if ! command -v rch >/dev/null 2>&1; then
         fatal "rch is required for this replay e2e harness; refusing local cargo execution."
@@ -101,11 +127,19 @@ ensure_rch_ready() {
     fi
 
     set +e
-    run_rch_cargo_logged "${RCH_SMOKE_LOG}" check --help
+    run_rch_smoke_logged "${RCH_SMOKE_LOG}"
     local smoke_rc=$?
     set -e
     if [[ ${smoke_rc} -ne 0 ]]; then
         fatal "rch remote smoke preflight failed; refusing local cargo execution. See ${RCH_SMOKE_LOG}"
+    fi
+}
+
+assert_nonzero_tests_ran() {
+    local output_file="$1"
+    if grep -Eq 'running 0 tests|0 passed; 0 failed' "$output_file" 2>/dev/null; then
+        echo "cargo test completed without executing any tests. See ${output_file}" >&2
+        return 65
     fi
 }
 
@@ -174,13 +208,19 @@ run_scenario() {
     return "$rc"
   fi
 
+  if ! assert_nonzero_tests_ran "$raw_log"; then
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"${scenario_num}:${scenario_id}\",\"pane_id\":null,\"step\":\"cargo_test\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"cargo_test\",\"inputs\":{\"test\":\"replay_redaction\",\"scenario\":$scenario_num,\"cargo_test\":\"$test_name\",\"error_context\":\"cargo test ran zero tests\"},\"outcome\":\"failed\",\"reason_code\":\"zero_tests_executed\",\"error_code\":65,\"artifact_path\":\"${raw_log#"$ROOT_DIR"/}\"}"
+    tail -n 80 "$raw_log" >&2 || true
+    return 65
+  fi
+
   log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"${scenario_num}:${scenario_id}\",\"pane_id\":null,\"step\":\"cargo_test\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"cargo_test\",\"inputs\":{\"test\":\"replay_redaction\",\"scenario\":$scenario_num,\"cargo_test\":\"$test_name\"},\"outcome\":\"pass\",\"reason_code\":\"assertions_satisfied\",\"error_code\":null,\"secrets_found\":1,\"secrets_redacted\":1,\"artifact_path\":\"${raw_log#"$ROOT_DIR"/}\"}"
 }
 
-run_scenario 1 "mask_mode" "test_capture_redaction_mask_mode_marks_partial_for_t2"
-run_scenario 2 "hash_mode" "test_capture_redaction_hash_mode_hashes_sensitive_text"
-run_scenario 3 "retention_tombstone" "test_capture_redaction_t3_retention_zero_tombstones"
-run_scenario 4 "custom_patterns" "test_capture_redaction_policy_loads_custom_patterns_from_toml"
+run_scenario 1 "mask_mode" "redaction_mask_mode_scrubs_secrets"
+run_scenario 2 "hash_mode" "redaction_hash_mode_is_deterministic"
+run_scenario 3 "retention_tombstone" "retention_enforcer_tombstones_expired_t3_artifact"
+run_scenario 4 "drop_mode" "redaction_drop_mode_clears_content"
 
 log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"suite\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"suite\",\"inputs\":{},\"outcome\":\"pass\",\"reason_code\":\"all_checks_passed\",\"error_code\":null,\"artifact_path\":\"${json_log#"$ROOT_DIR"/}\"}"
 

@@ -18,6 +18,7 @@ scenarios_fail=0
 component="replay_capture_pipeline"
 local_tmpdir="${FT_REPLAY_CAPTURE_LOCAL_TMPDIR:-${TMPDIR:-/tmp}}"
 remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
+shared_remote_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-capture-pipeline-${run_id}}"
 
 now_ts() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -82,6 +83,7 @@ run_step() {
     TMPDIR="$local_tmpdir" \
     FT_REPLAY_CAPTURE_LOCAL_TMPDIR="$local_tmpdir" \
     FT_REPLAY_CAPTURE_REMOTE_TMPDIR="$remote_tmpdir" \
+    FT_REPLAY_CAPTURE_TARGET_DIR="$shared_remote_target_dir" \
     bash "$ROOT_DIR/tests/e2e/$script_name" >"$raw_log" 2>&1
   local rc=$?
   set -e
