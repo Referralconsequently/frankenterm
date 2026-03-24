@@ -3534,15 +3534,9 @@ fn set_user_version(conn: &Connection, version: i32) -> Result<()> {
 
 /// Record a migration in the schema_version audit table.
 fn record_migration(conn: &Connection, version: i32, description: &str) -> Result<()> {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(0);
-
     conn.execute(
         "INSERT INTO schema_version (version, applied_at, description) VALUES (?1, ?2, ?3)",
-        params![version, now_ms, description],
+        params![version, now_ms(), description],
     )
     .map_err(|e| StorageError::MigrationFailed(format!("Failed to record migration: {e}")))?;
 
