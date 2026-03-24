@@ -247,16 +247,13 @@ impl CuckooFilter {
 
     /// Insert an item into the filter.
     ///
-    /// Returns [`InsertResult::Duplicate`] if the fingerprint is already
-    /// present in either candidate bucket, avoiding redundant entries.
+    /// Note: [`InsertResult::Duplicate`] is not returned because cuckoo
+    /// filters store fingerprints, not keys — different items can share
+    /// the same fingerprint, making reliable duplicate detection impossible
+    /// without storing the original keys.
     pub fn insert<T: Hash + ?Sized>(&mut self, item: &T) -> InsertResult {
         let (fp, i1) = hash_item(item, self.num_buckets);
         let i2 = alt_index(i1, fp, self.num_buckets);
-
-        // Check for existing fingerprint before inserting.
-        if self.buckets[i1].contains(fp) || self.buckets[i2].contains(fp) {
-            return InsertResult::Duplicate;
-        }
 
         // Try primary bucket
         if self.buckets[i1].insert(fp) {
