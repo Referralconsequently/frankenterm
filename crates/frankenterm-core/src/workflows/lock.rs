@@ -197,6 +197,13 @@ impl PaneWorkflowLockManager {
 
     /// Get all currently active locks.
     ///
+    /// Number of panes currently locked by running workflows.
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        let locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.len()
+    }
+
     /// Useful for diagnostics and monitoring.
     #[must_use]
     pub fn active_locks(&self) -> Vec<PaneLockInfo> {

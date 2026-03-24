@@ -3876,6 +3876,10 @@ steps:
                 held_by_workflow: "other_workflow".to_string(),
                 held_by_execution: "exec-002".to_string(),
             },
+            WorkflowStartResult::ConcurrencyLimitReached {
+                active: 2,
+                limit: 3,
+            },
             WorkflowStartResult::Error {
                 error: "Something went wrong".to_string(),
             },
@@ -3956,6 +3960,14 @@ steps:
         assert!(!no_match.is_started());
         assert!(!no_match.is_locked());
         assert!(no_match.execution_id().is_none());
+
+        let concurrency_limited = WorkflowStartResult::ConcurrencyLimitReached {
+            active: 2,
+            limit: 3,
+        };
+        assert!(!concurrency_limited.is_started());
+        assert!(!concurrency_limited.is_locked());
+        assert!(concurrency_limited.execution_id().is_none());
 
         let error = WorkflowStartResult::Error {
             error: "fail".to_string(),

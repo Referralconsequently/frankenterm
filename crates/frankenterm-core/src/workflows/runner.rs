@@ -38,6 +38,13 @@ pub enum WorkflowStartResult {
         /// Execution ID holding the lock
         held_by_execution: String,
     },
+    /// Global concurrent workflow limit reached.
+    ConcurrencyLimitReached {
+        /// Current number of active workflows.
+        active: usize,
+        /// Configured maximum.
+        limit: usize,
+    },
     /// An error occurred
     Error {
         /// Error message
@@ -1573,6 +1580,13 @@ impl WorkflowRunner {
                                     "Pane locked, skipping detection"
                                 );
                             }
+                            WorkflowStartResult::ConcurrencyLimitReached { active, limit } => {
+                                tracing::debug!(
+                                    active,
+                                    limit,
+                                    "Workflow concurrency limit reached, skipping detection"
+                                );
+                            }
                             WorkflowStartResult::Error { error } => {
                                 tracing::error!(error, "Failed to start workflow");
                             }
@@ -2078,6 +2092,17 @@ mod tests {
         assert!(r.execution_id().is_none());
     }
 
+    #[test]
+    fn start_result_concurrency_limit_reached() {
+        let r = WorkflowStartResult::ConcurrencyLimitReached {
+            active: 3,
+            limit: 3,
+        };
+        assert!(!r.is_started());
+        assert!(!r.is_locked());
+        assert!(r.execution_id().is_none());
+    }
+
     // ========================================================================
     // WorkflowStartResult serde roundtrip
     // ========================================================================
@@ -2124,6 +2149,19 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let back: WorkflowStartResult = serde_json::from_str(&json).unwrap();
         assert!(!back.is_started());
+    }
+
+    #[test]
+    fn start_result_serde_concurrency_limit_reached() {
+        let r = WorkflowStartResult::ConcurrencyLimitReached {
+            active: 2,
+            limit: 3,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: WorkflowStartResult = serde_json::from_str(&json).unwrap();
+        assert!(!back.is_started());
+        assert!(!back.is_locked());
+        assert!(back.execution_id().is_none());
     }
 
     // ========================================================================
