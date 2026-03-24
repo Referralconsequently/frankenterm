@@ -512,9 +512,10 @@ proptest! {
         prop_assert_eq!(stats.load_percent, expected_percent);
     }
 
-    /// Duplicate inserts increase count each time (cuckoo allows duplicates).
+    /// Repeated inserts increase count each time because the filter stores
+    /// fingerprints, not exact keys.
     #[test]
-    fn duplicate_inserts_increase_count(
+    fn repeated_inserts_increase_count(
         config in arb_large_config(),
         item in 0..100000u64,
         repeats in 2..5usize

@@ -186,8 +186,6 @@ pub enum InsertResult {
     Ok,
     /// Filter is full — too many evictions.
     Full,
-    /// Item is likely already present (duplicate fingerprint).
-    Duplicate,
 }
 
 /// Statistics about the filter.
@@ -247,10 +245,11 @@ impl CuckooFilter {
 
     /// Insert an item into the filter.
     ///
-    /// Note: [`InsertResult::Duplicate`] is not returned because cuckoo
-    /// filters store fingerprints, not keys — different items can share
-    /// the same fingerprint, making reliable duplicate detection impossible
-    /// without storing the original keys.
+    /// Repeated inserts of the same logical item are counted separately.
+    ///
+    /// The filter only stores fingerprints, not original keys, so exact
+    /// duplicate detection is not reliable. If you need idempotent set
+    /// semantics, deduplicate at a higher layer before inserting.
     pub fn insert<T: Hash + ?Sized>(&mut self, item: &T) -> InsertResult {
         let (fp, i1) = hash_item(item, self.num_buckets);
         let i2 = alt_index(i1, fp, self.num_buckets);
@@ -316,6 +315,10 @@ impl CuckooFilter {
     ///
     /// **Important**: Only delete items that were previously inserted.
     /// Deleting items that were never inserted can cause false negatives.
+    ///
+    /// Each successful delete removes one stored fingerprint. If the same
+    /// item was inserted multiple times, it must be deleted the same number
+    /// of times to fully clear its membership signal.
     pub fn delete<T: Hash + ?Sized>(&mut self, item: &T) -> bool {
         let (fp, i1) = hash_item(item, self.num_buckets);
         let i2 = alt_index(i1, fp, self.num_buckets);
@@ -331,7 +334,7 @@ impl CuckooFilter {
         false
     }
 
-    /// Number of items in the filter.
+    /// Number of stored fingerprints in the filter.
     #[must_use]
     pub fn count(&self) -> usize {
         self.count
@@ -614,7 +617,6 @@ mod tests {
     fn insert_result_eq() {
         assert_eq!(InsertResult::Ok, InsertResult::Ok);
         assert_ne!(InsertResult::Ok, InsertResult::Full);
-        assert_ne!(InsertResult::Full, InsertResult::Duplicate);
     }
 
     // -- Batch: DarkBadger wa-1u90p.7.1 ----------------------------------------
@@ -631,17 +633,8 @@ mod tests {
     }
 
     #[test]
-    fn insert_result_all_three_distinct() {
-        let variants = [
-            InsertResult::Ok,
-            InsertResult::Full,
-            InsertResult::Duplicate,
-        ];
-        for i in 0..variants.len() {
-            for j in (i + 1)..variants.len() {
-                assert_ne!(variants[i], variants[j]);
-            }
-        }
+    fn insert_result_variants_are_distinct() {
+        assert_ne!(InsertResult::Ok, InsertResult::Full);
     }
 
     #[test]
@@ -932,6 +925,22 @@ mod tests {
             !filter.delete(&42),
             "second delete of same item should return false"
         );
+    }
+
+    #[test]
+    fn repeated_insert_requires_matching_deletes() {
+        let mut filter = CuckooFilter::new();
+        assert_eq!(filter.insert(&42), InsertResult::Ok);
+        assert_eq!(filter.insert(&42), InsertResult::Ok);
+        assert_eq!(filter.count(), 2);
+
+        assert!(filter.delete(&42));
+        assert!(filter.lookup(&42));
+        assert_eq!(filter.count(), 1);
+
+        assert!(filter.delete(&42));
+        assert!(!filter.lookup(&42));
+        assert_eq!(filter.count(), 0);
     }
 
     #[test]
