@@ -13466,7 +13466,7 @@ async fn run_distributed_agent(
     let token = frankenterm_core::distributed::resolve_expected_token(&config.distributed)
         .map_err(|err| anyhow::anyhow!("Failed to resolve distributed token: {err}"))?;
 
-    let distributed_task =
+    let mut distributed_task =
         frankenterm_core::runtime_compat::task::spawn(distributed_agent_stream_forever(
             resolved_connect_addr.clone(),
             config.distributed.clone(),
@@ -13478,6 +13478,11 @@ async fn run_distributed_agent(
             token,
         ));
 
+    // Wait for either a shutdown signal OR the streaming task to exit.
+    // If the streaming task exits early (e.g. DB seeding failure), we must
+    // not block forever waiting for a signal that will never come.
+    let task_result;
+
     #[cfg(unix)]
     {
         use frankenterm_core::runtime_compat::signal::unix::{SignalKind, signal};
@@ -13487,24 +13492,51 @@ async fn run_distributed_agent(
         frankenterm_core::runtime_compat::select! {
             _ = sigint.recv() => {
                 tracing::info!("Received SIGINT, shutting down distributed agent");
+                task_result = None;
             }
             _ = sigterm.recv() => {
                 tracing::info!("Received SIGTERM, shutting down distributed agent");
+                task_result = None;
+            }
+            result = &mut distributed_task => {
+                tracing::warn!("Distributed agent streaming task exited unexpectedly");
+                task_result = Some(result);
             }
         }
     }
 
     #[cfg(not(unix))]
     {
-        frankenterm_core::runtime_compat::signal::ctrl_c().await?;
-        tracing::info!("Received Ctrl+C, shutting down distributed agent");
+        frankenterm_core::runtime_compat::select! {
+            ctrl_c_result = frankenterm_core::runtime_compat::signal::ctrl_c() => {
+                ctrl_c_result?;
+                tracing::info!("Received Ctrl+C, shutting down distributed agent");
+                task_result = None;
+            }
+            result = &mut distributed_task => {
+                tracing::warn!("Distributed agent streaming task exited unexpectedly");
+                task_result = Some(result);
+            }
+        }
     }
 
     tracing::info!("Distributed agent stopping");
     handle.signal_shutdown();
 
-    if let Err(err) = distributed_task.await {
-        tracing::warn!(error = %err, "Distributed agent streaming task join failed");
+    // If the task already finished (early exit), inspect its result.
+    // If it was shut down via signal, join the task now.
+    let join_result = match task_result {
+        Some(result) => result,
+        None => distributed_task.await,
+    };
+    match join_result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            tracing::error!(error = %err, "Distributed agent streaming task failed");
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "Distributed agent streaming task join failed");
+        }
     }
 
     match Arc::try_unwrap(handle) {
