@@ -420,7 +420,11 @@ impl ReplaySession {
         }
     }
 
-    /// Seek to a specific timestamp. Sets cursor to the first event at or after the target.
+    /// Seek to a specific timestamp.
+    ///
+    /// Sets the cursor to the first event at or after the target and resets
+    /// the inter-frame delay baseline so playback can resume immediately from
+    /// the selected point.
     pub fn seek(&mut self, target_ms: u64) -> Result<usize, ReplayError> {
         let (min_ts, max_ts) = self.time_range();
 
@@ -1574,6 +1578,30 @@ mod tests {
         session.play();
         let frame = session.next_frame().unwrap();
         assert_eq!(frame.event.occurred_at_ms, 1000);
+    }
+
+    #[test]
+    fn seek_resets_delay_baseline_for_next_frame() {
+        let mut session = ReplaySession::new(
+            vec![
+                make_text_event(1, 0, 1000, "a"),
+                make_text_event(1, 1, 2000, "b"),
+                make_text_event(1, 2, 3000, "c"),
+            ],
+            ReplayConfig::realtime(),
+            human(),
+            AccessTier::A2FullQuery,
+            "seek-delay-reset",
+        )
+        .unwrap();
+
+        let first = session.next_frame().unwrap();
+        assert_eq!(first.delay, Duration::ZERO);
+
+        session.seek(3000).unwrap();
+        let after_seek = session.next_frame().unwrap();
+        assert_eq!(after_seek.event.occurred_at_ms, 3000);
+        assert_eq!(after_seek.delay, Duration::ZERO);
     }
 
     // -----------------------------------------------------------------------

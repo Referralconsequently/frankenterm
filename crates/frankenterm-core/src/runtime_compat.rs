@@ -1182,8 +1182,10 @@ pub mod process {
 
         loop {
             if cancel.load(Ordering::SeqCst) {
-                terminate_child_process(&mut child);
-                let _ = child.wait();
+                if child.try_wait()?.is_none() {
+                    terminate_child_process(&mut child);
+                    let _ = child.wait();
+                }
                 let _ = stdout_handle.join();
                 let _ = stderr_handle.join();
                 return Err(std::io::Error::new(
@@ -3810,13 +3812,14 @@ mod tests {
     fn process_command_kill_on_drop_stops_timed_out_child() {
         let marker_dir = tempfile::tempdir().expect("tempdir");
         let marker_path = marker_dir.path().join("should_not_exist.txt");
-        let script = format!("sleep 1; echo done > {}", marker_path.display());
+        let script = "(sleep 1; echo done > \"$FT_RUNTIME_COMPAT_MARKER\") & wait";
         let rt = RuntimeBuilder::current_thread().build().unwrap();
 
         rt.block_on(async {
             let mut cmd = process::Command::new("sh");
             cmd.arg("-c");
             cmd.arg(&script);
+            cmd.env("FT_RUNTIME_COMPAT_MARKER", &marker_path);
             cmd.kill_on_drop(true);
 
             let result = timeout(Duration::from_millis(50), cmd.output()).await;
