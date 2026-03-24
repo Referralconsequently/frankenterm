@@ -202,6 +202,9 @@ const RM_DANGEROUS_FLAGS: &[&str] = &["-rf", "-fr", "--recursive", "-r"];
 /// Flags on `chmod` that are dangerous with broad targets.
 const CHMOD_DANGEROUS_PATTERNS: &[&str] = &["777", "a+rwx", "ugo+rwx"];
 
+/// `find` actions that can execute arbitrary commands.
+const FIND_EXEC_FLAGS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
+
 // =============================================================================
 // Shell lexer
 // =============================================================================
@@ -761,6 +764,16 @@ impl SymbolicExecutor {
                 continue;
             }
 
+            // `find` needs special handling: its path arguments must stay
+            // within the boundary, and action flags like `-exec` / `-delete`
+            // are not safe even though benign `find` usage is read-only.
+            if parsed_cmd.binary == "find" {
+                self.check_find_safety(cmd.index, parsed_cmd, violations);
+                self.check_path_args(cmd.index, parsed_cmd, violations);
+                self.check_redirects(cmd.index, parsed_cmd, violations);
+                continue;
+            }
+
             // Check path arguments for traversal.
             if !self.safe_set.contains(&parsed_cmd.binary) {
                 self.check_path_args(cmd.index, parsed_cmd, violations);
@@ -768,6 +781,35 @@ impl SymbolicExecutor {
 
             // Always check redirects for out-of-bounds writes
             self.check_redirects(cmd.index, parsed_cmd, violations);
+        }
+    }
+
+    /// Check `find` commands for destructive or opaque execution actions.
+    fn check_find_safety(
+        &self,
+        block_index: u32,
+        cmd: &ParsedCommand,
+        violations: &mut Vec<SafetyViolation>,
+    ) {
+        for arg in &cmd.args {
+            if *arg == "-delete" {
+                violations.push(SafetyViolation {
+                    block_index,
+                    category: ViolationCategory::UnboundedDeletion,
+                    description: "find -delete is destructive and not permitted".to_string(),
+                    evidence: arg.clone(),
+                });
+            } else if FIND_EXEC_FLAGS.contains(&arg.as_str()) {
+                violations.push(SafetyViolation {
+                    block_index,
+                    category: ViolationCategory::BannedBinary,
+                    description: format!(
+                        "find action '{}' can execute arbitrary commands and is not permitted",
+                        arg
+                    ),
+                    evidence: arg.clone(),
+                });
+            }
         }
     }
 
@@ -1209,6 +1251,13 @@ mod tests {
     }
 
     #[test]
+    fn safe_find_within_cwd() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "find src -name '*.rs'")];
+        assert!(exec.analyze(&cmds).is_safe());
+    }
+
+    #[test]
     fn safe_empty_commands() {
         let exec = cwd_executor("/home/user/project");
         assert!(exec.analyze(&[]).is_safe());
@@ -1325,6 +1374,51 @@ mod tests {
         let cmds = vec![make_cmd(0, "rm -rf /etc/important")];
         let verdict = exec.analyze(&cmds);
         assert!(verdict.is_unsafe());
+    }
+
+    #[test]
+    fn unsafe_find_parent_traversal() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "find ../shared -name '*.rs'")];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::PathTraversal)
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_find_delete() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "find src -type f -delete")];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::UnboundedDeletion)
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_find_exec_rm() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, r#"find src -type f -exec rm -f {} \;"#)];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::BannedBinary)
+            );
+        }
     }
 
     #[test]
