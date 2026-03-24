@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use frankenterm_core::agent_config_templates::{
-    build_generation_plan, generate_templates_for_detected, ConfigAction, ConfigScope,
+    ConfigAction, ConfigScope, build_generation_plan, generate_templates_for_detected,
 };
 use frankenterm_core::agent_correlator::{
     AgentCorrelator, AgentInventory, DetectionSource, InstalledAgentInventoryEntry,
@@ -190,7 +190,10 @@ fn mixed_detection_sources_produce_unified_plan() {
     // Pattern detection (highest priority)
     correlator.ingest_detections(
         10,
-        &[detection("core.claude_code:tool_use", AgentType::ClaudeCode)],
+        &[detection(
+            "core.claude_code:tool_use",
+            AgentType::ClaudeCode,
+        )],
     );
 
     // Title detection
@@ -258,10 +261,7 @@ fn running_agents_without_installed_inventory_still_generate_configs() {
     let mut correlator = AgentCorrelator::new();
 
     // Agent running in pane but NOT in filesystem (e.g., installed in non-default location)
-    correlator.ingest_detections(
-        5,
-        &[detection("core.codex:tool_use", AgentType::Codex)],
-    );
+    correlator.ingest_detections(5, &[detection("core.codex:tool_use", AgentType::Codex)]);
 
     let inv = correlator.inventory();
     assert_eq!(inv.running.len(), 1);
@@ -356,10 +356,7 @@ fn large_swarm_autoconfig_handles_duplicates() {
 
     // 5 Codex agents
     for i in 10..15 {
-        correlator.ingest_detections(
-            i,
-            &[detection("core.codex:tool_use", AgentType::Codex)],
-        );
+        correlator.ingest_detections(i, &[detection("core.codex:tool_use", AgentType::Codex)]);
     }
 
     let inv = correlator.inventory();
@@ -479,10 +476,7 @@ fn full_inventory_with_installed_and_running_serde() {
         },
     ];
 
-    let inventory = AgentInventory {
-        installed,
-        running,
-    };
+    let inventory = AgentInventory { installed, running };
 
     // Roundtrip
     let json = serde_json::to_string_pretty(&inventory).unwrap();
@@ -493,10 +487,7 @@ fn full_inventory_with_installed_and_running_serde() {
 
     // Cross-reference: running slug matches installed slug
     for (_, running_entry) in &back.running {
-        let installed_entry = back
-            .installed
-            .iter()
-            .find(|i| i.slug == running_entry.slug);
+        let installed_entry = back.installed.iter().find(|i| i.slug == running_entry.slug);
         assert!(
             installed_entry.is_some(),
             "running agent {} should have installed entry",
@@ -532,8 +523,18 @@ fn all_agent_types_map_to_known_providers() {
 #[test]
 fn provider_from_slug_roundtrips_for_all_known() {
     let slugs = [
-        "claude", "cline", "codex", "cursor", "factory", "gemini",
-        "github-copilot", "opencode", "windsurf", "aider", "grok", "devin",
+        "claude",
+        "cline",
+        "codex",
+        "cursor",
+        "factory",
+        "gemini",
+        "github-copilot",
+        "opencode",
+        "windsurf",
+        "aider",
+        "grok",
+        "devin",
     ];
 
     for slug in &slugs {

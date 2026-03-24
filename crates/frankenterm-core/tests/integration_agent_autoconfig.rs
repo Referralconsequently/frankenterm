@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 
 use frankenterm_core::agent_config_templates::{
-    build_generation_plan, generate_template, generate_templates_for_detected, merge_into_existing,
-    section_is_current, AgentConfigKind, AgentConfigTemplate, ConfigAction, ConfigGenerationPlanItem,
+    AgentConfigKind, AgentConfigTemplate, ConfigAction, ConfigGenerationPlanItem,
     ConfigGenerationResult, ConfigScope, SECTION_END_MARKER, SECTION_START_MARKER,
+    build_generation_plan, generate_template, generate_templates_for_detected, merge_into_existing,
+    section_is_current,
 };
 use frankenterm_core::agent_provider::AgentProvider;
 
@@ -23,8 +24,15 @@ use frankenterm_core::agent_provider::AgentProvider;
 
 /// All known slugs for exhaustive testing.
 const ALL_SLUGS: &[&str] = &[
-    "claude", "cline", "codex", "cursor", "factory", "gemini",
-    "github-copilot", "opencode", "windsurf",
+    "claude",
+    "cline",
+    "codex",
+    "cursor",
+    "factory",
+    "gemini",
+    "github-copilot",
+    "opencode",
+    "windsurf",
 ];
 
 /// Simulated file state for build_generation_plan: no files exist.
@@ -44,7 +52,11 @@ fn all_9_agents_produce_unique_templates() {
 
     // Each template has a non-empty content referencing robot mode
     for t in &templates {
-        assert!(!t.content.is_empty(), "empty for {}", t.provider.canonical_slug());
+        assert!(
+            !t.content.is_empty(),
+            "empty for {}",
+            t.provider.canonical_slug()
+        );
         assert!(
             t.content.contains("ft robot"),
             "missing robot ref for {}",
@@ -55,7 +67,9 @@ fn all_9_agents_produce_unique_templates() {
     // Different agents may share config kinds (e.g., AGENTS.md), but each has content
     let mut seen = HashMap::new();
     for t in &templates {
-        seen.entry(t.kind).or_insert_with(Vec::new).push(t.provider.canonical_slug());
+        seen.entry(t.kind)
+            .or_insert_with(Vec::new)
+            .push(t.provider.canonical_slug());
     }
     // Claude → CLAUDE.md, Cursor → .cursorrules, Aider → CONVENTIONS.md, Copilot → .github/...
     // Rest → AGENTS.md (shared kind is expected)
@@ -118,11 +132,7 @@ fn merge_is_idempotent_for_all_agents() {
         let first = merge_into_existing("# My Project\n", &template.content);
         let second = merge_into_existing(&first, &template.content);
 
-        assert_eq!(
-            first, second,
-            "{}: merge should be idempotent",
-            slug
-        );
+        assert_eq!(first, second, "{}: merge should be idempotent", slug);
     }
 }
 
@@ -150,16 +160,8 @@ fn merge_replaces_outdated_section_for_all_agents() {
             "{}: old content should be removed",
             slug
         );
-        assert!(
-            result.contains("# Header"),
-            "{}: header preserved",
-            slug
-        );
-        assert!(
-            result.contains("# Footer"),
-            "{}: footer preserved",
-            slug
-        );
+        assert!(result.contains("# Header"), "{}: header preserved", slug);
+        assert!(result.contains("# Footer"), "{}: footer preserved", slug);
     }
 }
 
@@ -201,7 +203,12 @@ fn plan_creates_all_files_when_none_exist() {
 
     assert_eq!(plan.len(), 9);
     for item in &plan {
-        assert_eq!(item.action, ConfigAction::Create, "all should be Create for {}", item.slug);
+        assert_eq!(
+            item.action,
+            ConfigAction::Create,
+            "all should be Create for {}",
+            item.slug
+        );
         assert!(!item.file_exists);
         assert!(!item.section_exists);
     }
@@ -308,11 +315,7 @@ fn detection_slugs_map_to_correct_config_kinds() {
     for (slug, expected_kind) in expected_kinds {
         let provider = AgentProvider::from_slug(slug);
         let template = generate_template(&provider);
-        assert_eq!(
-            template.kind, expected_kind,
-            "{}: wrong config kind",
-            slug
-        );
+        assert_eq!(template.kind, expected_kind, "{}: wrong config kind", slug);
     }
 }
 
@@ -504,9 +507,9 @@ fn plan_mixed_file_states() {
     let claude_merged = merge_into_existing("", &claude_template.content);
 
     let slugs = vec![
-        "claude".to_string(),  // file exists, section current → Skip
-        "codex".to_string(),   // file missing → Create
-        "cursor".to_string(),  // file exists, no section → Append
+        "claude".to_string(), // file exists, section current → Skip
+        "codex".to_string(),  // file missing → Create
+        "cursor".to_string(), // file exists, no section → Append
     ];
 
     let plan = build_generation_plan(&slugs, ConfigScope::Project, |filename| {
@@ -553,8 +556,8 @@ fn fixture_manifests_parse_and_validate() {
             .or_else(|_| std::fs::read_to_string(&full_path))
             .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
 
-        let manifest: serde_json::Value =
-            serde_json::from_str(&content).unwrap_or_else(|e| panic!("invalid JSON in {path}: {e}"));
+        let manifest: serde_json::Value = serde_json::from_str(&content)
+            .unwrap_or_else(|e| panic!("invalid JSON in {path}: {e}"));
 
         // Validate structure
         assert!(
@@ -570,9 +573,9 @@ fn fixture_manifests_parse_and_validate() {
             "{path}: missing expected_total_count"
         );
 
-        let agents = manifest["agents"].as_array().unwrap_or_else(|| {
-            panic!("{path}: agents should be an array")
-        });
+        let agents = manifest["agents"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{path}: agents should be an array"));
         assert_eq!(agents.len(), 9, "{path}: should have 9 agent entries");
 
         // Count expected detections
@@ -603,10 +606,16 @@ fn all_agent_templates_survive_serde_roundtrip() {
         let back: AgentConfigTemplate = serde_json::from_str(&json)
             .unwrap_or_else(|e| panic!("{slug}: deserialize failed: {e}"));
 
-        assert_eq!(back.provider, template.provider, "{slug}: provider mismatch");
+        assert_eq!(
+            back.provider, template.provider,
+            "{slug}: provider mismatch"
+        );
         assert_eq!(back.kind, template.kind, "{slug}: kind mismatch");
         assert_eq!(back.content, template.content, "{slug}: content mismatch");
-        assert_eq!(back.filename, template.filename, "{slug}: filename mismatch");
+        assert_eq!(
+            back.filename, template.filename,
+            "{slug}: filename mismatch"
+        );
     }
 }
 
@@ -634,14 +643,32 @@ fn plan_items_survive_serde_roundtrip() {
 
 #[test]
 fn config_action_serde_snake_case() {
-    assert_eq!(serde_json::to_string(&ConfigAction::Create).unwrap(), "\"create\"");
-    assert_eq!(serde_json::to_string(&ConfigAction::Append).unwrap(), "\"append\"");
-    assert_eq!(serde_json::to_string(&ConfigAction::Replace).unwrap(), "\"replace\"");
-    assert_eq!(serde_json::to_string(&ConfigAction::Skip).unwrap(), "\"skip\"");
+    assert_eq!(
+        serde_json::to_string(&ConfigAction::Create).unwrap(),
+        "\"create\""
+    );
+    assert_eq!(
+        serde_json::to_string(&ConfigAction::Append).unwrap(),
+        "\"append\""
+    );
+    assert_eq!(
+        serde_json::to_string(&ConfigAction::Replace).unwrap(),
+        "\"replace\""
+    );
+    assert_eq!(
+        serde_json::to_string(&ConfigAction::Skip).unwrap(),
+        "\"skip\""
+    );
 }
 
 #[test]
 fn config_scope_serde_snake_case() {
-    assert_eq!(serde_json::to_string(&ConfigScope::Project).unwrap(), "\"project\"");
-    assert_eq!(serde_json::to_string(&ConfigScope::Global).unwrap(), "\"global\"");
+    assert_eq!(
+        serde_json::to_string(&ConfigScope::Project).unwrap(),
+        "\"project\""
+    );
+    assert_eq!(
+        serde_json::to_string(&ConfigScope::Global).unwrap(),
+        "\"global\""
+    );
 }
