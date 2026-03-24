@@ -286,21 +286,36 @@ impl FleetMemoryController {
 
         // Hysteresis: require sustained readings before transitioning
         self.recent_raw_tiers.push_back(raw);
-        let max_history = self.config.escalation_threshold.max(self.config.deescalation_threshold) as usize;
+        let max_history = self
+            .config
+            .escalation_threshold
+            .max(self.config.deescalation_threshold) as usize;
         if self.recent_raw_tiers.len() > max_history {
             self.recent_raw_tiers.pop_front();
         }
 
         let esc_thresh = self.config.escalation_threshold as usize;
         let sustained_high = if self.recent_raw_tiers.len() >= esc_thresh && esc_thresh > 0 {
-            *self.recent_raw_tiers.iter().rev().take(esc_thresh).min().unwrap()
+            *self
+                .recent_raw_tiers
+                .iter()
+                .rev()
+                .take(esc_thresh)
+                .min()
+                .unwrap()
         } else {
             FleetPressureTier::Normal
         };
 
         let deesc_thresh = self.config.deescalation_threshold as usize;
         let sustained_low = if self.recent_raw_tiers.len() >= deesc_thresh && deesc_thresh > 0 {
-            *self.recent_raw_tiers.iter().rev().take(deesc_thresh).max().unwrap()
+            *self
+                .recent_raw_tiers
+                .iter()
+                .rev()
+                .take(deesc_thresh)
+                .max()
+                .unwrap()
         } else {
             self.compound_tier
         };

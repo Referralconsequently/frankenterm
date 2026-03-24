@@ -1879,7 +1879,9 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(200));
         model.shutdown();
-        handle.join().expect("survival run thread should join cleanly");
+        handle
+            .join()
+            .expect("survival run thread should join cleanly");
     }
 
     // -----------------------------------------------------------------------

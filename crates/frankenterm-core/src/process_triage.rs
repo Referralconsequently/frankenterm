@@ -272,9 +272,7 @@ pub fn classify(
 
     // Priority 2: Stuck test runners (12+ hours, <1% CPU).
     let is_test_process = context.is_test
-        || TEST_RUNNERS
-            .iter()
-            .any(|t| lower_name.contains(*t))
+        || TEST_RUNNERS.iter().any(|t| lower_name.contains(*t))
         || node
             .argv
             .iter()
@@ -328,9 +326,7 @@ pub fn classify(
     }
 
     // Priority 5: Abandoned dev servers (24+ hours).
-    if DEV_SERVERS
-        .iter()
-        .any(|s| lower_name.contains(*s))
+    if DEV_SERVERS.iter().any(|s| lower_name.contains(*s))
         && context.age > Duration::from_secs(24 * 3600)
     {
         return (
@@ -364,10 +360,7 @@ pub fn classify(
     }
 
     // Priority 7-8: Agent processes.
-    if AGENT_PROCESSES
-        .iter()
-        .any(|a| lower_name.contains(*a))
-    {
+    if AGENT_PROCESSES.iter().any(|a| lower_name.contains(*a)) {
         if context.age > Duration::from_secs(16 * 3600) {
             return (
                 TriageCategory::ConfusedAgent,

@@ -208,7 +208,7 @@ impl XorFilter {
         }
         // Guard against corrupted deserialized state where fingerprints
         // is shorter than the expected 3 * block_length.
-        let expected_len = self.block_length.checked_mul(3).unwrap_or(usize::MAX);
+        let expected_len = self.block_length.saturating_mul(3);
         if self.fingerprints.len() < expected_len {
             return false;
         }
@@ -387,7 +387,7 @@ impl XorFilter16 {
         }
         // Guard against corrupted deserialized state where fingerprints
         // is shorter than the expected 3 * block_length.
-        let expected_len = self.block_length.checked_mul(3).unwrap_or(usize::MAX);
+        let expected_len = self.block_length.saturating_mul(3);
         if self.fingerprints.len() < expected_len {
             return false;
         }

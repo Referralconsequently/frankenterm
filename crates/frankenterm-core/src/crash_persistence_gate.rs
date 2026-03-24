@@ -564,10 +564,7 @@ mod tests {
     #[test]
     fn gate_report_all_pass() {
         let scenarios = standard_recovery_scenarios();
-        let results: Vec<ScenarioResult> = scenarios
-            .iter()
-            .map(passing_scenario_result)
-            .collect();
+        let results: Vec<ScenarioResult> = scenarios.iter().map(passing_scenario_result).collect();
         let report = PersistenceGateReport::evaluate(results);
         assert_eq!(report.verdict, PersistenceGateVerdict::Pass);
         assert!(!report.any_data_loss);
@@ -576,10 +573,8 @@ mod tests {
     #[test]
     fn gate_report_fail_on_data_loss() {
         let scenarios = standard_recovery_scenarios();
-        let mut results: Vec<ScenarioResult> = scenarios
-            .iter()
-            .map(passing_scenario_result)
-            .collect();
+        let mut results: Vec<ScenarioResult> =
+            scenarios.iter().map(passing_scenario_result).collect();
 
         // Simulate data loss in sigkill scenario.
         if let Some(r) = results
@@ -600,10 +595,8 @@ mod tests {
     #[test]
     fn gate_report_conditional_on_non_critical_failure() {
         let scenarios = standard_recovery_scenarios();
-        let mut results: Vec<ScenarioResult> = scenarios
-            .iter()
-            .map(passing_scenario_result)
-            .collect();
+        let mut results: Vec<ScenarioResult> =
+            scenarios.iter().map(passing_scenario_result).collect();
 
         // Fail a scenario but only on non-data-loss invariant.
         if let Some(r) = results
@@ -664,10 +657,8 @@ mod tests {
     #[test]
     fn max_recovery_time_tracked() {
         let scenarios = standard_recovery_scenarios();
-        let mut results: Vec<ScenarioResult> = scenarios
-            .iter()
-            .map(passing_scenario_result)
-            .collect();
+        let mut results: Vec<ScenarioResult> =
+            scenarios.iter().map(passing_scenario_result).collect();
         results[0].recovery_time_ms = 5000;
         let report = PersistenceGateReport::evaluate(results);
         assert_eq!(report.max_recovery_time_ms, 5000);
@@ -701,10 +692,7 @@ mod tests {
     #[test]
     fn render_summary_shows_pass() {
         let scenarios = standard_recovery_scenarios();
-        let results: Vec<ScenarioResult> = scenarios
-            .iter()
-            .map(passing_scenario_result)
-            .collect();
+        let results: Vec<ScenarioResult> = scenarios.iter().map(passing_scenario_result).collect();
         let report = PersistenceGateReport::evaluate(results);
         let summary = report.render_summary();
         assert!(summary.contains("Pass"));
@@ -714,10 +702,8 @@ mod tests {
     #[test]
     fn render_summary_shows_data_loss() {
         let scenarios = standard_recovery_scenarios();
-        let mut results: Vec<ScenarioResult> = scenarios
-            .iter()
-            .map(passing_scenario_result)
-            .collect();
+        let mut results: Vec<ScenarioResult> =
+            scenarios.iter().map(passing_scenario_result).collect();
         if let Some(r) = results
             .iter_mut()
             .find(|r| r.crash_type == CrashScenarioType::Sigkill)
@@ -735,10 +721,7 @@ mod tests {
     #[test]
     fn serde_roundtrip_gate_report() {
         let scenarios = standard_recovery_scenarios();
-        let results: Vec<ScenarioResult> = scenarios
-            .iter()
-            .map(passing_scenario_result)
-            .collect();
+        let results: Vec<ScenarioResult> = scenarios.iter().map(passing_scenario_result).collect();
         let report = PersistenceGateReport::evaluate(results);
         let json = serde_json::to_string(&report).expect("serialize");
         let restored: PersistenceGateReport = serde_json::from_str(&json).expect("deserialize");

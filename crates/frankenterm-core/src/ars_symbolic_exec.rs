@@ -825,6 +825,7 @@ impl SymbolicExecutor {
     }
 
     /// Check `find` commands for destructive or opaque execution actions.
+    #[allow(clippy::unused_self)]
     fn check_find_safety(
         &self,
         block_index: u32,

@@ -230,7 +230,7 @@ pub fn resolve_profile_path(
         .into());
     }
 
-    let (path, rel_path) = manifest
+    let (_path, rel_path) = manifest
         .and_then(|manifest| {
             manifest
                 .profiles
