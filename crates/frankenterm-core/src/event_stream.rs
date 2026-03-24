@@ -731,7 +731,15 @@ impl FilteredEventStream {
     /// Try to receive the next matching event without blocking.
     ///
     /// Returns `None` if no matching event is immediately available.
+    /// After a `Lagged` error the subscriber cursor is advanced
+    /// automatically; we retry up to a small bound to pick up the
+    /// next retained event without spinning indefinitely.
     pub fn try_next(&mut self) -> Option<Event> {
+        // Bound the number of consecutive Lagged recoveries to prevent
+        // CPU spin when a producer is faster than the buffer can hold.
+        let mut lagged_retries: u8 = 0;
+        const MAX_LAGGED_RETRIES: u8 = 3;
+
         loop {
             match self.subscriber.try_recv() {
                 Some(Ok(event)) => {
@@ -746,11 +754,16 @@ impl FilteredEventStream {
                         return Some(event);
                     }
                     self.filtered_out.fetch_add(1, Ordering::Relaxed);
+                    // Reset lagged counter on successful recv (even if filtered).
+                    lagged_retries = 0;
                 }
                 Some(Err(crate::events::RecvError::Lagged { .. })) => {
                     // The subscriber has already advanced to the newest retained
-                    // position. Keep draining so callers can still get an
-                    // immediately available event from the new cursor.
+                    // position. Retry to pick up the next available event.
+                    lagged_retries += 1;
+                    if lagged_retries >= MAX_LAGGED_RETRIES {
+                        return None;
+                    }
                 }
                 Some(Err(crate::events::RecvError::Closed)) | None => return None,
             }
