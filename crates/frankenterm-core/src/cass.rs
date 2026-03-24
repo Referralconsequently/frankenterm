@@ -1079,7 +1079,15 @@ fn redact_and_truncate(input: &str, max_len: usize) -> String {
     // boundary so the total output (including "..." ellipsis) stays within
     // the byte budget.
     let ellipsis = "...";
-    let budget = max_len.saturating_sub(ellipsis.len());
+    if max_len < ellipsis.len() {
+        // Not enough room for the ellipsis; truncate to max_len bytes.
+        let mut end = max_len.min(redacted.len());
+        while end > 0 && !redacted.is_char_boundary(end) {
+            end -= 1;
+        }
+        return redacted[..end].to_string();
+    }
+    let budget = max_len - ellipsis.len();
     let mut end = budget.min(redacted.len());
     while end > 0 && !redacted.is_char_boundary(end) {
         end -= 1;
