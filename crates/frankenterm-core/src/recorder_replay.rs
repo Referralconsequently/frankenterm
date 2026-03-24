@@ -500,21 +500,13 @@ impl ReplaySession {
                 continue;
             }
 
-            // Calculate delay from previous event.
-            let delay = if frame_index == 0 || self.cursor == 0 {
+            // Calculate delay from the immediately preceding event in the
+            // original recording (preserves real-time cadence even when
+            // intermediate events are filtered out).
+            let delay = if frame_index == 0 {
                 Duration::ZERO
             } else {
-                // Find the previous non-skipped event's timestamp.
-                let prev_ts = if frame_index > 0 {
-                    self.events[..frame_index]
-                        .iter()
-                        .next_back()
-                        .map(|e| e.occurred_at_ms)
-                        .unwrap_or(event.occurred_at_ms)
-                } else {
-                    event.occurred_at_ms
-                };
-
+                let prev_ts = self.events[frame_index - 1].occurred_at_ms;
                 let delta_ms = event.occurred_at_ms.saturating_sub(prev_ts);
                 let scaled = if self.config.speed.is_infinite() || self.config.speed == 0.0 {
                     0
