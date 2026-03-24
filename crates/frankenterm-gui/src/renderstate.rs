@@ -834,8 +834,8 @@ mod tests {
                     base + V_TOP_RIGHT as u32,
                     base + V_BOT_LEFT as u32,
                     base + V_TOP_RIGHT as u32,
-                    base + V_BOT_LEFT as u32,
                     base + V_BOT_RIGHT as u32,
+                    base + V_BOT_LEFT as u32,
                 ]
             );
         }
