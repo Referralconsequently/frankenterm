@@ -158,7 +158,7 @@ SEE ALSO:
 
 NOTES:
     Uses distributed auth settings from config (`distributed.token*`).
-    Aggregator endpoint defaults to `distributed.bind_addr` unless --connect is set."#)]
+    Aggregator endpoint defaults to --connect-addr, then `distributed.bind_addr`."#)]
     Distributed {
         #[command(subcommand)]
         command: DistributedCommands,
@@ -1565,9 +1565,18 @@ SEE ALSO:
 enum DistributedCommands {
     /// Run local capture and stream deltas/events to an aggregator
     Agent {
-        /// Aggregator address (`host:port`). Defaults to distributed.bind_addr.
+        /// Aggregator address (`host:port`) for this invocation.
+        /// Overrides --connect-addr and the config default.
         #[arg(long)]
         connect: Option<String>,
+
+        /// Default aggregator address (`host:port`) when --connect is not given.
+        /// Separates the agent connect target from the server-side
+        /// `distributed.bind_addr` (which controls the listener socket).
+        /// Falls back to `distributed.bind_addr` if neither --connect nor
+        /// --connect-addr is provided.
+        #[arg(long)]
+        connect_addr: Option<String>,
 
         /// Sender identity for wire protocol and allowlist checks.
         #[arg(long)]
@@ -9848,6 +9857,34 @@ fn is_distributed_remote_domain(domain: &str) -> bool {
     domain.starts_with("distributed:")
 }
 
+/// Fast read-only check for whether any distributed panes exist in the DB.
+/// Opens the database in read-only mode (avoiding WAL recovery) and runs a
+/// lightweight COUNT query. Returns `false` on any error so the caller
+/// gracefully skips the distributed merge path.
+fn has_distributed_panes_in_db(db_path: &Path) -> bool {
+    let conn = match rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::debug!(error = %err, "read-only open for distributed pane check failed");
+            return false;
+        }
+    };
+    match conn.query_row(
+        "SELECT count(*) FROM panes WHERE domain LIKE 'distributed:%'",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(count) => count > 0,
+        Err(err) => {
+            tracing::debug!(error = %err, "distributed pane count query failed");
+            false
+        }
+    }
+}
+
 fn merge_distributed_remote_records(
     records: &mut Vec<frankenterm_core::storage::PaneRecord>,
     remote_records: Vec<frankenterm_core::storage::PaneRecord>,
@@ -12198,6 +12235,8 @@ async fn spawn_distributed_listener(
         .collect();
     let allow_agent_ids = Arc::new(allow_agent_ids);
 
+    // bind_addr is the server-side listener address (aggregator mode).
+    // This is distinct from the agent connect target; see --connect-addr.
     let listener = TcpListener::bind(distributed_config.bind_addr.clone()).await?;
     tracing::info!(bind = %distributed_config.bind_addr, "Distributed listener started");
 
@@ -13295,6 +13334,7 @@ async fn run_distributed_agent(
     config: &frankenterm_core::config::Config,
     config_path: Option<&Path>,
     connect: Option<String>,
+    connect_addr: Option<String>,
     explicit_agent_id: Option<String>,
 ) -> anyhow::Result<()> {
     use frankenterm_core::events::EventBus;
@@ -13410,7 +13450,14 @@ async fn run_distributed_agent(
         handle.storage.clone(),
     ));
 
-    let connect_addr = connect.unwrap_or_else(|| config.distributed.bind_addr.clone());
+    // Resolve the aggregator address the agent will connect to.
+    // Priority: --connect (per-invocation) > --connect-addr (CLI default) >
+    // distributed.bind_addr (legacy fallback, but note: bind_addr is really
+    // the *server* listener address and only coincidentally useful here when
+    // server and agent run on the same host).
+    let resolved_connect_addr = connect
+        .or(connect_addr)
+        .unwrap_or_else(|| config.distributed.bind_addr.clone());
     let agent_id = explicit_agent_id
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -13421,7 +13468,7 @@ async fn run_distributed_agent(
 
     let distributed_task =
         frankenterm_core::runtime_compat::task::spawn(distributed_agent_stream_forever(
-            connect_addr.clone(),
+            resolved_connect_addr.clone(),
             config.distributed.clone(),
             Arc::clone(&shared_storage),
             Arc::clone(&event_bus),
@@ -13470,7 +13517,7 @@ async fn run_distributed_agent(
         }
     }
 
-    tracing::info!(connect = %connect_addr, agent_id = %agent_id, "Distributed agent stopped");
+    tracing::info!(connect = %resolved_connect_addr, agent_id = %agent_id, "Distributed agent stopped");
     Ok(())
 }
 
@@ -15245,12 +15292,17 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
 
         #[cfg(feature = "distributed")]
         Some(Commands::Distributed { command }) => match command {
-            DistributedCommands::Agent { connect, agent_id } => {
+            DistributedCommands::Agent {
+                connect,
+                connect_addr,
+                agent_id,
+            } => {
                 run_distributed_agent(
                     &layout,
                     &config,
                     resolved_config_path.as_deref(),
                     connect,
+                    connect_addr,
                     agent_id,
                 )
                 .await?;
@@ -23848,7 +23900,11 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         records.sort_by_key(|r| r.pane_id);
 
                         // Merge remote panes persisted by distributed aggregator mode.
-                        if config.distributed.enabled {
+                        // Fast path: skip the expensive StorageHandle open + WAL recovery
+                        // when no distributed panes exist in the DB (#35).
+                        if config.distributed.enabled
+                            && has_distributed_panes_in_db(&layout.db_path)
+                        {
                             match load_distributed_remote_panes(&layout.db_path).await {
                                 Ok(remote_records) => {
                                     merge_distributed_remote_records(
@@ -39542,38 +39598,17 @@ fn run_diagnostics(
     }
 
     // Check 5: Lock file (watcher status)
-    if layout.lock_path.exists() {
-        // Try to read lock file to see if daemon is running
-        match std::fs::read_to_string(&layout.lock_path) {
-            Ok(content) => {
-                let pid = content.trim();
-                // Check if process is actually running
-                let is_running = std::process::Command::new("kill")
-                    .args(["-0", pid])
-                    .output()
-                    .is_ok_and(|o| o.status.success());
-
-                if is_running {
-                    checks.push(DiagnosticCheck::ok_with_detail(
-                        "daemon status",
-                        format!("running (PID {})", pid),
-                    ));
-                } else {
-                    checks.push(DiagnosticCheck::warning(
-                        "daemon status",
-                        format!("stale lock (PID {} not running)", pid),
-                        format!("Remove lock: rm {}", layout.lock_path.display()),
-                    ));
-                }
-            }
-            Err(_) => {
-                checks.push(DiagnosticCheck::warning(
-                    "daemon status",
-                    "lock file exists but unreadable",
-                    format!("Check permissions: {}", layout.lock_path.display()),
-                ));
-            }
-        }
+    if let Some(meta) = frankenterm_core::lock::check_running(&layout.lock_path) {
+        checks.push(DiagnosticCheck::ok_with_detail(
+            "daemon status",
+            format!("running (PID {})", meta.pid),
+        ));
+    } else if layout.lock_path.exists() {
+        checks.push(DiagnosticCheck::warning(
+            "daemon status",
+            "stale lock (process not running)",
+            format!("Remove lock: rm {}", layout.lock_path.display()),
+        ));
     } else {
         checks.push(DiagnosticCheck::ok_with_detail(
             "daemon status",
