@@ -109,7 +109,9 @@ const BANNED_BINARIES: &[&str] = &[
     "eval",
 ];
 
-/// Binaries that are always safe (read-only or output-only).
+/// Binaries that the lightweight analyzer permits without extra opaque-command
+/// handling. Embedded interpreters and remote/container control surfaces are
+/// excluded and handled conservatively elsewhere.
 const SAFE_BINARIES: &[&str] = &[
     "echo",
     "printf",
@@ -159,11 +161,6 @@ const SAFE_BINARIES: &[&str] = &[
     "cmake",
     "meson",
     "ninja",
-    "python",
-    "python3",
-    "ruby",
-    "node",
-    "deno",
     "rustc",
     "rustfmt",
     "clippy-driver",
@@ -178,22 +175,9 @@ const SAFE_BINARIES: &[&str] = &[
     "cut",
     "paste",
     "join",
-    "sed",
-    "awk",
-    "perl",
     "jq",
     "yq",
     "xq",
-    "curl",
-    "wget",
-    "http", // network but read-only
-    "ssh",
-    "scp",
-    "rsync",
-    "docker",
-    "podman", // container management
-    "kubectl",
-    "helm",
 ];
 
 /// Flags on `rm` that make it catastrophic.
@@ -204,6 +188,23 @@ const CHMOD_DANGEROUS_PATTERNS: &[&str] = &["777", "a+rwx", "ugo+rwx"];
 
 /// `find` actions that can execute arbitrary commands.
 const FIND_EXEC_FLAGS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
+
+/// Commands whose semantics are too opaque for argv-only safety analysis.
+const OPAQUE_EXECUTION_BINARIES: &[&str] = &[
+    "python", "python3", "ruby", "node", "deno", "perl", "awk", "sed", "curl", "wget", "http",
+    "ssh", "scp", "rsync", "docker", "podman", "kubectl", "helm",
+];
+
+/// Safe binaries whose non-flag operands are reliably path-like under our
+/// lightweight parser. Pattern/script-driven tools such as `grep`, `sed`, and
+/// `awk` are intentionally excluded because generic argv scanning would treat
+/// literals like `/etc/` as filesystem paths and produce false positives.
+const PATH_OPERAND_SAFE_BINARIES: &[&str] = &[
+    "cat", "head", "tail", "less", "more", "ls", "dir", "stat", "file", "wc", "tee",
+];
+
+/// Synthetic root used to conservatively model shell `~` expansion.
+const TILDE_SENTINEL_ROOT: &str = "/__ft_tilde_home__";
 
 // =============================================================================
 // Shell lexer
@@ -518,9 +519,33 @@ fn extract_binary_name(word: &str) -> String {
 
 /// Resolve a path relative to CWD, normalizing `.` and `..` components.
 ///
+/// `~`-prefixed paths are conservatively mapped under a synthetic absolute
+/// root so they remain outside a non-root CWD boundary.
+///
 /// Returns the canonical absolute path.
 #[must_use]
 pub fn resolve_path(cwd: &str, path_str: &str) -> PathBuf {
+    if let Some(stripped) = path_str.strip_prefix('~') {
+        let mut result = PathBuf::from(TILDE_SENTINEL_ROOT);
+
+        for component in Path::new(stripped).components() {
+            match component {
+                Component::RootDir | Component::CurDir => {}
+                Component::ParentDir => {
+                    if result != Path::new(TILDE_SENTINEL_ROOT) {
+                        result.pop();
+                    }
+                }
+                Component::Normal(c) => {
+                    result.push(c);
+                }
+                Component::Prefix(_) => {}
+            }
+        }
+
+        return result;
+    }
+
     let path = Path::new(path_str);
     let mut result = if path.is_absolute() {
         PathBuf::new()
@@ -752,6 +777,19 @@ impl SymbolicExecutor {
                 continue;
             }
 
+            if OPAQUE_EXECUTION_BINARIES.contains(&parsed_cmd.binary.as_str()) {
+                violations.push(SafetyViolation {
+                    block_index: cmd.index,
+                    category: ViolationCategory::Unparseable,
+                    description: format!(
+                        "Opaque command '{}' cannot be safety-verified by argv inspection",
+                        parsed_cmd.binary
+                    ),
+                    evidence: cmd.command.clone(),
+                });
+                continue;
+            }
+
             // Check for dangerous rm patterns.
             if parsed_cmd.binary == "rm" {
                 self.check_rm_safety(cmd.index, parsed_cmd, violations);
@@ -775,11 +813,13 @@ impl SymbolicExecutor {
             }
 
             // Check path arguments for traversal.
-            if !self.safe_set.contains(&parsed_cmd.binary) {
+            if !self.safe_set.contains(&parsed_cmd.binary)
+                || PATH_OPERAND_SAFE_BINARIES.contains(&parsed_cmd.binary.as_str())
+            {
                 self.check_path_args(cmd.index, parsed_cmd, violations);
             }
 
-            // Always check redirects for out-of-bounds writes
+            // Always check redirects for out-of-bounds reads/writes.
             self.check_redirects(cmd.index, parsed_cmd, violations);
         }
     }
@@ -829,14 +869,20 @@ impl SymbolicExecutor {
 
             let resolved = resolve_path(&self.config.cwd, target);
 
-            // If we are writing/appending outside the boundary, that's a traversal violation
-            if op.contains('>') && !path_within_boundary(&resolved, boundary) {
+            if (op.contains('>') || op.contains('<')) && !path_within_boundary(&resolved, boundary)
+            {
+                let access_kind = if op.contains('>') {
+                    "writes outside CWD"
+                } else {
+                    "reads outside CWD"
+                };
                 violations.push(SafetyViolation {
                     block_index,
                     category: ViolationCategory::PathTraversal,
                     description: format!(
-                        "Redirect operator '{}' writes outside CWD: {} → {}",
+                        "Redirect operator '{}' {}: {} → {}",
                         op,
+                        access_kind,
                         target,
                         resolved.display()
                     ),
@@ -1251,6 +1297,13 @@ mod tests {
     }
 
     #[test]
+    fn safe_cat_within_cwd() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "cat ./notes.txt")];
+        assert!(exec.analyze(&cmds).is_safe());
+    }
+
+    #[test]
     fn safe_find_within_cwd() {
         let exec = cwd_executor("/home/user/project");
         let cmds = vec![make_cmd(0, "find src -name '*.rs'")];
@@ -1284,6 +1337,91 @@ mod tests {
                     .any(|v| v.category == ViolationCategory::PathTraversal)
             );
         }
+    }
+
+    #[test]
+    fn unsafe_input_redirect_outside_cwd() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "grep secret < /etc/shadow")];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::PathTraversal)
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_cat_absolute_outside_cwd() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "cat /etc/shadow")];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::PathTraversal)
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_tilde_path_outside_cwd() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "cat ~/.ssh/id_rsa")];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::PathTraversal)
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_python_inline_code_is_opaque() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(
+            0,
+            r#"python -c "import os; os.remove('/etc/passwd')""#,
+        )];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::Unparseable)
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_ssh_remote_command_is_opaque() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, r#"ssh prod "rm -rf /""#)];
+        let verdict = exec.analyze(&cmds);
+        assert!(verdict.is_unsafe());
+        if let SafetyVerdict::Unsafe(v) = &verdict {
+            assert!(
+                v.violations
+                    .iter()
+                    .any(|v| v.category == ViolationCategory::Unparseable)
+            );
+        }
+    }
+
+    #[test]
+    fn safe_grep_absolute_like_pattern_literal() {
+        let exec = cwd_executor("/home/user/project");
+        let cmds = vec![make_cmd(0, "grep '/etc/' ./notes.txt")];
+        assert!(exec.analyze(&cmds).is_safe());
     }
 
     // -------------------------------------------------------------------------
