@@ -5970,6 +5970,73 @@ steps:
         });
     }
 
+    /// Test: Global concurrency limit prevents starting a workflow on another pane.
+    #[test]
+    fn global_concurrency_limit_blocks_second_pane() {
+        run_async_test(async {
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let db_path = temp_dir
+                .path()
+                .join("test_global_concurrency_limit.db")
+                .to_string_lossy()
+                .to_string();
+
+            let engine = WorkflowEngine::default();
+            let lock_manager = Arc::new(PaneWorkflowLockManager::new());
+            let storage = Arc::new(crate::storage::StorageHandle::new(&db_path).await.unwrap());
+            let mock = crate::wezterm::MockWezterm::new();
+            let handle: crate::wezterm::WeztermHandle = Arc::new(mock);
+            let injector = Arc::new(crate::runtime_compat::Mutex::new(
+                crate::policy::PolicyGatedInjector::new(
+                    crate::policy::PolicyEngine::permissive(),
+                    handle,
+                ),
+            ));
+
+            let runner = WorkflowRunner::new(
+                engine,
+                Arc::clone(&lock_manager),
+                Arc::clone(&storage),
+                injector,
+                WorkflowRunnerConfig {
+                    max_concurrent: 1,
+                    ..WorkflowRunnerConfig::default()
+                },
+            );
+
+            runner.register_workflow(Arc::new(MultiStepWorkflow::new()));
+
+            let first_pane = 51u64;
+            let second_pane = 52u64;
+            create_test_pane(&storage, first_pane).await;
+            create_test_pane(&storage, second_pane).await;
+
+            let detection1 = make_test_detection("multi_step.first");
+            let start_result1 = runner.handle_detection(first_pane, &detection1, None).await;
+            assert!(start_result1.is_started(), "First workflow should start");
+
+            let detection2 = make_test_detection("multi_step.second");
+            let start_result2 = runner
+                .handle_detection(second_pane, &detection2, None)
+                .await;
+            match start_result2 {
+                WorkflowStartResult::ConcurrencyLimitReached { active, limit } => {
+                    assert_eq!(active, 1);
+                    assert_eq!(limit, 1);
+                }
+                other => panic!("Expected ConcurrencyLimitReached, got {other:?}"),
+            }
+
+            let same_pane_result = runner.handle_detection(first_pane, &detection2, None).await;
+            assert!(
+                same_pane_result.is_locked(),
+                "Existing pane conflict should remain visible even when the global limit is full"
+            );
+
+            storage.shutdown().await.unwrap();
+        });
+    }
+
     // ------------------------------------------------------------------------
     // Step Logging Tests (wa-nu4.1.1.7)
     // ------------------------------------------------------------------------

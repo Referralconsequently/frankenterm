@@ -39,6 +39,15 @@ impl LockAcquisitionResult {
     }
 }
 
+/// Information about a rejected global concurrency-limited lock attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConcurrencyLimitInfo {
+    /// Current number of active pane locks.
+    pub active: usize,
+    /// Configured maximum number of active pane locks.
+    pub limit: usize,
+}
+
 /// Information about an active pane lock.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneLockInfo {
@@ -119,14 +128,46 @@ impl PaneWorkflowLockManager {
         workflow_name: &str,
         execution_id: &str,
     ) -> LockAcquisitionResult {
+        self.try_acquire_with_optional_limit(pane_id, workflow_name, execution_id, None)
+            .expect("unbounded pane lock acquisition cannot hit concurrency limit")
+    }
+
+    /// Attempt to acquire a lock while atomically enforcing a global active-lock limit.
+    ///
+    /// The active-count check and insertion happen under the same mutex so the
+    /// caller cannot oversubscribe the configured limit under contention.
+    pub fn try_acquire_with_limit(
+        &self,
+        pane_id: u64,
+        workflow_name: &str,
+        execution_id: &str,
+        max_active: usize,
+    ) -> Result<LockAcquisitionResult, ConcurrencyLimitInfo> {
+        self.try_acquire_with_optional_limit(pane_id, workflow_name, execution_id, Some(max_active))
+    }
+
+    fn try_acquire_with_optional_limit(
+        &self,
+        pane_id: u64,
+        workflow_name: &str,
+        execution_id: &str,
+        max_active: Option<usize>,
+    ) -> Result<LockAcquisitionResult, ConcurrencyLimitInfo> {
         let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(existing) = locks.get(&pane_id) {
-            return LockAcquisitionResult::AlreadyLocked {
+            return Ok(LockAcquisitionResult::AlreadyLocked {
                 held_by_workflow: existing.workflow_name.clone(),
                 held_by_execution: existing.execution_id.clone(),
                 locked_since_ms: existing.locked_at_ms,
-            };
+            });
+        }
+
+        if let Some(limit) = max_active.filter(|limit| *limit > 0) {
+            let active = locks.len();
+            if active >= limit {
+                return Err(ConcurrencyLimitInfo { active, limit });
+            }
         }
 
         let now_ms = SystemTime::now()
@@ -151,7 +192,7 @@ impl PaneWorkflowLockManager {
             "Acquired pane workflow lock"
         );
 
-        LockAcquisitionResult::Acquired
+        Ok(LockAcquisitionResult::Acquired)
     }
 
     /// Release a lock for a pane.
@@ -342,6 +383,35 @@ mod tests {
         assert!(result3.is_acquired());
 
         mgr.release(1, "exec-2");
+    }
+
+    #[test]
+    fn try_acquire_with_limit_blocks_new_pane_when_limit_reached() {
+        let mgr = PaneWorkflowLockManager::new();
+        let first = mgr
+            .try_acquire_with_limit(1, "wf_a", "exec-1", 1)
+            .expect("first lock should succeed");
+        assert!(first.is_acquired());
+
+        let err = mgr
+            .try_acquire_with_limit(2, "wf_b", "exec-2", 1)
+            .expect_err("second pane should be blocked by global limit");
+        assert_eq!(err.active, 1);
+        assert_eq!(err.limit, 1);
+    }
+
+    #[test]
+    fn try_acquire_with_limit_prefers_existing_pane_conflict_over_limit() {
+        let mgr = PaneWorkflowLockManager::new();
+        let first = mgr
+            .try_acquire_with_limit(1, "wf_a", "exec-1", 1)
+            .expect("first lock should succeed");
+        assert!(first.is_acquired());
+
+        let result = mgr
+            .try_acquire_with_limit(1, "wf_b", "exec-2", 1)
+            .expect("same pane should report lock conflict, not global limit");
+        assert!(result.is_already_locked());
     }
 
     #[test]

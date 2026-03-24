@@ -292,9 +292,20 @@ impl WorkflowRunner {
 
         // Try to acquire pane lock
         let execution_id = generate_workflow_id(&workflow_name);
-        let lock_result = self
-            .lock_manager
-            .try_acquire(pane_id, &workflow_name, &execution_id);
+        let lock_result = match self.lock_manager.try_acquire_with_limit(
+            pane_id,
+            &workflow_name,
+            &execution_id,
+            self.config.max_concurrent,
+        ) {
+            Ok(lock_result) => lock_result,
+            Err(limit_info) => {
+                return WorkflowStartResult::ConcurrencyLimitReached {
+                    active: limit_info.active,
+                    limit: limit_info.limit,
+                };
+            }
+        };
 
         match lock_result {
             LockAcquisitionResult::AlreadyLocked {
