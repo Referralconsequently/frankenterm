@@ -326,10 +326,12 @@ SEE ALSO:
     ft send 3 "hello"                 Send text to pane 3
     ft send 3 "ls" --wait-for "\\$"   Send and wait for prompt
     ft send 3 "exit" --dry-run        Preview without executing
+    ft send 3 "rm -rf /tmp/test" --approval-code ABC12345
+                                      Retry a gated send with an approval code
     ft send 3 "cmd" --no-newline      Send without trailing newline
 
 SEE ALSO:
-    ft approve    Approve a denied action
+    ft prepare    Prepare a gated send for commit-time approval
     ft why        Explain send denials"#)]
     Send {
         /// Target pane ID
@@ -349,6 +351,10 @@ SEE ALSO:
         /// Preview what would happen without executing
         #[arg(long)]
         dry_run: bool,
+
+        /// Approval code to consume inline when retrying a gated send
+        #[arg(long)]
+        approval_code: Option<String>,
 
         /// Verify by waiting for a pattern after sending
         #[arg(long)]
@@ -561,7 +567,7 @@ SEE ALSO:
 SEE ALSO:
     ft audit      Full audit trail
     ft rules      Detection rule definitions
-    ft approve    Approve denied actions"#)]
+    ft approve    Validate approval codes"#)]
     Why {
         /// Template ID to explain (e.g., "deny.alt_screen"), or decision type
         /// when --recent is used (e.g., "denied", "require_approval")
@@ -660,7 +666,7 @@ SEE ALSO:
 
 SEE ALSO:
     ft commit     Execute a prepared plan
-    ft approve    Approve denied actions"#)]
+    ft approve    Validate approval codes"#)]
     Prepare {
         #[command(subcommand)]
         command: PrepareCommands,
@@ -673,7 +679,7 @@ SEE ALSO:
 
 SEE ALSO:
     ft prepare    Prepare plan preview
-    ft approve    Approve denied actions"#)]
+    ft approve    Validate approval codes"#)]
     Commit {
         /// Plan ID (from wa prepare)
         plan_id: String,
@@ -691,15 +697,15 @@ SEE ALSO:
         approval_code: Option<String>,
     },
 
-    /// Submit an approval code for a pending action
+    /// Validate an approval code and show how to apply it on retry
     #[command(after_help = r#"EXAMPLES:
-    ft approve AB12CD34              Submit an approval code
+    ft approve AB12CD34              Validate an approval code
     ft approve AB12CD34 --pane 3     Validate against specific pane
     ft approve AB12CD34 --dry-run    Check status without consuming
 
 SEE ALSO:
-    ft why        Explain why an action was denied
-    ft audit      Review action history"#)]
+    ft send       Retry direct sends with --approval-code
+    ft commit     Consume approval codes for prepared plans"#)]
     Approve {
         /// The approval code (8-character alphanumeric)
         code: String,
@@ -730,7 +736,7 @@ SEE ALSO:
 SEE ALSO:
     ft why        Explain specific decisions
     ft events     Detection events
-    ft approve    Approve denied actions"#)]
+    ft approve    Validate approval codes"#)]
     Audit {
         #[command(subcommand)]
         command: Option<AuditCommands>,
@@ -2400,6 +2406,10 @@ enum RobotCommands {
         #[arg(long)]
         dry_run: bool,
 
+        /// Approval code to consume inline when retrying a gated send
+        #[arg(long)]
+        approval_code: Option<String>,
+
         /// Verify by waiting for a pattern after sending
         #[arg(long)]
         wait_for: Option<String>,
@@ -2594,7 +2604,7 @@ enum RobotCommands {
     /// Get watcher health snapshot and resize control-plane lifecycle/stall introspection
     Health,
 
-    /// Submit an approval code for a pending action
+    /// Validate an approval code for a pending action
     Approve {
         /// The approval code (8-character alphanumeric)
         code: String,
@@ -7196,6 +7206,66 @@ fn build_approval_decision_context(
     serde_json::to_string(&context).ok()
 }
 
+fn build_inline_approval_retry_command(command_name: &str, code: &str) -> String {
+    format!("Retry the original {command_name} command with --approval-code {code}")
+}
+
+async fn resolve_inline_send_approval(
+    decision: frankenterm_core::policy::PolicyDecision,
+    storage: &frankenterm_core::storage::StorageHandle,
+    approval_config: frankenterm_core::config::ApprovalConfig,
+    workspace_id: &str,
+    input: &frankenterm_core::policy::PolicyInput,
+    summary: &str,
+    approval_code: Option<&str>,
+    actor_kind: &str,
+    command_name: &str,
+) -> std::result::Result<frankenterm_core::policy::PolicyDecision, String> {
+    if !decision.requires_approval() {
+        return Ok(decision);
+    }
+
+    let store = frankenterm_core::approval::ApprovalStore::new(
+        storage,
+        approval_config,
+        workspace_id.to_string(),
+    );
+
+    if let Some(code) = approval_code {
+        let approval_context = frankenterm_core::approval::ApprovalAuditContext {
+            correlation_id: None,
+            decision_context: build_approval_decision_context(
+                actor_kind,
+                workspace_id,
+                input.action.as_str(),
+                input.pane_id,
+                now_ms_i64(),
+            ),
+        };
+
+        return match store
+            .consume_with_context(code, input, Some(approval_context))
+            .await
+        {
+            Ok(Some(_)) => Ok(frankenterm_core::policy::PolicyDecision::allow_with_rule(
+                "approval.allow_once",
+            )),
+            Ok(None) => Err(
+                "Invalid or expired approval code for this action. Use the exact code issued for this retry."
+                    .to_string(),
+            ),
+            Err(e) => Err(format!("Failed to consume approval token: {e}")),
+        };
+    }
+
+    let mut approval = store
+        .issue(input, Some(summary.to_string()))
+        .await
+        .map_err(|e| format!("Failed to issue approval token: {e}"))?;
+    approval.command = build_inline_approval_retry_command(command_name, &approval.allow_once_code);
+    Ok(decision.with_approval(approval))
+}
+
 fn build_event_mutation_decision_context(
     actor_kind: &str,
     interface: &str,
@@ -7298,7 +7368,7 @@ async fn evaluate_approve(
     pane: Option<u64>,
     fingerprint: Option<&str>,
     dry_run: bool,
-    actor_kind: &str,
+    _actor_kind: &str,
 ) -> Result<RobotApproveData, RobotApproveError> {
     let code_hash = frankenterm_core::approval::hash_allow_once_code(code);
 
@@ -7391,98 +7461,16 @@ async fn evaluate_approve(
         }
     }
 
-    if dry_run {
-        return Ok(RobotApproveData {
-            code: code.to_string(),
-            valid: true,
-            created_at: Some(token.created_at as u64),
-            action_kind: Some(token.action_kind),
-            pane_id: token.pane_id,
-            expires_at: Some(token.expires_at as u64),
-            consumed_at: None,
-            action_fingerprint: Some(token.action_fingerprint),
-            dry_run: Some(true),
-        });
-    }
-
-    let consumed_token = match storage
-        .consume_approval_token_by_code(&code_hash, workspace_id)
-        .await
-    {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return Err(RobotApproveError::new(
-                "E_APPROVAL_CONSUMED",
-                "Approval code was consumed by another process".to_string(),
-                Some(
-                    "The approval was valid but consumed between validation and consumption. \
-                     This is a race condition."
-                        .to_string(),
-                ),
-            ));
-        }
-        Err(e) => {
-            return Err(RobotApproveError::new(
-                ROBOT_ERR_STORAGE,
-                format!("Failed to consume approval: {e}"),
-                None,
-            ));
-        }
-    };
-
-    let consumed_at = consumed_token.used_at.unwrap_or(now_ms);
-
-    let audit = frankenterm_core::storage::AuditActionRecord {
-        id: 0,
-        ts: consumed_at,
-        actor_kind: actor_kind.to_string(),
-        actor_id: None,
-        correlation_id: None,
-        pane_id: consumed_token.pane_id,
-        domain: None,
-        action_kind: "approve_allow_once".to_string(),
-        policy_decision: "allow".to_string(),
-        decision_reason: Some(format!(
-            "{} submitted approval code",
-            if actor_kind == "human" {
-                "Human"
-            } else {
-                "Robot"
-            }
-        )),
-        rule_id: None,
-        input_summary: Some(format!(
-            "ft approve {} for {} pane {:?}",
-            code, consumed_token.action_kind, consumed_token.pane_id
-        )),
-        verification_summary: Some(format!(
-            "code_hash={}, fingerprint={}",
-            code_hash, consumed_token.action_fingerprint
-        )),
-        decision_context: build_approval_decision_context(
-            actor_kind,
-            workspace_id,
-            &consumed_token.action_kind,
-            consumed_token.pane_id,
-            consumed_at,
-        ),
-        result: "success".to_string(),
-    };
-
-    if let Err(e) = storage.record_audit_action_redacted(audit).await {
-        tracing::warn!("Failed to record approval audit: {e}");
-    }
-
     Ok(RobotApproveData {
         code: code.to_string(),
         valid: true,
-        created_at: Some(consumed_token.created_at as u64),
-        action_kind: Some(consumed_token.action_kind),
-        pane_id: consumed_token.pane_id,
-        expires_at: Some(consumed_token.expires_at as u64),
-        consumed_at: Some(consumed_at as u64),
-        action_fingerprint: Some(consumed_token.action_fingerprint),
-        dry_run: None,
+        created_at: Some(token.created_at as u64),
+        action_kind: Some(token.action_kind),
+        pane_id: token.pane_id,
+        expires_at: Some(token.expires_at as u64),
+        consumed_at: None,
+        action_fingerprint: Some(token.action_fingerprint),
+        dry_run: if dry_run { Some(true) } else { None },
     })
 }
 
@@ -9277,7 +9265,7 @@ fn build_robot_help() -> RobotHelp {
             },
             RobotCommandInfo {
                 name: "approve",
-                description: "Submit an approval code for a pending action",
+                description: "Validate an approval code for a pending action",
             },
             RobotCommandInfo {
                 name: "checkpoint save",
@@ -9645,7 +9633,7 @@ fn build_robot_quick_start() -> RobotQuickStartData {
             QuickStartCommand {
                 name: "approve",
                 args: "<code> [--pane <id>] [--dry-run] [--fingerprint <hash>]",
-                summary: "Submit an approval code for a pending action",
+                summary: "Validate an approval code for a pending action",
                 examples: vec![
                     "ft robot approve ABC12345",
                     "ft robot approve ABC12345 --dry-run",
@@ -9693,7 +9681,7 @@ fn build_robot_quick_start() -> RobotQuickStartData {
                 QuickStartErrorCode {
                     code: "robot.require_approval",
                     meaning: "Action requires human approval",
-                    recovery: "A human must approve via 'ft approve <token>' or interactive prompt",
+                    recovery: "Retry the original action with --approval-code <token> or use interactive prompt",
                 },
                 QuickStartErrorCode {
                     code: "robot.timeout",
@@ -9705,7 +9693,7 @@ fn build_robot_quick_start() -> RobotQuickStartData {
                 "All send operations are policy-gated by default",
                 "--dry-run shows what would happen without executing",
                 "RequireApproval decisions surface a token for human approval",
-                "Approval can be granted via 'ft approve <token>' command",
+                "Retry gated actions with --approval-code <token> to consume the approval inline",
             ],
         },
     }
@@ -15781,6 +15769,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             pane_id,
                             text,
                             dry_run,
+                            approval_code,
                             wait_for,
                             timeout_secs,
                             wait_for_regex,
@@ -15800,6 +15789,9 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     command.push_str(" --wait-for-regex");
                                 }
                                 let _ = write!(command, " --timeout-secs {timeout_secs}");
+                            }
+                            if let Some(code) = &approval_code {
+                                let _ = write!(command, " --approval-code {code}");
                             }
                             let command_ctx =
                                 frankenterm_core::dry_run::CommandContext::new(command, dry_run);
@@ -15836,7 +15828,6 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     RobotResponse::success(report.redacted(), elapsed_ms(start));
                                 print_robot_response(&response, format, stats)?;
                             } else {
-                                use frankenterm_core::approval::ApprovalStore;
                                 use frankenterm_core::policy::{
                                     ActionKind, ActorKind, InjectionResult, PolicyDecision,
                                     PolicyEngine, PolicyInput,
@@ -15913,31 +15904,36 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                         .with_text_summary(&summary)
                                         .with_command_text(&text);
 
-                                let mut decision = engine.authorize(&input);
-                                if decision.requires_approval() {
-                                    let store = ApprovalStore::new(
-                                        &storage,
-                                        config.safety.approval.clone(),
-                                        ctx.effective.paths.workspace_root.clone(),
-                                    );
-                                    decision = match store
-                                        .attach_to_decision(decision, &input, Some(summary.clone()))
-                                        .await
-                                    {
-                                        Ok(updated) => updated,
-                                        Err(e) => {
-                                            let response =
-                                                RobotResponse::<RobotSendData>::error_with_code(
-                                                    "robot.approval_error",
-                                                    format!("Failed to issue approval token: {e}"),
-                                                    None,
-                                                    elapsed_ms(start),
-                                                );
-                                            print_robot_response(&response, format, stats)?;
-                                            return Ok(());
-                                        }
-                                    };
-                                }
+                                let decision = engine.authorize(&input);
+                                let decision = match resolve_inline_send_approval(
+                                    decision,
+                                    &storage,
+                                    config.safety.approval.clone(),
+                                    &ctx.effective.paths.workspace_root,
+                                    &input,
+                                    &summary,
+                                    approval_code.as_deref(),
+                                    "robot",
+                                    "ft robot send",
+                                )
+                                .await
+                                {
+                                    Ok(updated) => updated,
+                                    Err(e) => {
+                                        let response =
+                                            RobotResponse::<RobotSendData>::error_with_code(
+                                                "robot.approval_error",
+                                                e,
+                                                Some(
+                                                    "Retry the original command with the exact --approval-code issued for this action."
+                                                        .to_string(),
+                                                ),
+                                                elapsed_ms(start),
+                                            );
+                                        print_robot_response(&response, format, stats)?;
+                                        return Ok(());
+                                    }
+                                };
 
                                 let mut injection = match decision {
                                     PolicyDecision::Allow { .. } => {
@@ -22703,6 +22699,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
             no_paste,
             no_newline,
             dry_run,
+            approval_code,
             wait_for,
             timeout_secs,
             wait_for_regex,
@@ -22735,6 +22732,9 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     command.push_str(" --wait-for-regex");
                 }
                 command.push_str(&format!(" --timeout-secs {timeout_secs}"));
+            }
+            if let Some(code) = &approval_code {
+                command.push_str(&format!(" --approval-code {code}"));
             }
             let command_ctx = frankenterm_core::dry_run::CommandContext::new(command, dry_run);
 
@@ -22846,24 +22846,32 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 .with_text_summary(&summary)
                 .with_command_text(&text);
 
-                let mut decision = engine.authorize(&input);
-                if decision.requires_approval() {
-                    let store = frankenterm_core::approval::ApprovalStore::new(
-                        &storage,
-                        config.safety.approval.clone(),
-                        workspace_root.to_string_lossy().to_string(),
-                    );
-                    decision = match store
-                        .attach_to_decision(decision, &input, Some(summary.clone()))
-                        .await
-                    {
-                        Ok(updated) => updated,
-                        Err(e) => {
-                            emit_error(&format!("Failed to issue approval token: {e}"), None);
-                            return Ok(());
-                        }
-                    };
-                }
+                let workspace_id = workspace_root.to_string_lossy().to_string();
+                let decision = engine.authorize(&input);
+                let decision = match resolve_inline_send_approval(
+                    decision,
+                    &storage,
+                    config.safety.approval.clone(),
+                    &workspace_id,
+                    &input,
+                    &summary,
+                    approval_code.as_deref(),
+                    "human",
+                    "ft send",
+                )
+                .await
+                {
+                    Ok(updated) => updated,
+                    Err(e) => {
+                        emit_error(
+                            &e,
+                            Some(
+                                "Retry the original command with the exact --approval-code issued for this action.",
+                            ),
+                        );
+                        return Ok(());
+                    }
+                };
 
                 let mut injection = match decision {
                     frankenterm_core::policy::PolicyDecision::Allow { .. } => {
@@ -26214,20 +26222,26 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         }
                         println!();
                         println!("Would grant:");
-                        println!("  - Allow-once permission for this action");
-                        println!("  - Audit log entry would be created");
+                        println!("  - Allow-once permission for the matching retried action");
+                        println!("  - The token would remain unused until that action consumes it");
                         println!();
-                        println!("To approve for real:");
-                        println!("  ft approve {}", data.code);
+                        println!("To apply it on retry:");
+                        println!(
+                            "  Re-run the original command with --approval-code {}",
+                            data.code
+                        );
                     } else {
-                        println!("Approval granted.");
+                        println!("Approval code is valid.");
                         if let Some(action) = &data.action_kind {
                             println!("Action: {action}");
                         }
                         if let Some(pane_id) = data.pane_id {
                             println!("Pane: {pane_id}");
                         }
-                        println!("You may now retry the original action.");
+                        println!(
+                            "Retry the original command with --approval-code {} to consume it.",
+                            data.code
+                        );
                     }
                 }
                 Err(err) => {
@@ -46320,7 +46334,7 @@ log_level = "debug"
     }
 
     #[test]
-    fn robot_approve_valid_code_consumes() {
+    fn robot_approve_valid_code_stays_unconsumed() {
         run_async_test(async {
             let (storage, db_path) = setup_storage("valid").await;
             let workspace_id = "ws-valid";
@@ -46353,14 +46367,14 @@ log_level = "debug"
             assert!(data.valid);
             assert_eq!(data.code, code);
             assert_eq!(data.pane_id, Some(5));
-            assert!(data.consumed_at.is_some());
+            assert!(data.consumed_at.is_none());
 
             cleanup_storage(storage, &db_path).await;
         });
     }
 
     #[test]
-    fn robot_approve_dry_run_does_not_consume() {
+    fn robot_approve_dry_run_matches_apply_mode_without_consuming() {
         run_async_test(async {
             let (storage, db_path) = setup_storage("dry_run").await;
             let workspace_id = "ws-dry";
@@ -46404,7 +46418,7 @@ log_level = "debug"
             .await
             .unwrap();
 
-            assert!(data2.consumed_at.is_some());
+            assert!(data2.consumed_at.is_none());
 
             cleanup_storage(storage, &db_path).await;
         });
@@ -46441,6 +46455,53 @@ log_level = "debug"
             .unwrap_err();
 
             assert_eq!(err.code, "E_APPROVAL_EXPIRED");
+
+            cleanup_storage(storage, &db_path).await;
+        });
+    }
+
+    #[test]
+    fn approve_validation_does_not_consume_token() {
+        run_async_test(async {
+            let (storage, db_path) = setup_storage("validate_only").await;
+            let workspace_id = "ws-validate";
+            let code = "VAL12345";
+            let fingerprint = "sha256:validate";
+
+            insert_token(
+                &storage,
+                workspace_id,
+                code,
+                Some(5),
+                now_ms() + 60_000,
+                None,
+                fingerprint,
+            )
+            .await;
+
+            let data = evaluate_approve(
+                &storage,
+                workspace_id,
+                code,
+                Some(5),
+                Some(fingerprint),
+                false,
+                "human",
+            )
+            .await
+            .unwrap();
+            assert!(data.valid);
+            assert!(data.consumed_at.is_none());
+
+            let token = storage
+                .get_approval_token(&hash_allow_once_code(code))
+                .await
+                .unwrap()
+                .expect("token should still exist");
+            assert!(
+                token.used_at.is_none(),
+                "validation must not consume the token"
+            );
 
             cleanup_storage(storage, &db_path).await;
         });
@@ -46578,97 +46639,170 @@ log_level = "debug"
     }
 
     #[test]
-    fn approve_records_surface_aware_decision_context_in_audit() {
+    fn inline_send_approval_consumes_matching_code() {
         run_async_test(async {
-            let cases = [
-                (
-                    "human",
-                    frankenterm_core::policy::ActorKind::Human,
-                    frankenterm_core::policy::PolicySurface::Mux,
-                ),
-                (
-                    "robot",
-                    frankenterm_core::policy::ActorKind::Robot,
-                    frankenterm_core::policy::PolicySurface::Mux,
-                ),
-            ];
-
-            for (actor_kind, expected_actor, expected_surface) in cases {
-                let label = format!("approve_audit_ctx_{actor_kind}");
-                let (storage, db_path) = setup_storage(&label).await;
-                let workspace_id = format!("ws-{actor_kind}");
-                let code = if actor_kind == "human" {
-                    "HUM12345"
-                } else {
-                    "ROB12345"
-                };
-                let fingerprint = format!("sha256:{actor_kind}");
-
-                insert_token(
-                    &storage,
-                    &workspace_id,
-                    code,
-                    Some(12),
-                    now_ms() + 60_000,
-                    None,
-                    &fingerprint,
-                )
-                .await;
-
-                let data = evaluate_approve(
-                    &storage,
-                    &workspace_id,
-                    code,
-                    Some(12),
-                    Some(&fingerprint),
-                    false,
-                    actor_kind,
-                )
+            let (storage, db_path) = setup_storage("inline_send_approval").await;
+            let workspace_id = "ws-inline";
+            storage
+                .upsert_pane(PaneRecord {
+                    pane_id: 12,
+                    pane_uuid: None,
+                    domain: "local".to_string(),
+                    window_id: None,
+                    tab_id: None,
+                    title: None,
+                    cwd: None,
+                    tty_name: None,
+                    first_seen_at: now_ms(),
+                    last_seen_at: now_ms(),
+                    observed: true,
+                    ignore_reason: None,
+                    last_decision_at: None,
+                })
                 .await
                 .unwrap();
-                assert!(data.valid);
-                assert!(data.consumed_at.is_some());
 
-                let audits = storage
-                    .get_audit_actions(frankenterm_core::storage::AuditQuery {
-                        action_kind: Some("approve_allow_once".to_string()),
-                        ..Default::default()
-                    })
-                    .await
-                    .unwrap();
-                assert_eq!(audits.len(), 1);
+            let input = frankenterm_core::policy::PolicyInput::new(
+                frankenterm_core::policy::ActionKind::SendText,
+                frankenterm_core::policy::ActorKind::Human,
+            )
+            .with_surface(frankenterm_core::policy::PolicySurface::Mux)
+            .with_pane(12)
+            .with_text_summary("send summary");
+            let store = frankenterm_core::approval::ApprovalStore::new(
+                &storage,
+                frankenterm_core::config::ApprovalConfig::default(),
+                workspace_id,
+            );
+            let request = store
+                .issue(&input, Some("send summary".to_string()))
+                .await
+                .unwrap();
 
-                let ctx_json = audits[0]
-                    .decision_context
-                    .as_deref()
-                    .expect("approval audit should retain decision_context");
-                let ctx: frankenterm_core::policy::DecisionContext =
-                    serde_json::from_str(ctx_json).expect("decision_context should parse");
+            let decision = resolve_inline_send_approval(
+                frankenterm_core::policy::PolicyDecision::require_approval("needs approval"),
+                &storage,
+                frankenterm_core::config::ApprovalConfig::default(),
+                workspace_id,
+                &input,
+                "send summary",
+                Some(&request.allow_once_code),
+                "human",
+                "ft send",
+            )
+            .await
+            .unwrap();
 
-                assert_eq!(ctx.actor, expected_actor);
-                assert_eq!(ctx.surface, expected_surface);
-                assert_eq!(ctx.action, frankenterm_core::policy::ActionKind::SendText);
-                assert_eq!(ctx.pane_id, Some(12));
-                assert_eq!(
-                    ctx.determining_rule.as_deref(),
-                    Some("approval.allow_once.consume")
-                );
-                assert!(
-                    ctx.evidence
-                        .iter()
-                        .any(|ev| ev.key == "stage" && ev.value == "approval")
-                );
-                assert!(ctx.evidence.iter().any(|ev| {
-                    ev.key == "approval_surface" && ev.value == expected_surface.as_str()
-                }));
-                assert!(
-                    ctx.evidence
-                        .iter()
-                        .any(|ev| { ev.key == "workspace_id" && ev.value == workspace_id })
-                );
+            assert!(
+                decision.is_allowed(),
+                "matching inline code should allow the retry"
+            );
 
-                cleanup_storage(storage, &db_path).await;
-            }
+            let token = storage
+                .get_approval_token(&hash_allow_once_code(&request.allow_once_code))
+                .await
+                .unwrap()
+                .expect("token should still exist");
+            assert!(
+                token.used_at.is_some(),
+                "inline approval should consume the token"
+            );
+
+            let audits = storage
+                .get_audit_actions(frankenterm_core::storage::AuditQuery {
+                    action_kind: Some("approve_allow_once".to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(audits.len(), 1);
+
+            let ctx_json = audits[0]
+                .decision_context
+                .as_deref()
+                .expect("approval audit should retain decision_context");
+            let ctx: frankenterm_core::policy::DecisionContext =
+                serde_json::from_str(ctx_json).expect("decision_context should parse");
+
+            assert_eq!(ctx.actor, frankenterm_core::policy::ActorKind::Human);
+            assert_eq!(ctx.surface, frankenterm_core::policy::PolicySurface::Mux);
+            assert_eq!(ctx.action, frankenterm_core::policy::ActionKind::SendText);
+            assert_eq!(ctx.pane_id, Some(12));
+            assert_eq!(
+                ctx.determining_rule.as_deref(),
+                Some("approval.allow_once.consume")
+            );
+            assert!(
+                ctx.evidence
+                    .iter()
+                    .any(|ev| ev.key == "stage" && ev.value == "approval")
+            );
+            assert!(ctx.evidence.iter().any(|ev| {
+                ev.key == "approval_surface"
+                    && ev.value == frankenterm_core::policy::PolicySurface::Mux.as_str()
+            }));
+            assert!(
+                ctx.evidence
+                    .iter()
+                    .any(|ev| ev.key == "workspace_id" && ev.value == workspace_id)
+            );
+
+            cleanup_storage(storage, &db_path).await;
+        });
+    }
+
+    #[test]
+    fn inline_send_approval_issues_retry_hint_instead_of_ft_approve() {
+        run_async_test(async {
+            let (storage, db_path) = setup_storage("inline_send_hint").await;
+            storage
+                .upsert_pane(PaneRecord {
+                    pane_id: 9,
+                    pane_uuid: None,
+                    domain: "local".to_string(),
+                    window_id: None,
+                    tab_id: None,
+                    title: None,
+                    cwd: None,
+                    tty_name: None,
+                    first_seen_at: now_ms(),
+                    last_seen_at: now_ms(),
+                    observed: true,
+                    ignore_reason: None,
+                    last_decision_at: None,
+                })
+                .await
+                .unwrap();
+            let input = frankenterm_core::policy::PolicyInput::new(
+                frankenterm_core::policy::ActionKind::SendText,
+                frankenterm_core::policy::ActorKind::Human,
+            )
+            .with_surface(frankenterm_core::policy::PolicySurface::Mux)
+            .with_pane(9)
+            .with_text_summary("send summary");
+
+            let decision = resolve_inline_send_approval(
+                frankenterm_core::policy::PolicyDecision::require_approval("needs approval"),
+                &storage,
+                frankenterm_core::config::ApprovalConfig::default(),
+                "ws-inline-hint",
+                &input,
+                "send summary",
+                None,
+                "human",
+                "ft send",
+            )
+            .await
+            .unwrap();
+
+            let approval = decision
+                .approval_request()
+                .expect("approval request should be attached");
+            assert!(approval.command.contains("--approval-code"));
+            assert!(approval.command.contains("ft send"));
+            assert!(!approval.command.contains("ft approve"));
+
+            cleanup_storage(storage, &db_path).await;
         });
     }
 
@@ -51056,6 +51190,7 @@ log_level = "debug"
                     pane_id,
                     text,
                     dry_run,
+                    approval_code,
                     wait_for,
                     timeout_secs,
                     wait_for_regex,
@@ -51063,6 +51198,7 @@ log_level = "debug"
                     assert_eq!(pane_id, 2);
                     assert_eq!(text, "echo hi");
                     assert!(dry_run);
+                    assert_eq!(approval_code, None);
                     assert_eq!(wait_for, None);
                     assert_eq!(timeout_secs, 30);
                     assert!(!wait_for_regex);
@@ -51095,6 +51231,7 @@ log_level = "debug"
                     pane_id,
                     text,
                     dry_run,
+                    approval_code,
                     wait_for,
                     timeout_secs,
                     wait_for_regex,
@@ -51102,9 +51239,41 @@ log_level = "debug"
                     assert_eq!(pane_id, 2);
                     assert_eq!(text, "echo hi");
                     assert!(!dry_run);
+                    assert_eq!(approval_code, None);
                     assert_eq!(wait_for.as_deref(), Some("done"));
                     assert_eq!(timeout_secs, 45);
                     assert!(wait_for_regex);
+                }
+                _ => panic!("expected RobotCommands::Send"),
+            },
+            _ => panic!("expected Robot command"),
+        }
+    }
+
+    #[test]
+    fn cli_robot_send_accepts_approval_code() {
+        let cli = Cli::try_parse_from([
+            "ft",
+            "robot",
+            "send",
+            "2",
+            "echo hi",
+            "--approval-code",
+            "AB12CD34",
+        ])
+        .expect("robot send should accept --approval-code");
+
+        match cli.command.map(|b| *b) {
+            Some(Commands::Robot { command, .. }) => match command {
+                Some(RobotCommands::Send {
+                    pane_id,
+                    text,
+                    approval_code,
+                    ..
+                }) => {
+                    assert_eq!(pane_id, 2);
+                    assert_eq!(text, "echo hi");
+                    assert_eq!(approval_code.as_deref(), Some("AB12CD34"));
                 }
                 _ => panic!("expected RobotCommands::Send"),
             },
