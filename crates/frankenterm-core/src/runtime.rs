@@ -3246,6 +3246,11 @@ fn build_fleet_pressure_signals(
     }
 }
 
+// NOTE: `activity_counter` below reads from PaneRegistry's own cursor map,
+// which may not reflect the runtime's capture pipeline cursors. When
+// TieredScrollback is wired in, this should be refactored to accept the
+// runtime's `cursors: &HashMap<u64, PaneCursor>` parameter so the fleet
+// coordinator sees real output-sequence progress.
 fn fleet_pane_infos_from_registry(registry: &PaneRegistry) -> Vec<PaneScrollbackInfo> {
     registry
         .entries()
