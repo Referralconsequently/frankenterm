@@ -1,7 +1,7 @@
 //! The connection to the GUI subsystem
 use super::{HWindow, WindowInner};
 use crate::connection::{
-    ConnectionOps, fail_window_op_for_destroyed_window, new_window_op_promise,
+    fail_window_op_for_destroyed_window, new_window_op_promise, ConnectionOps,
 };
 use crate::screen::{ScreenInfo, Screens};
 use crate::spawn::*;
@@ -25,13 +25,13 @@ use winapi::um::wingdi::{
 use winapi::um::winnt::HANDLE;
 use winapi::um::winuser::*;
 use windows::Win32::Devices::Display::{
+    DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
     DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
     DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
-    DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
-    QueryDisplayConfig,
+    DISPLAYCONFIG_TARGET_DEVICE_NAME,
 };
-use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
+use winreg::RegKey;
 
 pub struct Connection {
     event_handle: HANDLE,

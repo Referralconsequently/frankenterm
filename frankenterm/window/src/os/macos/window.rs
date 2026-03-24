@@ -245,7 +245,7 @@ mod cglbits {
 
     impl GlState {
         #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn create(view: id) -> anyhow::Result<Self> {
+        pub fn create(view: id) -> anyhow::Result<Self> {
             log::trace!("Calling NSOpenGLPixelFormat::initWithAttributes");
             let pixel_format = unsafe {
                 StrongPtr::new(NSOpenGLPixelFormat::alloc(nil).initWithAttributes_(&[

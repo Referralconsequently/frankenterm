@@ -1,6 +1,6 @@
 use crate::sshd::*;
-use frankenterm_ssh::ExecResult;
 use frankenterm_ssh::runtime::block_on;
+use frankenterm_ssh::ExecResult;
 use portable_pty::{Child, ChildKiller};
 use rstest::*;
 use std::io::{Read, Write};

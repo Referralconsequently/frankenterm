@@ -1,9 +1,9 @@
 use crate::screen::Screens;
 use crate::{Appearance, Connection, GeometryOrigin, RequestedWindowGeometry, ResolvedGeometry};
-use anyhow::Result as Fallible;
 use anyhow::anyhow;
-use config::DimensionContext;
+use anyhow::Result as Fallible;
 use config::keyassignment::KeyAssignment;
+use config::DimensionContext;
 use promise::{Future, Promise};
 use std::cell::RefCell;
 use std::fmt::Display;

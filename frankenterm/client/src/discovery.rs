@@ -22,7 +22,7 @@ mod windows {
     use std::io::Error as IoError;
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
     use winapi::um::memoryapi::{
-        CreateFileMappingW, FILE_MAP_ALL_ACCESS, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
+        CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
     };
     use winapi::um::synchapi::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
     use winapi::um::winbase::{INFINITE, WAIT_OBJECT_0};

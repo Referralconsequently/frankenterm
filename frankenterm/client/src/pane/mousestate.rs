@@ -3,8 +3,8 @@ use codec::*;
 use mux::pane::PaneId;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use wezterm_term::{MouseButton, MouseEvent, MouseEventKind};
 
 pub struct MouseState {

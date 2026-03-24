@@ -1,14 +1,14 @@
 use super::keyboard::{Keyboard, KeyboardWithFallback};
 use crate::connection::{
-    ConnectionOps, fail_window_op_for_destroyed_window, new_window_op_promise,
+    fail_window_op_for_destroyed_window, new_window_op_promise, ConnectionOps,
 };
-use crate::os::Connection;
 use crate::os::x11::window::XWindowInner;
 use crate::os::x11::xsettings::*;
+use crate::os::Connection;
 use crate::screen::{ScreenInfo, Screens};
 use crate::spawn::*;
 use crate::{Appearance, DeadKeyStatus, ScreenRect};
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{anyhow, bail, Context as _};
 use mio::event::Source;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Registry, Token};
@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use x11::xlib;
 use xcb::x::Atom;
-use xcb::{Raw, Xid, dri2};
+use xcb::{dri2, Raw, Xid};
 
 enum ScreenResources {
     Current(xcb::randr::GetScreenResourcesCurrentReply),

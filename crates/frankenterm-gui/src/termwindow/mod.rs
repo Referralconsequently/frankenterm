@@ -2460,7 +2460,9 @@ impl TermWindow {
             .unwrap_or_else(|| "Fuzzy matching: ".to_string());
 
         let config = &self.config;
-        let alphabet = args.alphabet.unwrap_or_else(|| config.launcher_alphabet.clone());
+        let alphabet = args
+            .alphabet
+            .unwrap_or_else(|| config.launcher_alphabet.clone());
 
         promise::spawn::spawn(async move {
             let args = LauncherArgs::new(

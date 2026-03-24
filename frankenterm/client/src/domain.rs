@@ -6,7 +6,7 @@ use codec::{ListPanesResponse, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
-use mux::domain::{Domain, DomainId, DomainState, SplitSource, alloc_domain_id};
+use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
 use mux::tab::{SplitRequest, Tab, TabId};
 use mux::window::WindowId;

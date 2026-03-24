@@ -244,7 +244,7 @@ impl FrameDecoder {
             .format()
             .ok_or_else(|| anyhow::anyhow!("cannot determine image format"))?;
 
-        std::thread::spawn(move || {
+        let _ = std::thread::spawn(move || {
             if let Err(err) = Self::run_decoder_thread(reader, format, tx) {
                 if err
                     .downcast_ref::<std::sync::mpsc::SendError<DecodedFrame>>()
@@ -329,9 +329,9 @@ impl FrameDecoder {
         let lease = BlobManager::store(&data).context("BlobManager::store")?;
         let decoded_frame = DecodedFrame {
             lease,
-            duration,
             width,
             height,
+            duration,
         };
         tx.send(decoded_frame.clone())
             .context("sending first frame")?;
