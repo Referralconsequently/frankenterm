@@ -71,7 +71,9 @@ impl ApiVersion {
     /// Parse a semver string like "0.1.0" into an `ApiVersion`.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split('.').collect();
+        let core = s.split_once('-').map(|(c, _)| c).unwrap_or(s);
+        let core = core.split_once('+').map(|(c, _)| c).unwrap_or(core);
+        let parts: Vec<&str> = core.split('.').collect();
         if parts.len() < 3 {
             return None;
         }
@@ -694,7 +696,38 @@ mod tests {
             ApiVersion {
                 major: 0,
                 minor: 1,
-                patch: 0
+                patch: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_version_with_prerelease() {
+        let v = ApiVersion::parse("1.2.3-alpha.1").unwrap();
+        assert_eq!(
+            v,
+            ApiVersion {
+                major: 1,
+                minor: 2,
+                patch: 3
+            }
+        );
+        let v = ApiVersion::parse("1.2.3+build.42").unwrap();
+        assert_eq!(
+            v,
+            ApiVersion {
+                major: 1,
+                minor: 2,
+                patch: 3
+            }
+        );
+        let v = ApiVersion::parse("1.2.3-beta.1+build.42").unwrap();
+        assert_eq!(
+            v,
+            ApiVersion {
+                major: 1,
+                minor: 2,
+                patch: 3
             }
         );
     }
