@@ -735,39 +735,14 @@ impl FilteredEventStream {
     /// automatically; we retry up to a small bound to pick up the
     /// next retained event without spinning indefinitely.
     pub fn try_next(&mut self) -> Option<Event> {
-        // Bound the number of consecutive Lagged recoveries to prevent
-        // CPU spin when a producer is faster than the buffer can hold.
-        let mut lagged_retries: u8 = 0;
-        const MAX_LAGGED_RETRIES: u8 = 3;
-
-        loop {
-            match self.subscriber.try_recv() {
-                Some(Ok(event)) => {
-                    if self.filter.matches_event(&event) {
-                        self.delivered.fetch_add(1, Ordering::Relaxed);
-                        if let Event::PatternDetected {
-                            event_id: Some(id), ..
-                        } = &event
-                        {
-                            self.cursor.advance(*id);
-                        }
-                        return Some(event);
-                    }
-                    self.filtered_out.fetch_add(1, Ordering::Relaxed);
-                    // Reset lagged counter on successful recv (even if filtered).
-                    lagged_retries = 0;
-                }
-                Some(Err(crate::events::RecvError::Lagged { .. })) => {
-                    // The subscriber has already advanced to the newest retained
-                    // position. Retry to pick up the next available event.
-                    lagged_retries += 1;
-                    if lagged_retries >= MAX_LAGGED_RETRIES {
-                        return None;
-                    }
-                }
-                Some(Err(crate::events::RecvError::Closed)) | None => return None,
-            }
-        }
+        let filter = &self.filter;
+        let cursor = &mut self.cursor;
+        let delivered = &self.delivered;
+        let filtered_out = &self.filtered_out;
+        let subscriber = &mut self.subscriber;
+        try_next_from_receiver(filter, cursor, delivered, filtered_out, || {
+            subscriber.try_recv()
+        })
     }
 
     /// Get the current cursor position.
@@ -796,6 +771,52 @@ impl FilteredEventStream {
             filtered_out: self.filtered_out.load(Ordering::Relaxed),
             cursor_position: self.cursor.after_id,
             correlation_id: self.cursor.correlation_id.clone(),
+        }
+    }
+}
+
+fn try_next_from_receiver<F>(
+    filter: &EventStreamFilter,
+    cursor: &mut StreamCursor,
+    delivered: &Arc<AtomicU64>,
+    filtered_out: &Arc<AtomicU64>,
+    mut try_recv: F,
+) -> Option<Event>
+where
+    F: FnMut() -> Option<Result<Event, crate::events::RecvError>>,
+{
+    // Bound the number of consecutive Lagged recoveries to prevent
+    // CPU spin when a producer is faster than the buffer can hold.
+    let mut lagged_retries: u8 = 0;
+    const MAX_LAGGED_RETRIES: u8 = 3;
+
+    loop {
+        match try_recv() {
+            Some(Ok(event)) => {
+                if filter.matches_event(&event) {
+                    delivered.fetch_add(1, Ordering::Relaxed);
+                    if let Event::PatternDetected {
+                        event_id: Some(id), ..
+                    } = &event
+                    {
+                        cursor.advance(*id);
+                    }
+                    return Some(event);
+                }
+                filtered_out.fetch_add(1, Ordering::Relaxed);
+                // Reset lagged counter on successful recv (even if filtered).
+                lagged_retries = 0;
+            }
+            Some(Err(crate::events::RecvError::Lagged { .. })) => {
+                // The subscriber has already advanced to the newest retained
+                // position. Allow one final probe after the last permitted
+                // lagged marker so we don't return `None` off-by-one early.
+                lagged_retries += 1;
+                if lagged_retries > MAX_LAGGED_RETRIES {
+                    return None;
+                }
+            }
+            Some(Err(crate::events::RecvError::Closed)) | None => return None,
         }
     }
 }
@@ -1572,6 +1593,84 @@ mod tests {
 
         let telemetry = stream.telemetry();
         assert_eq!(telemetry.delivered, 1);
+        assert_eq!(telemetry.filtered_out, 0);
+    }
+
+    #[test]
+    fn filtered_stream_try_next_allows_final_lagged_retry_probe() {
+        let bus = EventBus::new(1);
+        let mut stream = FilteredEventStream::new(
+            &bus,
+            EventStreamFilter::default(),
+            StreamCursor::from_beginning(),
+            50,
+        );
+        let mut sequence = std::collections::VecDeque::from([
+            Some(Err(crate::events::RecvError::Lagged { missed_count: 1 })),
+            Some(Err(crate::events::RecvError::Lagged { missed_count: 1 })),
+            Some(Err(crate::events::RecvError::Lagged { missed_count: 1 })),
+            Some(Ok(Event::PaneDiscovered {
+                pane_id: 9,
+                domain: "local".to_string(),
+                title: "retained".to_string(),
+            })),
+        ]);
+        let filter = stream.filter.clone();
+
+        let event = try_next_from_receiver(
+            &filter,
+            &mut stream.cursor,
+            &stream.delivered,
+            &stream.filtered_out,
+            || sequence.pop_front().unwrap_or(None),
+        );
+
+        match event {
+            Some(Event::PaneDiscovered { pane_id, title, .. }) => {
+                assert_eq!(pane_id, 9);
+                assert_eq!(title, "retained");
+            }
+            other => panic!("expected retained event after final lagged retry, got {other:?}"),
+        }
+
+        let telemetry = stream.telemetry();
+        assert_eq!(telemetry.delivered, 1);
+        assert_eq!(telemetry.filtered_out, 0);
+    }
+
+    #[test]
+    fn filtered_stream_try_next_still_bails_after_excessive_lagged_retries() {
+        let bus = EventBus::new(1);
+        let mut stream = FilteredEventStream::new(
+            &bus,
+            EventStreamFilter::default(),
+            StreamCursor::from_beginning(),
+            50,
+        );
+        let mut sequence = std::collections::VecDeque::from([
+            Some(Err(crate::events::RecvError::Lagged { missed_count: 1 })),
+            Some(Err(crate::events::RecvError::Lagged { missed_count: 1 })),
+            Some(Err(crate::events::RecvError::Lagged { missed_count: 1 })),
+            Some(Err(crate::events::RecvError::Lagged { missed_count: 1 })),
+            Some(Ok(Event::PaneDiscovered {
+                pane_id: 10,
+                domain: "local".to_string(),
+                title: "too-late".to_string(),
+            })),
+        ]);
+        let filter = stream.filter.clone();
+
+        let event = try_next_from_receiver(
+            &filter,
+            &mut stream.cursor,
+            &stream.delivered,
+            &stream.filtered_out,
+            || sequence.pop_front().unwrap_or(None),
+        );
+
+        assert!(event.is_none());
+        let telemetry = stream.telemetry();
+        assert_eq!(telemetry.delivered, 0);
         assert_eq!(telemetry.filtered_out, 0);
     }
 }
