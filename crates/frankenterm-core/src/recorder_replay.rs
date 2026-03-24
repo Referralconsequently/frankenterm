@@ -278,6 +278,8 @@ pub struct ReplaySession {
     events: Vec<QueryResultEvent>,
     /// Current cursor position.
     cursor: usize,
+    /// Timestamp of the last frame actually emitted in this session.
+    last_emitted_occurred_at_ms: Option<u64>,
     /// Replay configuration.
     config: ReplayConfig,
     /// Session state.
@@ -332,6 +334,7 @@ impl ReplaySession {
         Ok(Self {
             events,
             cursor: 0,
+            last_emitted_occurred_at_ms: None,
             config,
             state: ReplayState::Ready,
             stats,
@@ -435,6 +438,7 @@ impl ReplaySession {
             .partition_point(|e| e.occurred_at_ms < target_ms);
 
         self.cursor = idx;
+        self.last_emitted_occurred_at_ms = None;
         if self.state == ReplayState::Completed {
             self.state = ReplayState::Paused;
         }
@@ -445,6 +449,7 @@ impl ReplaySession {
     /// Reset the session to the beginning.
     pub fn reset(&mut self) {
         self.cursor = 0;
+        self.last_emitted_occurred_at_ms = None;
         self.state = ReplayState::Ready;
         self.stats.frames_emitted = 0;
         self.stats.frames_skipped = 0;
@@ -500,13 +505,10 @@ impl ReplaySession {
                 continue;
             }
 
-            // Calculate delay from the immediately preceding event in the
-            // original recording (preserves real-time cadence even when
-            // intermediate events are filtered out).
-            let delay = if frame_index == 0 {
-                Duration::ZERO
-            } else {
-                let prev_ts = self.events[frame_index - 1].occurred_at_ms;
+            // Preserve the original gap between emitted frames, not merely
+            // between adjacent raw events. Filtered-out events should not
+            // compress the visible replay timeline.
+            let delay = if let Some(prev_ts) = self.last_emitted_occurred_at_ms {
                 let delta_ms = event.occurred_at_ms.saturating_sub(prev_ts);
                 let scaled = if self.config.speed.is_infinite() || self.config.speed == 0.0 {
                     0
@@ -515,6 +517,8 @@ impl ReplaySession {
                 };
                 let clamped = scaled.min(self.config.max_delay_ms);
                 Duration::from_millis(clamped)
+            } else {
+                Duration::ZERO
             };
 
             self.stats.replay_duration_ms += delay.as_millis() as u64;
@@ -536,6 +540,7 @@ impl ReplaySession {
             };
 
             self.cursor += 1;
+            self.last_emitted_occurred_at_ms = Some(event.occurred_at_ms);
             return Some(frame);
         }
     }
@@ -1401,6 +1406,27 @@ mod tests {
         assert_eq!(frames.len(), 4);
         assert!(frames.iter().all(|f| f.event.pane_id == 1));
         assert_eq!(session.stats().frames_skipped, 1);
+    }
+
+    #[test]
+    fn pane_filter_preserves_gap_between_emitted_frames() {
+        let mut session = ReplaySession::new(
+            vec![
+                make_text_event(1, 0, 1000, "a"),
+                make_text_event(2, 1, 1500, "filtered"),
+                make_text_event(1, 2, 3000, "b"),
+            ],
+            ReplayConfig::realtime().with_panes(vec![1]),
+            human(),
+            AccessTier::A2FullQuery,
+            "pane-filter-gap",
+        )
+        .unwrap();
+
+        let frames = session.collect_remaining();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].delay, Duration::ZERO);
+        assert_eq!(frames[1].delay, Duration::from_millis(2000));
     }
 
     // -----------------------------------------------------------------------
