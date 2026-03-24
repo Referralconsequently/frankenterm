@@ -3125,6 +3125,7 @@ dependencies = [
 name = "frankenterm-alloc"
 version = "0.1.0"
 dependencies = [
+ "criterion 0.5.1",
  "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
