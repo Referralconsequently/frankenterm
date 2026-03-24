@@ -1922,7 +1922,7 @@ mod tests {
                     "version string should not be empty"
                 );
                 assert!(
-                    executable_path.to_string_lossy().len() > 0,
+                    !executable_path.to_string_lossy().is_empty(),
                     "executable path should be non-empty"
                 );
             }

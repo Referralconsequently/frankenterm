@@ -291,14 +291,22 @@ fn resolve_managed_profile_path(
     }
 
     let resolved = profiles_dir.join(relative);
-    if resolved.exists() && profiles_dir.exists() {
+    if profiles_dir.exists() {
         let canonical_profiles_dir = profiles_dir.canonicalize().map_err(|e| {
             crate::error::ConfigError::ReadFailed(profiles_dir.display().to_string(), e.to_string())
         })?;
-        let canonical_resolved = resolved.canonicalize().map_err(|e| {
-            crate::error::ConfigError::ReadFailed(resolved.display().to_string(), e.to_string())
+
+        let Some(existing_ancestor) = resolved.ancestors().find(|ancestor| ancestor.exists())
+        else {
+            return Ok(resolved);
+        };
+        let canonical_ancestor = existing_ancestor.canonicalize().map_err(|e| {
+            crate::error::ConfigError::ReadFailed(
+                existing_ancestor.display().to_string(),
+                e.to_string(),
+            )
         })?;
-        if !canonical_resolved.starts_with(&canonical_profiles_dir) {
+        if !canonical_ancestor.starts_with(&canonical_profiles_dir) {
             return Err(crate::error::ConfigError::ValidationError(format!(
                 "profile path '{relative_path}' resolves outside {}",
                 profiles_dir.display()
@@ -392,6 +400,32 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("must stay within"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_profile_path_rejects_symlink_parent_escape_for_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        let outside_dir = dir.path().join("outside");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::os::unix::fs::symlink(&outside_dir, profiles_dir.join("link")).unwrap();
+
+        let manifest = ConfigProfileManifest {
+            version: CONFIG_PROFILE_MANIFEST_VERSION,
+            profiles: vec![ConfigProfileManifestEntry {
+                name: "incident".to_string(),
+                path: "link/new.toml".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let err = resolve_profile_path(&profiles_dir, Some(&manifest), "incident")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("resolves outside"));
     }
 
     // =========================================================================

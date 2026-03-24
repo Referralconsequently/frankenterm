@@ -399,14 +399,22 @@ fn resolve_managed_ruleset_path(
     }
 
     let resolved = rulesets_dir.join(relative);
-    if resolved.exists() && rulesets_dir.exists() {
+    if rulesets_dir.exists() {
         let canonical_rulesets_dir = rulesets_dir.canonicalize().map_err(|e| {
             crate::error::ConfigError::ReadFailed(rulesets_dir.display().to_string(), e.to_string())
         })?;
-        let canonical_resolved = resolved.canonicalize().map_err(|e| {
-            crate::error::ConfigError::ReadFailed(resolved.display().to_string(), e.to_string())
+
+        let Some(existing_ancestor) = resolved.ancestors().find(|ancestor| ancestor.exists())
+        else {
+            return Ok(resolved);
+        };
+        let canonical_ancestor = existing_ancestor.canonicalize().map_err(|e| {
+            crate::error::ConfigError::ReadFailed(
+                existing_ancestor.display().to_string(),
+                e.to_string(),
+            )
         })?;
-        if !canonical_resolved.starts_with(&canonical_rulesets_dir) {
+        if !canonical_ancestor.starts_with(&canonical_rulesets_dir) {
             return Err(crate::error::ConfigError::ValidationError(format!(
                 "ruleset path '{relative_path}' resolves outside {}",
                 rulesets_dir.display()
@@ -701,6 +709,31 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("must stay within"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_profile_by_name_rejects_symlink_parent_escape_for_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let rulesets_dir = dir.path().join("rulesets");
+        let outside_dir = dir.path().join("outside");
+        std::fs::create_dir_all(&rulesets_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::os::unix::fs::symlink(&outside_dir, rulesets_dir.join("link")).unwrap();
+
+        let manifest = RulesetManifest {
+            version: RULESET_MANIFEST_VERSION,
+            rulesets: vec![RulesetManifestEntry {
+                name: "incident".to_string(),
+                path: "link/new.toml".to_string(),
+                ..Default::default()
+            }],
+        };
+
+        let err = load_profile_by_name(&rulesets_dir, Some(&manifest), "incident")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("resolves outside"));
     }
 
     // =========================================================================

@@ -441,6 +441,7 @@ pub fn remove_extension(
         for ext in ["toml", "yaml", "yml", "json"] {
             let candidate = ext_dir.join(format!("{name}.{ext}"));
             if candidate.exists() {
+                ensure_managed_extension_path(&candidate, &ext_dir)?;
                 let pack_id = format!("file:{}", candidate.display());
                 std::fs::remove_file(&candidate)?;
                 return Ok(Some(pack_id));
@@ -978,6 +979,23 @@ anchors = ["custom anchor"]
         };
 
         let err = remove_extension("secret", &config, Some(&config_path))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("outside managed directory"));
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn remove_extension_rejects_parent_escape_from_direct_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("ft.toml");
+        let ext_dir = dir.path().join("extensions");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+
+        let outside = dir.path().join("secret.toml");
+        std::fs::write(&outside, "name = 'secret'\nversion = '1.0.0'\nrules = []\n").unwrap();
+
+        let err = remove_extension("../secret", &PatternsConfig::default(), Some(&config_path))
             .unwrap_err()
             .to_string();
         assert!(err.contains("outside managed directory"));
