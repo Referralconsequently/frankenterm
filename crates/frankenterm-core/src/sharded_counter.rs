@@ -149,7 +149,7 @@ impl ShardedCounter {
         self.shards
             .iter()
             .map(|s| s.value.load(Ordering::Relaxed))
-            .sum()
+            .fold(0u64, u64::saturating_add)
     }
 
     /// Reset all shards to zero.

@@ -281,7 +281,7 @@ impl GuideProgress {
             self.events_per_sec = (processed as f64) / (elapsed_ms as f64) * 1000.0;
             if total > processed && self.events_per_sec > 0.0 {
                 let remaining = total - processed;
-                self.eta_ms = ((remaining as f64) / self.events_per_sec * 1000.0) as u64;
+                self.eta_ms = ((remaining as f64) / self.events_per_sec * 1000.0).round() as u64;
             }
         }
     }

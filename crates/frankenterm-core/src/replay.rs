@@ -557,7 +557,7 @@ impl Player {
                 let raw_delay_ms = frame_ts - self.position.timestamp_ms;
                 let scaled_delay = (raw_delay_ms as f64) / (self.speed.as_f32() as f64);
                 if scaled_delay > 0.5 {
-                    sleep(Duration::from_micros((scaled_delay * 1000.0) as u64)).await;
+                    sleep(Duration::from_micros((scaled_delay * 1000.0).round() as u64)).await;
                 }
 
                 // Re-check controls after sleep (signal may have arrived during delay).
@@ -1025,7 +1025,7 @@ pub fn parse_duration_ms(s: &str) -> Result<u64> {
         let val: f64 = num_buf
             .parse()
             .map_err(|_| crate::Error::Runtime(format!("Invalid duration: '{s}'")))?;
-        total_ms += (val * 1_000.0) as u64;
+        total_ms += (val * 1_000.0).round() as u64;
     }
 
     Ok(total_ms)
