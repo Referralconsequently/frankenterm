@@ -638,6 +638,18 @@ pub struct WorkflowsTuning {
     /// Context injection cooldown (ms) for session-start handler.
     /// Source: workflows/handlers.rs SESSION_START_CONTEXT_COOLDOWN_MS = 600000
     pub session_start_context_cooldown_ms: u64,
+
+    /// Context injection cooldown (ms) for on-error handler.
+    /// Source: workflows/handlers.rs ON_ERROR_CASS_COOLDOWN_MS = 180000
+    pub on_error_cooldown_ms: u64,
+
+    /// Cooldown (ms) for swarm learning index handler.
+    /// Source: workflows/handlers.rs SWARM_LEARNING_INDEX_COOLDOWN_MS = 900000
+    pub swarm_learning_index_cooldown_ms: u64,
+
+    /// Cooldown (ms) for auth handler.
+    /// Source: workflows/handlers.rs AUTH_COOLDOWN_MS = 300000
+    pub auth_cooldown_ms: u64,
 }
 
 impl WorkflowsTuning {
@@ -657,6 +669,8 @@ impl WorkflowsTuning {
     pub const DEFAULT_ON_ERROR_COOLDOWN_MS: u64 = 3 * 60 * 1000;
     /// Default swarm learning index cooldown (ms).
     pub const DEFAULT_SWARM_LEARNING_INDEX_COOLDOWN_MS: u64 = 15 * 60 * 1000;
+    /// Default auth cooldown (ms).
+    pub const DEFAULT_AUTH_COOLDOWN_MS: u64 = 5 * 60 * 1000;
 }
 
 impl Default for WorkflowsTuning {
@@ -673,6 +687,9 @@ impl Default for WorkflowsTuning {
             swarm_learning_index_timeout_secs: Self::DEFAULT_SWARM_LEARNING_INDEX_TIMEOUT_SECS,
             claude_code_limits_cooldown_ms: Self::DEFAULT_CLAUDE_CODE_LIMITS_COOLDOWN_MS,
             session_start_context_cooldown_ms: Self::DEFAULT_SESSION_START_CONTEXT_COOLDOWN_MS,
+            on_error_cooldown_ms: Self::DEFAULT_ON_ERROR_COOLDOWN_MS,
+            swarm_learning_index_cooldown_ms: Self::DEFAULT_SWARM_LEARNING_INDEX_COOLDOWN_MS,
+            auth_cooldown_ms: Self::DEFAULT_AUTH_COOLDOWN_MS,
         }
     }
 }
@@ -788,13 +805,15 @@ impl IpcTuning {
     /// Exposed as a const so callers that cannot access a TuningConfig instance
     /// (e.g., CLI validation in main.rs) can reference the single source of truth.
     pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 128 * 1024;
+    /// Default IPC accept poll interval (ms).
+    pub const DEFAULT_ACCEPT_POLL_INTERVAL_MS: u64 = 100;
 }
 
 impl Default for IpcTuning {
     fn default() -> Self {
         Self {
             max_message_size: Self::DEFAULT_MAX_MESSAGE_SIZE,
-            accept_poll_interval_ms: 100,
+            accept_poll_interval_ms: Self::DEFAULT_ACCEPT_POLL_INTERVAL_MS,
         }
     }
 }
@@ -1109,6 +1128,9 @@ default_port = 9000
         assert_eq!(cfg.workflows.swarm_learning_index_timeout_secs, 30);
         assert_eq!(cfg.workflows.claude_code_limits_cooldown_ms, 600_000);
         assert_eq!(cfg.workflows.session_start_context_cooldown_ms, 600_000);
+        assert_eq!(cfg.workflows.on_error_cooldown_ms, 180_000);
+        assert_eq!(cfg.workflows.swarm_learning_index_cooldown_ms, 900_000);
+        assert_eq!(cfg.workflows.auth_cooldown_ms, 300_000);
 
         // CASS handler configs
         let ss = &cfg.workflows.cass_session_start;

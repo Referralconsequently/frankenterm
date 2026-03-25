@@ -34,7 +34,8 @@ pub const IPC_SOCKET_NAME: &str = "ipc.sock";
 /// Overridable via `[tuning.ipc] max_message_size` in ft.toml.
 pub const MAX_MESSAGE_SIZE: usize = crate::tuning_config::IpcTuning::DEFAULT_MAX_MESSAGE_SIZE;
 #[cfg(unix)]
-const IPC_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const IPC_ACCEPT_POLL_INTERVAL: Duration =
+    Duration::from_millis(crate::tuning_config::IpcTuning::DEFAULT_ACCEPT_POLL_INTERVAL_MS);
 #[cfg(unix)]
 const IPC_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 

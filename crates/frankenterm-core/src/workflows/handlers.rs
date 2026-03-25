@@ -2317,7 +2317,8 @@ impl Workflow for HandleSwarmLearningIndex {
 /// Auth events within this window for the same pane are suppressed.
 // Auth CASS handler — canonical values in TuningConfig::CassQueryConfig.
 // To override: set [tuning.workflows.cass_auth] in ft.toml.
-pub const AUTH_COOLDOWN_MS: i64 = 5 * 60 * 1000;
+pub const AUTH_COOLDOWN_MS: i64 =
+    crate::tuning_config::WorkflowsTuning::DEFAULT_AUTH_COOLDOWN_MS as i64;
 const AUTH_CASS_HINT_LIMIT: usize = crate::tuning_config::CassQueryConfig::AUTH_HINT_LIMIT;
 const AUTH_CASS_TIMEOUT_SECS: u64 = crate::tuning_config::CassQueryConfig::AUTH_TIMEOUT_SECS;
 const AUTH_CASS_LOOKBACK_DAYS: u32 = crate::tuning_config::CassQueryConfig::AUTH_LOOKBACK_DAYS;
