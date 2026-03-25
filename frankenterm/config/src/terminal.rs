@@ -131,10 +131,6 @@ impl frankenterm_term::TerminalConfiguration for TermConfig {
         self.configuration().enable_kitty_keyboard
     }
 
-    fn kitty_image_budget_bytes(&self) -> usize {
-        self.configuration().kitty_image_budget_bytes
-    }
-
     fn canonicalize_pasted_newlines(&self) -> frankenterm_term::config::NewlineCanon {
         match self.configuration().canonicalize_pasted_newlines {
             None => frankenterm_term::config::NewlineCanon::default(),

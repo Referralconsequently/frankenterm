@@ -241,6 +241,11 @@ impl ScreenOrAlt {
         self.screen.full_reset();
         self.alt_screen.full_reset();
     }
+
+    pub fn set_config(&mut self, config: &Arc<dyn TerminalConfiguration>) {
+        self.screen.set_config(config);
+        self.alt_screen.set_config(config);
+    }
 }
 
 /// Manages the state for the terminal
@@ -530,6 +535,7 @@ impl TerminalState {
         let color_map = default_color_map();
 
         let unicode_version = config.unicode_version();
+        let kitty_budget = config.kitty_image_budget_bytes();
 
         TerminalState {
             config,
@@ -589,7 +595,7 @@ impl TerminalState {
             user_vars: HashMap::new(),
             kitty_img: {
                 let mut kitty = KittyImageState::default();
-                kitty.image_budget_bytes = config.kitty_image_budget_bytes();
+                kitty.image_budget_bytes = kitty_budget;
                 kitty
             },
             seqno,
@@ -621,6 +627,15 @@ impl TerminalState {
     }
 
     pub fn set_config(&mut self, config: Arc<dyn TerminalConfiguration>) {
+        let previous_unicode_version = self.config.unicode_version();
+        let should_refresh_unicode_version = self.unicode_version_stack.is_empty()
+            && self.unicode_version == previous_unicode_version;
+
+        self.screen.set_config(&config);
+        self.kitty_img.image_budget_bytes = config.kitty_image_budget_bytes();
+        if should_refresh_unicode_version {
+            self.unicode_version = config.unicode_version();
+        }
         self.config = config;
     }
 
@@ -2768,6 +2783,49 @@ impl TerminalState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::ColorPalette;
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct TestTermConfig {
+        kitty_budget: usize,
+        unicode_version: UnicodeVersion,
+        scorecard_enabled: bool,
+    }
+
+    impl TerminalConfiguration for TestTermConfig {
+        fn color_palette(&self) -> ColorPalette {
+            ColorPalette::default()
+        }
+
+        fn kitty_image_budget_bytes(&self) -> usize {
+            self.kitty_budget
+        }
+
+        fn unicode_version(&self) -> UnicodeVersion {
+            self.unicode_version.clone()
+        }
+
+        fn resize_wrap_scorecard_enabled(&self) -> bool {
+            self.scorecard_enabled
+        }
+    }
+
+    fn test_terminal_state(config: Arc<dyn TerminalConfiguration>) -> TerminalState {
+        TerminalState::new(
+            TerminalSize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 640,
+                pixel_height: 384,
+                dpi: 96,
+            },
+            config,
+            "test-program",
+            "1.0",
+            Box::new(std::io::sink()),
+        )
+    }
 
     // ── TabStop ────────────────────────────────────────────────
 
@@ -2894,6 +2952,68 @@ mod tests {
         let ts = TabStop::new(10, 4);
         // col > width should still work due to .min()
         assert_eq!(ts.find_prev_tab_stop(100), Some(8));
+    }
+
+    #[test]
+    fn set_config_refreshes_cached_defaults_and_screen_policy() {
+        let initial: Arc<dyn TerminalConfiguration> = Arc::new(TestTermConfig {
+            kitty_budget: 1024,
+            unicode_version: UnicodeVersion::new(9),
+            scorecard_enabled: false,
+        });
+        let updated: Arc<dyn TerminalConfiguration> = Arc::new(TestTermConfig {
+            kitty_budget: 2048,
+            unicode_version: UnicodeVersion::new(14),
+            scorecard_enabled: true,
+        });
+
+        let mut terminal = test_terminal_state(initial);
+        terminal.set_config(updated);
+
+        assert_eq!(terminal.kitty_img.image_budget_bytes, 2048);
+        assert_eq!(terminal.unicode_version, UnicodeVersion::new(14));
+        assert!(
+            terminal
+                .screen
+                .screen
+                .resize_wrap_policy()
+                .scorecard_enabled,
+            "primary screen should refresh resize-wrap policy from the new config"
+        );
+        assert!(
+            terminal
+                .screen
+                .alt_screen
+                .resize_wrap_policy()
+                .scorecard_enabled,
+            "alternate screen should refresh resize-wrap policy from the new config"
+        );
+    }
+
+    #[test]
+    fn set_config_preserves_runtime_unicode_override() {
+        let initial: Arc<dyn TerminalConfiguration> = Arc::new(TestTermConfig {
+            kitty_budget: 1024,
+            unicode_version: UnicodeVersion::new(9),
+            scorecard_enabled: false,
+        });
+        let updated: Arc<dyn TerminalConfiguration> = Arc::new(TestTermConfig {
+            kitty_budget: 2048,
+            unicode_version: UnicodeVersion::new(14),
+            scorecard_enabled: true,
+        });
+
+        let mut terminal = test_terminal_state(initial);
+        terminal.unicode_version = UnicodeVersion::new(15);
+
+        terminal.set_config(updated);
+
+        assert_eq!(
+            terminal.unicode_version,
+            UnicodeVersion::new(15),
+            "config reload should not discard an application-provided unicode override"
+        );
+        assert_eq!(terminal.kitty_img.image_budget_bytes, 2048);
     }
 
     // ── CharSet ────────────────────────────────────────────────

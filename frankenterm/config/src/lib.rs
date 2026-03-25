@@ -886,10 +886,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_kitty_image_budget_bytes() -> usize {
-    320 * 1024 * 1024
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
