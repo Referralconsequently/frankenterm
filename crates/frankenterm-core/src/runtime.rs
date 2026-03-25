@@ -1019,6 +1019,8 @@ pub struct ObservationRuntime {
     heartbeats: Arc<HeartbeatRegistry>,
     /// Shared scheduler snapshot for health reporting (written by capture task).
     scheduler_snapshot: Arc<RwLock<crate::tailer::SchedulerSnapshot>>,
+    /// Operator-tunable constants (loaded from ft.toml `[tuning]` section).
+    tuning: Arc<crate::tuning_config::TuningConfig>,
 }
 
 impl ObservationRuntime {
@@ -1075,7 +1077,32 @@ impl ObservationRuntime {
             snapshot_config: None,
             heartbeats: Arc::new(HeartbeatRegistry::new()),
             scheduler_snapshot: Arc::new(RwLock::new(crate::tailer::SchedulerSnapshot::default())),
+            tuning: Arc::new(crate::tuning_config::TuningConfig::default()),
         }
+    }
+
+    /// Override the default tuning configuration.
+    ///
+    /// When building from an `ft.toml` that has a `[tuning]` section, pass
+    /// the parsed `TuningConfig` here. If not called, all tuning values
+    /// use their compiled defaults (identical to pre-migration behavior).
+    #[must_use]
+    pub fn with_tuning(mut self, tuning: crate::tuning_config::TuningConfig) -> Self {
+        self.tuning = Arc::new(tuning);
+        self
+    }
+
+    /// Access the operator-tunable constants.
+    ///
+    /// Subsystems that previously used hard-coded `const` values should read
+    /// from this instead. The `Arc` makes it cheap to clone into spawned tasks.
+    pub fn tuning(&self) -> &crate::tuning_config::TuningConfig {
+        &self.tuning
+    }
+
+    /// Get a clone-friendly handle to the tuning config (for spawned tasks).
+    pub fn tuning_arc(&self) -> Arc<crate::tuning_config::TuningConfig> {
+        Arc::clone(&self.tuning)
     }
 
     /// Set an event bus for publishing detection events.
