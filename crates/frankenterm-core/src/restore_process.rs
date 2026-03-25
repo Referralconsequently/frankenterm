@@ -375,7 +375,7 @@ impl ProcessLauncher {
 
         // Check for custom command template
         if let Some(template) = self.config.agent_commands.get(&agent.agent_type) {
-            let command = template.replace("{cwd}", &cwd.to_string_lossy());
+            let command = template.replace("{cwd}", &shell_escape(cwd));
             return (
                 LaunchAction::LaunchAgent {
                     command,
