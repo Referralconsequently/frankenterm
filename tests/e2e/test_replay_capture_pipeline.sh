@@ -19,6 +19,8 @@ component="replay_capture_pipeline"
 local_tmpdir="${FT_REPLAY_CAPTURE_LOCAL_TMPDIR:-${TMPDIR:-/tmp}}"
 remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
 shared_remote_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-capture-pipeline-${run_id}}"
+RCH_DAEMON_STATUS_LOG="${LOG_DIR}/${run_id}.rch_daemon_status.json"
+RCH_DAEMON_START_LOG="${LOG_DIR}/${run_id}.rch_daemon_start.json"
 
 now_ts() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -64,6 +66,55 @@ probe_rch_workers() {
   fi
 
   log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_probe\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{\"healthy_workers\":$healthy_workers},\"outcome\":\"pass\",\"reason_code\":\"workers_reachable\",\"error_code\":null,\"artifact_path\":\"${probe_log#"$ROOT_DIR"/}\"}"
+}
+
+ensure_rch_daemon_running() {
+  log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"running\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"running\",\"reason_code\":null,\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+
+  set +e
+  env TMPDIR="$local_tmpdir" rch daemon status --json >"$RCH_DAEMON_STATUS_LOG" 2>&1
+  local status_rc=$?
+  set -e
+
+  if [[ $status_rc -ne 0 ]]; then
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_daemon_status_failed\",\"error_code\":\"RCH-E101\",\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+    echo "rch daemon status failed" >&2
+    exit 2
+  fi
+
+  if jq -e '.data.running == true' "$RCH_DAEMON_STATUS_LOG" >/dev/null 2>&1; then
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{\"running\":true},\"outcome\":\"pass\",\"reason_code\":\"daemon_running\",\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+    return 0
+  fi
+
+  log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{\"running\":false},\"outcome\":\"pass\",\"reason_code\":\"daemon_not_running\",\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+  log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"running\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"running\",\"reason_code\":null,\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_START_LOG#"$ROOT_DIR"/}\"}"
+
+  set +e
+  env TMPDIR="$local_tmpdir" rch daemon start --json >"$RCH_DAEMON_START_LOG" 2>&1
+  local start_rc=$?
+  set -e
+
+  if [[ $start_rc -ne 0 ]]; then
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_daemon_start_failed\",\"error_code\":\"RCH-E101\",\"artifact_path\":\"${RCH_DAEMON_START_LOG#"$ROOT_DIR"/}\"}"
+    echo "rch daemon start failed" >&2
+    exit 2
+  fi
+
+  sleep 2
+
+  set +e
+  env TMPDIR="$local_tmpdir" rch daemon status --json >"$RCH_DAEMON_STATUS_LOG" 2>&1
+  status_rc=$?
+  set -e
+
+  if [[ $status_rc -ne 0 ]] || ! jq -e '.data.running == true' "$RCH_DAEMON_STATUS_LOG" >/dev/null 2>&1; then
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_daemon_unavailable\",\"error_code\":\"RCH-E101\",\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+    echo "rch daemon unavailable; refusing rch exec because it would fall back locally" >&2
+    exit 2
+  fi
+
+  log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_preflight\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{\"running\":true},\"outcome\":\"pass\",\"reason_code\":\"daemon_started\",\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
 }
 
 extract_child_log_path() {
@@ -119,6 +170,7 @@ require_cmd jq
 require_cmd rch
 require_cmd cargo
 probe_rch_workers
+ensure_rch_daemon_running
 
 log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"replay_capture_pipeline\",\"run_id\":\"$run_id\",\"scenario_id\":\"suite_start\",\"pane_id\":null,\"step\":\"suite\",\"status\":\"running\",\"correlation_id\":\"$run_id\",\"decision_path\":\"suite\",\"inputs\":{},\"outcome\":\"running\",\"reason_code\":null,\"error_code\":null,\"artifact_path\":\"${json_log#"$ROOT_DIR"/}\"}"
 

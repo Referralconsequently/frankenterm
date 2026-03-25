@@ -16,7 +16,8 @@ cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-r
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
 RCH_PROBE_LOG="${LOG_DIR}/${run_id}.probe.log"
-RCH_SMOKE_LOG="${LOG_DIR}/${run_id}.smoke.log"
+RCH_DAEMON_STATUS_LOG="${LOG_DIR}/${run_id}.rch_daemon_status.json"
+RCH_DAEMON_START_LOG="${LOG_DIR}/${run_id}.rch_daemon_start.json"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 TIMEOUT_BIN=""
 
@@ -83,30 +84,53 @@ run_rch_cargo_logged() {
     return "${rc}"
 }
 
-run_rch_smoke_logged() {
-    local output_file="$1"
+ensure_rch_daemon_running() {
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"running\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"running\",\"reason_code\":null,\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+
     set +e
-    (
-        cd "$ROOT_DIR"
-        env TMPDIR="$local_tmpdir" "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${RCH_STEP_TIMEOUT_SECS}" \
-            rch exec -- env \
-            TMPDIR="$remote_tmpdir" \
-            CARGO_HOME="$cargo_home" \
-            CARGO_TARGET_DIR="$cargo_target_dir" \
-            sh -lc 'cargo --version && rustc --version'
-    ) >"${output_file}" 2>&1
-    local rc=$?
+    env TMPDIR="$local_tmpdir" rch daemon status --json >"${RCH_DAEMON_STATUS_LOG}" 2>&1
+    local status_rc=$?
     set -e
 
-    check_rch_fallback "${output_file}"
-    if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
-        local queue_log="${output_file%.log}.rch_queue_timeout.log"
-        if ! run_rch queue >"${queue_log}" 2>&1; then
-            queue_log="${output_file}"
-        fi
-        fatal "RCH-REMOTE-STALL: rch remote smoke command timed out after ${RCH_STEP_TIMEOUT_SECS}s; refusing stalled remote execution. See ${queue_log}"
+    if [[ ${status_rc} -ne 0 ]]; then
+        log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_daemon_status_failed\",\"error_code\":\"RCH-E101\",\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+        echo "rch daemon status failed" >&2
+        exit 2
     fi
-    return "${rc}"
+
+    if jq -e '.data.running == true' "${RCH_DAEMON_STATUS_LOG}" >/dev/null 2>&1; then
+        log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{\"running\":true},\"outcome\":\"pass\",\"reason_code\":\"daemon_running\",\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+        return 0
+    fi
+
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_status\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{\"running\":false},\"outcome\":\"pass\",\"reason_code\":\"daemon_not_running\",\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"running\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"running\",\"reason_code\":null,\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_START_LOG#"$ROOT_DIR"/}\"}"
+
+    set +e
+    env TMPDIR="$local_tmpdir" rch daemon start --json >"${RCH_DAEMON_START_LOG}" 2>&1
+    local start_rc=$?
+    set -e
+
+    if [[ ${start_rc} -ne 0 ]]; then
+        log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_daemon_start_failed\",\"error_code\":\"RCH-E101\",\"artifact_path\":\"${RCH_DAEMON_START_LOG#"$ROOT_DIR"/}\"}"
+        echo "rch daemon start failed" >&2
+        exit 2
+    fi
+
+    sleep 2
+
+    set +e
+    env TMPDIR="$local_tmpdir" rch daemon status --json >"${RCH_DAEMON_STATUS_LOG}" 2>&1
+    status_rc=$?
+    set -e
+
+    if [[ ${status_rc} -ne 0 ]] || ! jq -e '.data.running == true' "${RCH_DAEMON_STATUS_LOG}" >/dev/null 2>&1; then
+        log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"failed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{},\"outcome\":\"failed\",\"reason_code\":\"rch_daemon_unavailable\",\"error_code\":\"RCH-E101\",\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
+        echo "rch daemon unavailable; refusing rch exec because it would fall back locally" >&2
+        exit 2
+    fi
+
+    log_json "{\"timestamp\":\"$(now_ts)\",\"component\":\"$component\",\"run_id\":\"$run_id\",\"scenario_id\":\"$scenario_id\",\"pane_id\":null,\"step\":\"rch_daemon_start\",\"status\":\"passed\",\"correlation_id\":\"$run_id\",\"decision_path\":\"preflight\",\"inputs\":{\"running\":true},\"outcome\":\"pass\",\"reason_code\":\"daemon_started\",\"error_code\":null,\"artifact_path\":\"${RCH_DAEMON_STATUS_LOG#"$ROOT_DIR"/}\"}"
 }
 
 ensure_rch_ready() {
@@ -126,13 +150,7 @@ ensure_rch_ready() {
         fatal "rch workers are unavailable; refusing local cargo execution. See ${RCH_PROBE_LOG}"
     fi
 
-    set +e
-    run_rch_smoke_logged "${RCH_SMOKE_LOG}"
-    local smoke_rc=$?
-    set -e
-    if [[ ${smoke_rc} -ne 0 ]]; then
-        fatal "rch remote smoke preflight failed; refusing local cargo execution. See ${RCH_SMOKE_LOG}"
-    fi
+    ensure_rch_daemon_running
 }
 
 assert_nonzero_tests_ran() {
