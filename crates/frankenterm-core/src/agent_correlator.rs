@@ -461,7 +461,7 @@ fn infer_state_from_rule(rule_id: &str) -> &'static str {
         return "auth_error";
     }
 
-    if normalized.contains("usage.warning") {
+    if normalized.ends_with("usage.warning") {
         return "active";
     }
 

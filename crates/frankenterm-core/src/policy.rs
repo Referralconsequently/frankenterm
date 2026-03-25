@@ -2772,13 +2772,13 @@ static GENERIC_SECRET: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Device codes (OAuth device flow) - typically 8+ alphanumeric chars displayed to user
 static DEVICE_CODE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:device[_-]?code|user[_-]?code)\s*[=:]\s*['"]?([A-Z0-9-]{6,})['"]?"#)
+    Regex::new(r#"(?i)(?:device[_-]?code|user[_-]?code)\s*[=:]\s*['"]?([A-Za-z0-9-]{6,})['"]?"#)
         .expect("Device code regex")
 });
 
 /// OAuth URLs with tokens/codes in query params
 static OAUTH_URL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"https?://[^\s]*[?&](?:access_token|code|token)=[a-zA-Z0-9._-]+")
+    Regex::new(r#"https?://[^\s]*[?&](?:access_token|code|token)=[^\s&;'""]+"#)
         .expect("OAuth URL regex")
 });
 
