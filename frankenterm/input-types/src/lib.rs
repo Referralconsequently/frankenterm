@@ -511,6 +511,8 @@ bitflags! {
         const LEFT_SHIFT = 1<<10;
         const RIGHT_SHIFT = 1<<11;
         const ENHANCED_KEY = 1<<12;
+        const HYPER = 1<<13;
+        const META = 1<<14;
     }
 }
 
@@ -526,8 +528,12 @@ impl TryFrom<String> for Modifiers {
             let ele = ele.trim();
             if ele == "SHIFT" {
                 mods |= Modifiers::SHIFT;
-            } else if ele == "ALT" || ele == "OPT" || ele == "META" {
+            } else if ele == "ALT" || ele == "OPT" {
                 mods |= Modifiers::ALT;
+            } else if ele == "HYPER" {
+                mods |= Modifiers::HYPER;
+            } else if ele == "META" {
+                mods |= Modifiers::META;
             } else if ele == "CTRL" {
                 mods |= Modifiers::CTRL;
             } else if ele == "SUPER" || ele == "CMD" || ele == "WIN" {
@@ -626,6 +632,24 @@ impl Modifiers {
                 md_apple_keyboard_command,
                 "Win",
                 md_microsoft_windows,
+            ),
+            (
+                Self::HYPER,
+                "HYPER",
+                "Hyper",
+                "H",
+                "Hyper",
+                "Hyper",
+                "Hyper",
+            ),
+            (
+                Self::META,
+                "META",
+                "Meta",
+                "Meta",
+                "Meta",
+                "Meta",
+                "Meta",
             ),
             (
                 Self::LEFT_ALT,
@@ -1757,9 +1781,12 @@ impl KeyEvent {
         if raw_modifiers.contains(Modifiers::SUPER) {
             modifiers |= 8;
         }
-        // TODO: Hyper and Meta are not handled yet.
-        // We should somehow detect this?
-        // See: https://github.com/wezterm/wezterm/pull/4605#issuecomment-1823604708
+        if raw_modifiers.contains(Modifiers::HYPER) {
+            modifiers |= 16;
+        }
+        if raw_modifiers.contains(Modifiers::META) {
+            modifiers |= 32;
+        }
         if self.leds.contains(KeyboardLedStatus::CAPS_LOCK) {
             modifiers |= 64;
         }
@@ -1900,7 +1927,7 @@ impl KeyEvent {
                         && (self.modifiers.contains(Modifiers::CTRL)
                             || self.modifiers.contains(Modifiers::ALT)))
                     && !self.modifiers.intersects(
-                        Modifiers::SUPER, /* TODO: Hyper and Meta should be added here. */
+                        Modifiers::SUPER | Modifiers::HYPER | Modifiers::META,
                     );
 
                 if use_legacy {
@@ -3217,6 +3244,51 @@ mod test {
             .encode_kitty(flags),
             "\u{1b}[102;14u".to_string()
         );
+
+        assert_eq!(
+            KeyEvent {
+                key: KeyCode::Char('f'),
+                modifiers: Modifiers::HYPER,
+                leds: KeyboardLedStatus::empty(),
+                repeat_count: 1,
+                key_is_down: true,
+                raw: None,
+                #[cfg(windows)]
+                win32_uni_char: None,
+            }
+            .encode_kitty(flags),
+            "\u{1b}[102;17u".to_string()
+        );
+
+        assert_eq!(
+            KeyEvent {
+                key: KeyCode::Char('f'),
+                modifiers: Modifiers::META,
+                leds: KeyboardLedStatus::empty(),
+                repeat_count: 1,
+                key_is_down: true,
+                raw: None,
+                #[cfg(windows)]
+                win32_uni_char: None,
+            }
+            .encode_kitty(flags),
+            "\u{1b}[102;33u".to_string()
+        );
+
+        assert_eq!(
+            KeyEvent {
+                key: KeyCode::Char('f'),
+                modifiers: Modifiers::META | Modifiers::SHIFT,
+                leds: KeyboardLedStatus::empty(),
+                repeat_count: 1,
+                key_is_down: true,
+                raw: None,
+                #[cfg(windows)]
+                win32_uni_char: None,
+            }
+            .encode_kitty(flags),
+            "\u{1b}[102;34u".to_string()
+        );
     }
 
     // ── KeyCode: is_modifier ────────────────────────────────
@@ -3405,12 +3477,16 @@ mod test {
             Modifiers::try_from("SUPER".to_string()),
             Ok(Modifiers::SUPER)
         );
+        assert_eq!(
+            Modifiers::try_from("HYPER".to_string()),
+            Ok(Modifiers::HYPER)
+        );
+        assert_eq!(Modifiers::try_from("META".to_string()), Ok(Modifiers::META));
     }
 
     #[test]
     fn modifiers_try_from_string_aliases() {
         assert_eq!(Modifiers::try_from("OPT".to_string()), Ok(Modifiers::ALT));
-        assert_eq!(Modifiers::try_from("META".to_string()), Ok(Modifiers::ALT));
         assert_eq!(Modifiers::try_from("CMD".to_string()), Ok(Modifiers::SUPER));
         assert_eq!(Modifiers::try_from("WIN".to_string()), Ok(Modifiers::SUPER));
     }
