@@ -348,8 +348,8 @@ fn profile_resolution_merges_overrides() {
 
     let base = reg.get_profile("dev-shell").unwrap().clone();
     assert!(
-        base.spawn_command.is_some(),
-        "dev-shell should have spawn command"
+        base.spawn_command.is_none(),
+        "dev-shell should use default shell (spawn_command=None)"
     );
 }
 
