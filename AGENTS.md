@@ -609,6 +609,9 @@ require_prompt_active = true
 block_alt_screen = true
 ```
 
+Operator-tunable runtime constants live under `[tuning]` sections such as `[tuning.runtime]`, `[tuning.patterns]`, and `[tuning.search]`.
+See `docs/tuning-reference.md` for the full `TuningConfig` reference: every key, default, unit, validation guard, and starting ranges for 10-pane, 50-pane, and 200+-pane fleets.
+
 ### Related Tools
 
 | Tool | Relationship |
