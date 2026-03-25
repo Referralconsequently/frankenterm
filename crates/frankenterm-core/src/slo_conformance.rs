@@ -299,9 +299,9 @@ impl SloEvaluator {
                 SloMetric::LatencyMs { percentile } => {
                     let mut values: Vec<f64> = window_samples.iter().map(|s| s.value).collect();
                     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    let idx = ((*percentile as f64 / 100.0) * (values.len() as f64 - 1.0)).ceil()
-                        as usize;
-                    values[idx.min(values.len() - 1)]
+                    let rank = ((*percentile as f64 / 100.0) * values.len() as f64).ceil() as usize;
+                    let idx = rank.saturating_sub(1).min(values.len() - 1);
+                    values[idx]
                 }
                 SloMetric::ErrorRate => bad_count as f64 / sample_count as f64,
                 SloMetric::Availability => good_count as f64 / sample_count as f64,

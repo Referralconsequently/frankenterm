@@ -313,8 +313,8 @@ impl TriggeredAlert {
             }
             AlertMetric::AccountBalance => {
                 format!(
-                    "{}: account balance {:.1}% (min {:.1}%)",
-                    self.level, self.current_value, self.threshold
+                    "{}: account balance {:.1}% (min {:.1}%) ({}% depleted)",
+                    self.level, self.current_value, self.threshold, pct
                 )
             }
         }
