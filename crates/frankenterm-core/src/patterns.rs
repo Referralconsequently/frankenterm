@@ -2091,8 +2091,8 @@ impl PatternEngine {
         if full_len > DetectionContext::MAX_TAIL_SIZE {
             // Take slice from end, respecting char boundaries
             let mut start = full_len - DetectionContext::MAX_TAIL_SIZE;
-            while !input_text.is_char_boundary(start) && start < full_len {
-                start += 1;
+            while !input_text.is_char_boundary(start) && start > 0 {
+                start -= 1;
             }
             context.tail_buffer = input_text[start..].to_string();
         } else {
@@ -2169,8 +2169,8 @@ impl PatternEngine {
         let full_len = input_text.len();
         if full_len > DetectionContext::MAX_TAIL_SIZE {
             let mut start = full_len - DetectionContext::MAX_TAIL_SIZE;
-            while !input_text.is_char_boundary(start) && start < full_len {
-                start += 1;
+            while !input_text.is_char_boundary(start) && start > 0 {
+                start -= 1;
             }
             context.tail_buffer = input_text[start..].to_string();
         } else {

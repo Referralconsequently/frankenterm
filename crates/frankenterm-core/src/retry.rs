@@ -150,7 +150,7 @@ impl RetryPolicy {
             0.0
         };
 
-        let delay_ms = (base_ms + jitter).max(0.0);
+        let delay_ms = (base_ms + jitter).max(0.0).round();
         Duration::from_millis(delay_ms as u64)
     }
 }

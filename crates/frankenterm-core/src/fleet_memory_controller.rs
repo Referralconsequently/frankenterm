@@ -591,6 +591,10 @@ impl FleetScrollbackOrchestrator {
                 break;
             }
 
+            if *warm_bytes == 0 {
+                continue;
+            }
+
             let target_frac = remaining_to_evict as f64 / *warm_bytes as f64;
             let capped_frac = target_frac.min(max_pane_fraction).min(1.0);
 
