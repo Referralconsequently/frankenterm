@@ -587,7 +587,11 @@ impl TerminalState {
             writer,
             image_cache: lru::LruCache::new(NonZeroUsize::new(16).unwrap()),
             user_vars: HashMap::new(),
-            kitty_img: Default::default(),
+            kitty_img: {
+                let mut kitty = KittyImageState::default();
+                kitty.image_budget_bytes = config.kitty_image_budget_bytes();
+                kitty
+            },
             seqno,
             unicode_version,
             unicode_version_stack: vec![],

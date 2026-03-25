@@ -31,7 +31,8 @@ use crate::ingest::PaneRegistry;
 pub const IPC_SOCKET_NAME: &str = "ipc.sock";
 
 /// Maximum message size in bytes (128KB).
-pub const MAX_MESSAGE_SIZE: usize = 131_072;
+/// Overridable via `[tuning.ipc] max_message_size` in ft.toml.
+pub const MAX_MESSAGE_SIZE: usize = crate::tuning_config::IpcTuning::DEFAULT_MAX_MESSAGE_SIZE;
 #[cfg(unix)]
 const IPC_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(unix)]

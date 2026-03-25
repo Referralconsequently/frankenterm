@@ -17,7 +17,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct KittyImageState {
     accumulator: Vec<KittyImage>,
     max_image_id: u32,
@@ -25,6 +25,23 @@ pub struct KittyImageState {
     id_to_data: HashMap<u32, Arc<ImageData>>,
     placements: HashMap<(u32, Option<u32>), PlacementInfo>,
     used_memory: usize,
+    /// Memory budget (bytes) for stored image data. Loaded from config.
+    /// Default: 320 MiB.
+    pub(crate) image_budget_bytes: usize,
+}
+
+impl Default for KittyImageState {
+    fn default() -> Self {
+        Self {
+            accumulator: Vec::new(),
+            max_image_id: 0,
+            number_to_id: HashMap::new(),
+            id_to_data: HashMap::new(),
+            placements: HashMap::new(),
+            used_memory: 0,
+            image_budget_bytes: 320 * 1024 * 1024,
+        }
+    }
 }
 
 /// Maximum number of accumulated multi-chunk Kitty image fragments.
@@ -71,7 +88,7 @@ impl KittyImageState {
     }
 
     fn prune_unreferenced(&mut self) {
-        let budget = 320 * 1024 * 1024; // FIXME: make this configurable
+        let budget = self.image_budget_bytes;
         if self.used_memory > budget {
             let referenced: HashSet<u32> = self.placements.keys().map(|(k, _)| *k).collect();
             let target = self.used_memory - budget;

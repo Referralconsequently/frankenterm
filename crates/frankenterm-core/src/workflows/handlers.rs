@@ -1012,12 +1012,20 @@ impl Workflow for HandleProcessTriageLifecycle {
 
 /// Default cooldown window in milliseconds (10 minutes).
 /// Session-start context injection events within this window for the same pane are suppressed.
-pub const SESSION_START_CONTEXT_COOLDOWN_MS: i64 = 10 * 60 * 1000;
-const SESSION_START_CASS_HINT_LIMIT: usize = 3;
-const SESSION_START_CASS_TIMEOUT_SECS: u64 = 8;
-const SESSION_START_CASS_LOOKBACK_DAYS: u32 = 30;
-const SESSION_START_QUERY_MAX_CHARS: usize = 180;
-const SESSION_START_HINT_MAX_CHARS: usize = 160;
+// Session-start CASS handler — canonical values in TuningConfig::CassQueryConfig.
+// To override: set [tuning.workflows.cass_session_start] in ft.toml.
+pub const SESSION_START_CONTEXT_COOLDOWN_MS: i64 =
+    crate::tuning_config::WorkflowsTuning::DEFAULT_SESSION_START_CONTEXT_COOLDOWN_MS as i64;
+const SESSION_START_CASS_HINT_LIMIT: usize =
+    crate::tuning_config::CassQueryConfig::SESSION_START_HINT_LIMIT;
+const SESSION_START_CASS_TIMEOUT_SECS: u64 =
+    crate::tuning_config::CassQueryConfig::SESSION_START_TIMEOUT_SECS;
+const SESSION_START_CASS_LOOKBACK_DAYS: u32 =
+    crate::tuning_config::CassQueryConfig::SESSION_START_LOOKBACK_DAYS;
+const SESSION_START_QUERY_MAX_CHARS: usize =
+    crate::tuning_config::CassQueryConfig::SESSION_START_QUERY_MAX_CHARS;
+const SESSION_START_HINT_MAX_CHARS: usize =
+    crate::tuning_config::CassQueryConfig::SESSION_START_HINT_MAX_CHARS;
 
 static SESSION_START_BEAD_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:ft|wa)-[a-z0-9][a-z0-9.-]*\b").expect("valid bead id regex")
@@ -1568,12 +1576,19 @@ impl Workflow for HandleSessionStartContext {
 
 /// Default cooldown window in milliseconds (3 minutes).
 /// Error-triggered cass lookup events within this window for the same pane are suppressed.
-pub const ON_ERROR_CASS_COOLDOWN_MS: i64 = 3 * 60 * 1000;
-const ON_ERROR_CASS_HINT_LIMIT: usize = 3;
-const ON_ERROR_CASS_TIMEOUT_SECS: u64 = 6;
-const ON_ERROR_CASS_LOOKBACK_DAYS: u32 = 30;
-const ON_ERROR_CASS_QUERY_MAX_CHARS: usize = 200;
-const ON_ERROR_CASS_HINT_MAX_CHARS: usize = 180;
+// On-error CASS handler — canonical values in TuningConfig::CassQueryConfig.
+// To override: set [tuning.workflows.cass_on_error] in ft.toml.
+pub const ON_ERROR_CASS_COOLDOWN_MS: i64 =
+    crate::tuning_config::WorkflowsTuning::DEFAULT_ON_ERROR_COOLDOWN_MS as i64;
+const ON_ERROR_CASS_HINT_LIMIT: usize = crate::tuning_config::CassQueryConfig::ON_ERROR_HINT_LIMIT;
+const ON_ERROR_CASS_TIMEOUT_SECS: u64 =
+    crate::tuning_config::CassQueryConfig::ON_ERROR_TIMEOUT_SECS;
+const ON_ERROR_CASS_LOOKBACK_DAYS: u32 =
+    crate::tuning_config::CassQueryConfig::ON_ERROR_LOOKBACK_DAYS;
+const ON_ERROR_CASS_QUERY_MAX_CHARS: usize =
+    crate::tuning_config::CassQueryConfig::ON_ERROR_QUERY_MAX_CHARS;
+const ON_ERROR_CASS_HINT_MAX_CHARS: usize =
+    crate::tuning_config::CassQueryConfig::ON_ERROR_HINT_MAX_CHARS;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OnErrorCassHintsLookup {
@@ -2064,8 +2079,11 @@ impl Workflow for HandleOnErrorCassSearch {
 
 /// Cooldown window in milliseconds (15 minutes).
 /// Prevents re-indexing if a recent session from the same pane already triggered it.
-pub const SWARM_LEARNING_INDEX_COOLDOWN_MS: i64 = 15 * 60 * 1000;
-const SWARM_LEARNING_INDEX_TIMEOUT_SECS: u64 = 30;
+// Swarm learning index — canonical values in TuningConfig::WorkflowsTuning.
+pub const SWARM_LEARNING_INDEX_COOLDOWN_MS: i64 =
+    crate::tuning_config::WorkflowsTuning::DEFAULT_SWARM_LEARNING_INDEX_COOLDOWN_MS as i64;
+const SWARM_LEARNING_INDEX_TIMEOUT_SECS: u64 =
+    crate::tuning_config::WorkflowsTuning::DEFAULT_SWARM_LEARNING_INDEX_TIMEOUT_SECS;
 
 /// Trigger cass index refresh when an agent session completes.
 ///
@@ -2297,12 +2315,15 @@ impl Workflow for HandleSwarmLearningIndex {
 
 /// Default cooldown window in milliseconds (5 minutes).
 /// Auth events within this window for the same pane are suppressed.
+// Auth CASS handler — canonical values in TuningConfig::CassQueryConfig.
+// To override: set [tuning.workflows.cass_auth] in ft.toml.
 pub const AUTH_COOLDOWN_MS: i64 = 5 * 60 * 1000;
-const AUTH_CASS_HINT_LIMIT: usize = 3;
-const AUTH_CASS_TIMEOUT_SECS: u64 = 8;
-const AUTH_CASS_LOOKBACK_DAYS: u32 = 30;
-const AUTH_CASS_QUERY_MAX_CHARS: usize = 160;
-const AUTH_CASS_HINT_MAX_CHARS: usize = 140;
+const AUTH_CASS_HINT_LIMIT: usize = crate::tuning_config::CassQueryConfig::AUTH_HINT_LIMIT;
+const AUTH_CASS_TIMEOUT_SECS: u64 = crate::tuning_config::CassQueryConfig::AUTH_TIMEOUT_SECS;
+const AUTH_CASS_LOOKBACK_DAYS: u32 = crate::tuning_config::CassQueryConfig::AUTH_LOOKBACK_DAYS;
+const AUTH_CASS_QUERY_MAX_CHARS: usize =
+    crate::tuning_config::CassQueryConfig::AUTH_QUERY_MAX_CHARS;
+const AUTH_CASS_HINT_MAX_CHARS: usize = crate::tuning_config::CassQueryConfig::AUTH_HINT_MAX_CHARS;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthCassHintsLookup {
@@ -2833,7 +2854,9 @@ impl Workflow for HandleAuthRequired {
 
 /// Default cooldown window in milliseconds (10 minutes).
 /// Usage-limit events within this window for the same pane are suppressed.
-const CLAUDE_CODE_LIMITS_COOLDOWN_MS: i64 = 10 * 60 * 1000;
+// Claude Code limits cooldown — canonical value in TuningConfig::WorkflowsTuning.
+const CLAUDE_CODE_LIMITS_COOLDOWN_MS: i64 =
+    crate::tuning_config::WorkflowsTuning::DEFAULT_CLAUDE_CODE_LIMITS_COOLDOWN_MS as i64;
 
 /// Handle Claude Code usage-limit and rate-limit events.
 ///

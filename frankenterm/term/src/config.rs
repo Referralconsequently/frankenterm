@@ -380,6 +380,12 @@ pub trait TerminalConfiguration: Downcast + std::fmt::Debug + Send + Sync {
         false
     }
 
+    /// Memory budget (bytes) for Kitty image protocol data.
+    /// Default: 320 MiB.
+    fn kitty_image_budget_bytes(&self) -> usize {
+        320 * 1024 * 1024
+    }
+
     /// The default unicode version to assume.
     /// This affects how the width of certain sequences is interpreted.
     /// At the time of writing, we default to 9 even though the current

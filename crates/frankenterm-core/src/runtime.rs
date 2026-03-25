@@ -144,12 +144,18 @@ async fn send_runtime_channel<T>(tx: &mpsc::Sender<T>, value: T) -> bool {
 // - output is flushed once the window elapses (or sooner on state transitions)
 // - a max delay guard exists for safety when misconfigured
 
+// Output coalesce defaults — canonical values in TuningConfig::RuntimeTuning.
+// These consts exist for use in contexts without runtime access.
+// To override: set [tuning.runtime] in ft.toml.
 #[cfg(feature = "native-wezterm")]
-const NATIVE_OUTPUT_COALESCE_WINDOW_MS: u64 = 50;
+const NATIVE_OUTPUT_COALESCE_WINDOW_MS: u64 =
+    crate::tuning_config::RuntimeTuning::DEFAULT_OUTPUT_COALESCE_WINDOW_MS;
 #[cfg(feature = "native-wezterm")]
-const NATIVE_OUTPUT_COALESCE_MAX_DELAY_MS: u64 = 200;
+const NATIVE_OUTPUT_COALESCE_MAX_DELAY_MS: u64 =
+    crate::tuning_config::RuntimeTuning::DEFAULT_OUTPUT_COALESCE_MAX_DELAY_MS;
 #[cfg(feature = "native-wezterm")]
-const NATIVE_OUTPUT_COALESCE_MAX_BYTES: usize = 256 * 1024;
+const NATIVE_OUTPUT_COALESCE_MAX_BYTES: usize =
+    crate::tuning_config::RuntimeTuning::DEFAULT_OUTPUT_COALESCE_MAX_BYTES;
 
 #[cfg(feature = "native-wezterm")]
 #[derive(Debug)]
@@ -412,16 +418,18 @@ fn should_record_streaming_fallback(reason: &str) -> bool {
 static GLOBAL_RUNTIME_LOCK_MEMORY_TELEMETRY: OnceLock<
     StdRwLock<Option<RuntimeLockMemoryTelemetrySnapshot>>,
 > = OnceLock::new();
-/// Number of recent samples retained for lock/memory percentile telemetry.
-const TELEMETRY_PERCENTILE_WINDOW_CAPACITY: usize = 1024;
-/// Warning threshold for stalled resize transactions.
-const RESIZE_WATCHDOG_WARNING_THRESHOLD_MS: u64 = 2_000;
-/// Critical threshold for stalled resize transactions.
-const RESIZE_WATCHDOG_CRITICAL_THRESHOLD_MS: u64 = 8_000;
-/// Number of critical stalls that triggers safe-mode recommendation.
-const RESIZE_WATCHDOG_CRITICAL_STALLED_LIMIT: usize = 2;
-/// Maximum stalled-transaction samples retained in watchdog payloads.
-const RESIZE_WATCHDOG_SAMPLE_LIMIT: usize = 8;
+// Resize watchdog defaults — canonical values in TuningConfig::RuntimeTuning.
+// To override: set [tuning.runtime] in ft.toml.
+const TELEMETRY_PERCENTILE_WINDOW_CAPACITY: usize =
+    crate::tuning_config::RuntimeTuning::DEFAULT_TELEMETRY_PERCENTILE_WINDOW;
+const RESIZE_WATCHDOG_WARNING_THRESHOLD_MS: u64 =
+    crate::tuning_config::RuntimeTuning::DEFAULT_RESIZE_WATCHDOG_WARNING_MS;
+const RESIZE_WATCHDOG_CRITICAL_THRESHOLD_MS: u64 =
+    crate::tuning_config::RuntimeTuning::DEFAULT_RESIZE_WATCHDOG_CRITICAL_MS;
+const RESIZE_WATCHDOG_CRITICAL_STALLED_LIMIT: usize =
+    crate::tuning_config::RuntimeTuning::DEFAULT_RESIZE_WATCHDOG_STALLED_LIMIT;
+const RESIZE_WATCHDOG_SAMPLE_LIMIT: usize =
+    crate::tuning_config::RuntimeTuning::DEFAULT_RESIZE_WATCHDOG_SAMPLE_LIMIT;
 
 /// Machine-readable lock contention and cursor-memory telemetry snapshot.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -3176,25 +3184,22 @@ pub struct RuntimeHandle {
     scheduler_snapshot: Arc<RwLock<crate::tailer::SchedulerSnapshot>>,
 }
 
-/// Backpressure warning threshold as a fraction of channel capacity.
-///
-/// When queue depth exceeds this fraction of max capacity, a warning is
-/// included in the health snapshot.  0.75 = warn at 75% full.
-const BACKPRESSURE_WARN_RATIO: f64 = 0.75;
-/// Storage lock contention threshold (microseconds) used for contention counts.
+// Backpressure, storage lock, and snapshot defaults — canonical values in TuningConfig.
+// To override: set [tuning.backpressure], [tuning.runtime], or [tuning.snapshot] in ft.toml.
+const BACKPRESSURE_WARN_RATIO: f64 = crate::tuning_config::BackpressureTuning::DEFAULT_WARN_RATIO;
 const STORAGE_LOCK_CONTENTION_MIN_US: u64 = 1_000;
-/// Maximum acceptable storage lock wait for healthy operation.
-const STORAGE_LOCK_WAIT_WARN_MS: f64 = 15.0;
-/// Maximum acceptable storage lock hold for healthy operation.
-const STORAGE_LOCK_HOLD_WARN_MS: f64 = 75.0;
-/// Memory warning threshold for retained pane snapshots.
-const CURSOR_SNAPSHOT_MEMORY_WARN_BYTES: u64 = 64 * 1024 * 1024;
-/// Poll interval for snapshot trigger bridge maintenance checks.
-const SNAPSHOT_TRIGGER_BRIDGE_TICK_SECS: u64 = 30;
-/// Idle duration before emitting `IdleWindow` trigger.
-const SNAPSHOT_IDLE_WINDOW_SECS: u64 = 5 * 60;
-/// Minimum interval between `MemoryPressure` trigger emissions.
-const SNAPSHOT_MEMORY_TRIGGER_COOLDOWN_SECS: u64 = 2 * 60;
+const STORAGE_LOCK_WAIT_WARN_MS: f64 =
+    crate::tuning_config::RuntimeTuning::DEFAULT_STORAGE_LOCK_WAIT_WARN_MS;
+const STORAGE_LOCK_HOLD_WARN_MS: f64 =
+    crate::tuning_config::RuntimeTuning::DEFAULT_STORAGE_LOCK_HOLD_WARN_MS;
+const CURSOR_SNAPSHOT_MEMORY_WARN_BYTES: u64 =
+    crate::tuning_config::RuntimeTuning::DEFAULT_CURSOR_SNAPSHOT_MEMORY_WARN_BYTES;
+const SNAPSHOT_TRIGGER_BRIDGE_TICK_SECS: u64 =
+    crate::tuning_config::SnapshotTuning::DEFAULT_TRIGGER_BRIDGE_TICK_SECS;
+const SNAPSHOT_IDLE_WINDOW_SECS: u64 =
+    crate::tuning_config::SnapshotTuning::DEFAULT_IDLE_WINDOW_SECS;
+const SNAPSHOT_MEMORY_TRIGGER_COOLDOWN_SECS: u64 =
+    crate::tuning_config::SnapshotTuning::DEFAULT_MEMORY_TRIGGER_COOLDOWN_SECS;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PaneActivityState {
     last_seq: i64,

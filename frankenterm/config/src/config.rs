@@ -362,6 +362,13 @@ pub struct Config {
     #[dynamic(default)]
     pub enable_kitty_keyboard: bool,
 
+    /// Memory budget (bytes) for Kitty image protocol data. When total stored
+    /// image data exceeds this, unreferenced images are pruned.
+    /// Default: 320 MiB. Reduce on memory-constrained systems; increase for
+    /// image-heavy workflows.
+    #[dynamic(default = "default_kitty_image_budget_bytes")]
+    pub kitty_image_budget_bytes: usize,
+
     /// Whether the terminal should respond to requests to read the
     /// title string.
     /// Disabled by default for security concerns with shells that might

@@ -315,12 +315,12 @@ impl Default for DetectionContext {
 }
 
 impl DetectionContext {
-    /// Maximum number of seen keys to retain
-    const MAX_SEEN_KEYS: usize = 1000;
+    // Pattern engine limits — canonical values in TuningConfig::PatternsTuning.
+    // To override: set [tuning.patterns] in ft.toml.
+    const MAX_SEEN_KEYS: usize = crate::tuning_config::PatternsTuning::DEFAULT_MAX_SEEN_KEYS;
     /// Default deduplication TTL
     const DEFAULT_TTL: Duration = Duration::from_secs(5 * 60);
-    /// Maximum tail buffer size (2KB)
-    const MAX_TAIL_SIZE: usize = 2048;
+    const MAX_TAIL_SIZE: usize = crate::tuning_config::PatternsTuning::DEFAULT_MAX_TAIL_SIZE_BYTES;
 
     /// Create a new empty detection context
     #[must_use]
@@ -737,7 +737,8 @@ type AnchorMatchRef = (usize, (usize, usize));
 /// Target false positive rate for the Bloom filter (1%).
 /// This keeps the filter small (~10KB for 1000 patterns) while providing
 /// effective rejection of non-matching text.
-const BLOOM_FALSE_POSITIVE_RATE: f64 = 0.01;
+const BLOOM_FALSE_POSITIVE_RATE: f64 =
+    crate::tuning_config::PatternsTuning::DEFAULT_BLOOM_FALSE_POSITIVE_RATE;
 
 struct EngineIndex {
     compiled_rules: Vec<CompiledRule>,

@@ -146,21 +146,48 @@ pub struct RuntimeTuning {
     pub state_detection_max_age_secs: u64,
 }
 
+impl RuntimeTuning {
+    /// Default output coalesce window (ms).
+    pub const DEFAULT_OUTPUT_COALESCE_WINDOW_MS: u64 = 50;
+    /// Default output coalesce max delay (ms).
+    pub const DEFAULT_OUTPUT_COALESCE_MAX_DELAY_MS: u64 = 200;
+    /// Default output coalesce max bytes.
+    pub const DEFAULT_OUTPUT_COALESCE_MAX_BYTES: usize = 256 * 1024;
+    /// Default telemetry percentile window capacity.
+    pub const DEFAULT_TELEMETRY_PERCENTILE_WINDOW: usize = 1024;
+    /// Default resize watchdog warning threshold (ms).
+    pub const DEFAULT_RESIZE_WATCHDOG_WARNING_MS: u64 = 2_000;
+    /// Default resize watchdog critical threshold (ms).
+    pub const DEFAULT_RESIZE_WATCHDOG_CRITICAL_MS: u64 = 8_000;
+    /// Default resize watchdog stalled limit.
+    pub const DEFAULT_RESIZE_WATCHDOG_STALLED_LIMIT: usize = 2;
+    /// Default resize watchdog sample limit.
+    pub const DEFAULT_RESIZE_WATCHDOG_SAMPLE_LIMIT: usize = 8;
+    /// Default storage lock wait warning (ms).
+    pub const DEFAULT_STORAGE_LOCK_WAIT_WARN_MS: f64 = 15.0;
+    /// Default storage lock hold warning (ms).
+    pub const DEFAULT_STORAGE_LOCK_HOLD_WARN_MS: f64 = 75.0;
+    /// Default cursor snapshot memory warning (bytes).
+    pub const DEFAULT_CURSOR_SNAPSHOT_MEMORY_WARN_BYTES: u64 = 64 * 1024 * 1024;
+    /// Default state detection max age (seconds).
+    pub const DEFAULT_STATE_DETECTION_MAX_AGE_SECS: u64 = 300;
+}
+
 impl Default for RuntimeTuning {
     fn default() -> Self {
         Self {
-            output_coalesce_window_ms: 50,
-            output_coalesce_max_delay_ms: 200,
-            output_coalesce_max_bytes: 256 * 1024,
-            telemetry_percentile_window: 1024,
-            resize_watchdog_warning_ms: 2_000,
-            resize_watchdog_critical_ms: 8_000,
-            resize_watchdog_stalled_limit: 2,
-            resize_watchdog_sample_limit: 8,
-            storage_lock_wait_warn_ms: 15.0,
-            storage_lock_hold_warn_ms: 75.0,
-            cursor_snapshot_memory_warn_bytes: 64 * 1024 * 1024,
-            state_detection_max_age_secs: 300,
+            output_coalesce_window_ms: Self::DEFAULT_OUTPUT_COALESCE_WINDOW_MS,
+            output_coalesce_max_delay_ms: Self::DEFAULT_OUTPUT_COALESCE_MAX_DELAY_MS,
+            output_coalesce_max_bytes: Self::DEFAULT_OUTPUT_COALESCE_MAX_BYTES,
+            telemetry_percentile_window: Self::DEFAULT_TELEMETRY_PERCENTILE_WINDOW,
+            resize_watchdog_warning_ms: Self::DEFAULT_RESIZE_WATCHDOG_WARNING_MS,
+            resize_watchdog_critical_ms: Self::DEFAULT_RESIZE_WATCHDOG_CRITICAL_MS,
+            resize_watchdog_stalled_limit: Self::DEFAULT_RESIZE_WATCHDOG_STALLED_LIMIT,
+            resize_watchdog_sample_limit: Self::DEFAULT_RESIZE_WATCHDOG_SAMPLE_LIMIT,
+            storage_lock_wait_warn_ms: Self::DEFAULT_STORAGE_LOCK_WAIT_WARN_MS,
+            storage_lock_hold_warn_ms: Self::DEFAULT_STORAGE_LOCK_HOLD_WARN_MS,
+            cursor_snapshot_memory_warn_bytes: Self::DEFAULT_CURSOR_SNAPSHOT_MEMORY_WARN_BYTES,
+            state_detection_max_age_secs: Self::DEFAULT_STATE_DETECTION_MAX_AGE_SECS,
         }
     }
 }
@@ -179,9 +206,16 @@ pub struct BackpressureTuning {
     pub warn_ratio: f64,
 }
 
+impl BackpressureTuning {
+    /// Default backpressure warn ratio.
+    pub const DEFAULT_WARN_RATIO: f64 = 0.75;
+}
+
 impl Default for BackpressureTuning {
     fn default() -> Self {
-        Self { warn_ratio: 0.75 }
+        Self {
+            warn_ratio: Self::DEFAULT_WARN_RATIO,
+        }
     }
 }
 
@@ -206,12 +240,21 @@ pub struct SnapshotTuning {
     pub memory_trigger_cooldown_secs: u64,
 }
 
+impl SnapshotTuning {
+    /// Default snapshot trigger bridge tick (seconds).
+    pub const DEFAULT_TRIGGER_BRIDGE_TICK_SECS: u64 = 30;
+    /// Default idle window (seconds).
+    pub const DEFAULT_IDLE_WINDOW_SECS: u64 = 300;
+    /// Default memory trigger cooldown (seconds).
+    pub const DEFAULT_MEMORY_TRIGGER_COOLDOWN_SECS: u64 = 120;
+}
+
 impl Default for SnapshotTuning {
     fn default() -> Self {
         Self {
-            trigger_bridge_tick_secs: 30,
-            idle_window_secs: 300,
-            memory_trigger_cooldown_secs: 120,
+            trigger_bridge_tick_secs: Self::DEFAULT_TRIGGER_BRIDGE_TICK_SECS,
+            idle_window_secs: Self::DEFAULT_IDLE_WINDOW_SECS,
+            memory_trigger_cooldown_secs: Self::DEFAULT_MEMORY_TRIGGER_COOLDOWN_SECS,
         }
     }
 }
@@ -266,12 +309,21 @@ pub struct PatternsTuning {
     pub bloom_false_positive_rate: f64,
 }
 
+impl PatternsTuning {
+    /// Default max seen keys in dedup cache.
+    pub const DEFAULT_MAX_SEEN_KEYS: usize = 1000;
+    /// Default tail buffer size (bytes).
+    pub const DEFAULT_MAX_TAIL_SIZE_BYTES: usize = 2048;
+    /// Default Bloom filter false-positive rate.
+    pub const DEFAULT_BLOOM_FALSE_POSITIVE_RATE: f64 = 0.01;
+}
+
 impl Default for PatternsTuning {
     fn default() -> Self {
         Self {
-            max_seen_keys: 1000,
-            max_tail_size_bytes: 2048,
-            bloom_false_positive_rate: 0.01,
+            max_seen_keys: Self::DEFAULT_MAX_SEEN_KEYS,
+            max_tail_size_bytes: Self::DEFAULT_MAX_TAIL_SIZE_BYTES,
+            bloom_false_positive_rate: Self::DEFAULT_BLOOM_FALSE_POSITIVE_RATE,
         }
     }
 }
@@ -445,40 +497,58 @@ pub struct CassQueryConfig {
 }
 
 impl CassQueryConfig {
+    // Session-start handler defaults (workflows/handlers.rs lines 1015-1020)
+    pub const SESSION_START_HINT_LIMIT: usize = 3;
+    pub const SESSION_START_TIMEOUT_SECS: u64 = 8;
+    pub const SESSION_START_LOOKBACK_DAYS: u32 = 30;
+    pub const SESSION_START_QUERY_MAX_CHARS: usize = 180;
+    pub const SESSION_START_HINT_MAX_CHARS: usize = 160;
+
+    // On-error handler defaults (workflows/handlers.rs lines 1572-1576)
+    // Note: timeout is 6s (not 8s) — intentionally faster for error paths.
+    pub const ON_ERROR_HINT_LIMIT: usize = 3;
+    pub const ON_ERROR_TIMEOUT_SECS: u64 = 6;
+    pub const ON_ERROR_LOOKBACK_DAYS: u32 = 30;
+    pub const ON_ERROR_QUERY_MAX_CHARS: usize = 200;
+    pub const ON_ERROR_HINT_MAX_CHARS: usize = 180;
+
+    // Auth handler defaults (workflows/handlers.rs lines 2301-2305)
+    pub const AUTH_HINT_LIMIT: usize = 3;
+    pub const AUTH_TIMEOUT_SECS: u64 = 8;
+    pub const AUTH_LOOKBACK_DAYS: u32 = 30;
+    pub const AUTH_QUERY_MAX_CHARS: usize = 160;
+    pub const AUTH_HINT_MAX_CHARS: usize = 140;
+
     /// Defaults for the session-start handler.
-    /// Source: workflows/handlers.rs lines 1015-1020
     pub fn session_start() -> Self {
         Self {
-            hint_limit: 3,
-            timeout_secs: 8,
-            lookback_days: 30,
-            query_max_chars: 180,
-            hint_max_chars: 160,
+            hint_limit: Self::SESSION_START_HINT_LIMIT,
+            timeout_secs: Self::SESSION_START_TIMEOUT_SECS,
+            lookback_days: Self::SESSION_START_LOOKBACK_DAYS,
+            query_max_chars: Self::SESSION_START_QUERY_MAX_CHARS,
+            hint_max_chars: Self::SESSION_START_HINT_MAX_CHARS,
         }
     }
 
     /// Defaults for the on-error handler.
-    /// Source: workflows/handlers.rs lines 1572-1576
-    /// Note: timeout is 6s (not 8s) — intentionally faster for error paths.
     pub fn on_error() -> Self {
         Self {
-            hint_limit: 3,
-            timeout_secs: 6,
-            lookback_days: 30,
-            query_max_chars: 200,
-            hint_max_chars: 180,
+            hint_limit: Self::ON_ERROR_HINT_LIMIT,
+            timeout_secs: Self::ON_ERROR_TIMEOUT_SECS,
+            lookback_days: Self::ON_ERROR_LOOKBACK_DAYS,
+            query_max_chars: Self::ON_ERROR_QUERY_MAX_CHARS,
+            hint_max_chars: Self::ON_ERROR_HINT_MAX_CHARS,
         }
     }
 
     /// Defaults for the auth handler.
-    /// Source: workflows/handlers.rs lines 2301-2305
     pub fn auth() -> Self {
         Self {
-            hint_limit: 3,
-            timeout_secs: 8,
-            lookback_days: 30,
-            query_max_chars: 160,
-            hint_max_chars: 140,
+            hint_limit: Self::AUTH_HINT_LIMIT,
+            timeout_secs: Self::AUTH_TIMEOUT_SECS,
+            lookback_days: Self::AUTH_LOOKBACK_DAYS,
+            query_max_chars: Self::AUTH_QUERY_MAX_CHARS,
+            hint_max_chars: Self::AUTH_HINT_MAX_CHARS,
         }
     }
 }
@@ -535,6 +605,19 @@ pub struct WorkflowsTuning {
     pub session_start_context_cooldown_ms: u64,
 }
 
+impl WorkflowsTuning {
+    /// Default session-start context cooldown (ms).
+    pub const DEFAULT_SESSION_START_CONTEXT_COOLDOWN_MS: u64 = 600_000;
+    /// Default Claude Code limits cooldown (ms).
+    pub const DEFAULT_CLAUDE_CODE_LIMITS_COOLDOWN_MS: u64 = 600_000;
+    /// Default swarm learning index timeout (seconds).
+    pub const DEFAULT_SWARM_LEARNING_INDEX_TIMEOUT_SECS: u64 = 30;
+    /// Default on-error cooldown (ms).
+    pub const DEFAULT_ON_ERROR_COOLDOWN_MS: u64 = 3 * 60 * 1000;
+    /// Default swarm learning index cooldown (ms).
+    pub const DEFAULT_SWARM_LEARNING_INDEX_COOLDOWN_MS: u64 = 15 * 60 * 1000;
+}
+
 impl Default for WorkflowsTuning {
     fn default() -> Self {
         Self {
@@ -546,9 +629,9 @@ impl Default for WorkflowsTuning {
             cass_session_start: CassQueryConfig::session_start(),
             cass_on_error: CassQueryConfig::on_error(),
             cass_auth: CassQueryConfig::auth(),
-            swarm_learning_index_timeout_secs: 30,
-            claude_code_limits_cooldown_ms: 600_000,
-            session_start_context_cooldown_ms: 600_000,
+            swarm_learning_index_timeout_secs: Self::DEFAULT_SWARM_LEARNING_INDEX_TIMEOUT_SECS,
+            claude_code_limits_cooldown_ms: Self::DEFAULT_CLAUDE_CODE_LIMITS_COOLDOWN_MS,
+            session_start_context_cooldown_ms: Self::DEFAULT_SESSION_START_CONTEXT_COOLDOWN_MS,
         }
     }
 }
@@ -612,11 +695,18 @@ pub struct WireProtocolTuning {
     pub max_sender_id_len: usize,
 }
 
+impl WireProtocolTuning {
+    /// Canonical default wire protocol message size limit (1 MiB).
+    pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+    /// Canonical default max sender ID length (128 bytes).
+    pub const DEFAULT_MAX_SENDER_ID_LEN: usize = 128;
+}
+
 impl Default for WireProtocolTuning {
     fn default() -> Self {
         Self {
-            max_message_size: 1024 * 1024,
-            max_sender_id_len: 128,
+            max_message_size: Self::DEFAULT_MAX_MESSAGE_SIZE,
+            max_sender_id_len: Self::DEFAULT_MAX_SENDER_ID_LEN,
         }
     }
 }
