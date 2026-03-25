@@ -1300,14 +1300,18 @@ impl WeztermClient {
         };
 
         if !output.status.success() {
-            const MAX_ERROR_BYTES: usize = 8 * 1024;
-            let stderr_bytes = if output.stderr.len() > MAX_ERROR_BYTES {
-                &output.stderr[..MAX_ERROR_BYTES]
+            const MAX_ERROR_CHARS: usize = 8 * 1024;
+            let stderr_full = String::from_utf8_lossy(&output.stderr);
+            let stderr_str = if stderr_full.len() > MAX_ERROR_CHARS {
+                // Truncate at a char boundary to avoid splitting multi-byte characters
+                let mut end = MAX_ERROR_CHARS;
+                while !stderr_full.is_char_boundary(end) && end > 0 {
+                    end -= 1;
+                }
+                stderr_full[..end].to_string()
             } else {
-                &output.stderr
+                stderr_full.into_owned()
             };
-            let stderr = String::from_utf8_lossy(stderr_bytes);
-            let stderr_str = stderr.to_string();
 
             // Categorize common error patterns
             if stderr_str.contains("Connection refused")
