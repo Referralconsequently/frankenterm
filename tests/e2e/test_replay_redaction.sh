@@ -15,7 +15,6 @@ remote_tmpdir="${FT_REPLAY_CAPTURE_REMOTE_TMPDIR:-/home/ubuntu}"
 cargo_target_dir="${FT_REPLAY_CAPTURE_TARGET_DIR:-$remote_tmpdir/target-replay-redaction-e2e-${run_id}}"
 
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
-RCH_PROBE_LOG="${LOG_DIR}/${run_id}.probe.log"
 RCH_DAEMON_STATUS_LOG="${LOG_DIR}/${run_id}.rch_daemon_status.json"
 RCH_DAEMON_START_LOG="${LOG_DIR}/${run_id}.rch_daemon_start.json"
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
@@ -43,10 +42,6 @@ resolve_timeout_bin() {
     else
         TIMEOUT_BIN=""
     fi
-}
-
-probe_has_reachable_workers() {
-    grep -Eiq '"status"[[:space:]]*:[[:space:]]*"(ok|healthy|reachable)"' "$1"
 }
 
 check_rch_fallback() {
@@ -141,15 +136,7 @@ ensure_rch_ready() {
     if [[ -z "${TIMEOUT_BIN}" ]]; then
         fatal "timeout or gtimeout is required to fail closed on stalled remote execution."
     fi
-
-    set +e
-    run_rch --json workers probe --all >"${RCH_PROBE_LOG}" 2>&1
-    local probe_rc=$?
-    set -e
-    if [[ ${probe_rc} -ne 0 ]] || ! probe_has_reachable_workers "${RCH_PROBE_LOG}"; then
-        fatal "rch workers are unavailable; refusing local cargo execution. See ${RCH_PROBE_LOG}"
-    fi
-
+    probe_rch_workers
     ensure_rch_daemon_running
 }
 

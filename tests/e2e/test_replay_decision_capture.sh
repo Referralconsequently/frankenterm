@@ -147,26 +147,6 @@ check_rch_fallback() {
     fi
 }
 
-run_rch_cargo_logged() {
-    local output_file="$1"
-    shift
-    set +e
-    (
-        cd "${ROOT_DIR}"
-        env TMPDIR=/tmp "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 "${RCH_STEP_TIMEOUT_SECS}" \
-            rch exec -- "$@"
-    ) >"${output_file}" 2>&1
-    local rc=$?
-    set -e
-    check_rch_fallback "${output_file}"
-    if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
-        local queue_log
-        queue_log="$(capture_rch_queue_timeout_log "${output_file}")"
-        fatal "RCH-REMOTE-STALL: rch remote command timed out after ${RCH_STEP_TIMEOUT_SECS}s. See ${queue_log}"
-    fi
-    return "${rc}"
-}
-
 ensure_rch_ready() {
     resolve_timeout_bin
     if [[ -z "${TIMEOUT_BIN}" ]]; then
