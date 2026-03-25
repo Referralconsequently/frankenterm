@@ -13,9 +13,14 @@ use crate::patterns::{AgentType, Severity};
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Maximum allowed message payload size in bytes (1 MiB).
-pub const MAX_MESSAGE_SIZE: usize = 1_048_576;
+/// Overridable via `[tuning.wire_protocol] max_message_size` in ft.toml.
+/// Both sender and receiver must agree on this value in distributed mode.
+pub const MAX_MESSAGE_SIZE: usize =
+    crate::tuning_config::WireProtocolTuning::DEFAULT_MAX_MESSAGE_SIZE;
 /// Maximum sender identity length in bytes.
-pub const MAX_SENDER_ID_LEN: usize = 128;
+/// Overridable via `[tuning.wire_protocol] max_sender_id_len` in ft.toml.
+pub const MAX_SENDER_ID_LEN: usize =
+    crate::tuning_config::WireProtocolTuning::DEFAULT_MAX_SENDER_ID_LEN;
 /// Default idle window before a sender is considered stale.
 pub const DEFAULT_AGENT_STALE_AFTER_MS: i64 = 5 * 60 * 1000;
 
@@ -646,6 +651,16 @@ fn validate_envelope_protocol(envelope: &WireEnvelope) -> Result<(), WireProtoco
                     "PaneDelta content_len ({}) does not match content length ({})",
                     delta.content_len,
                     delta.content.len()
+                ),
+            )));
+        }
+    }
+    if let WirePayload::Gap(gap) = &envelope.payload {
+        if gap.seq_after <= gap.seq_before {
+            return Err(WireProtocolError::InvalidJson(serde_json::Error::custom(
+                format!(
+                    "GapNotice seq_after ({}) must be greater than seq_before ({})",
+                    gap.seq_after, gap.seq_before
                 ),
             )));
         }

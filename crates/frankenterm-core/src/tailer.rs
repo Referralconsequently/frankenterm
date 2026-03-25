@@ -628,6 +628,7 @@ where
             self.tailers.remove(&pane_id);
             self.capturing_panes.remove(&pane_id);
             self.scheduler.remove_pane(pane_id);
+            self.pane_priorities.remove(&pane_id);
             self.supervisor_metrics.tailers_stopped += 1;
             debug!(pane_id, "Removed tailer for departed pane");
         }
