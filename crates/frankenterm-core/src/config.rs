@@ -157,6 +157,29 @@ impl Default for SearchConfig {
     }
 }
 
+impl SearchConfig {
+    /// Validate search configuration bounds.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.quality_weight) {
+            return Err(format!(
+                "search.quality_weight must be in [0.0, 1.0], got {}",
+                self.quality_weight
+            ));
+        }
+        if self.rrf_k == 0 {
+            return Err("search.rrf_k must be >= 1".to_string());
+        }
+        if self.enabled && self.quality_timeout_ms == 0 {
+            return Err(
+                "search.quality_timeout_ms must be >= 1 when search is enabled".to_string(),
+            );
+        }
+        self.indexing.validate()?;
+        self.daemon.validate()?;
+        Ok(())
+    }
+}
+
 /// Configuration for search indexing lifecycle and batching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -188,6 +211,22 @@ impl Default for SearchIndexingConfig {
     }
 }
 
+impl SearchIndexingConfig {
+    /// Validate indexing configuration bounds.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.flush_interval_secs == 0 {
+            return Err("search.indexing.flush_interval_secs must be >= 1".to_string());
+        }
+        if self.flush_docs_threshold == 0 {
+            return Err("search.indexing.flush_docs_threshold must be >= 1".to_string());
+        }
+        if self.max_docs_per_second == 0 {
+            return Err("search.indexing.max_docs_per_second must be >= 1".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// Configuration for the search daemon background service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -213,6 +252,24 @@ impl Default for SearchDaemonConfig {
             worker_scan_interval_secs: 30,
             worker_batch_size: 64,
         }
+    }
+}
+
+impl SearchDaemonConfig {
+    /// Validate daemon configuration bounds.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled && self.worker_scan_interval_secs == 0 {
+            return Err(
+                "search.daemon.worker_scan_interval_secs must be >= 1 when daemon is enabled"
+                    .to_string(),
+            );
+        }
+        if self.enabled && self.worker_batch_size == 0 {
+            return Err(
+                "search.daemon.worker_batch_size must be >= 1 when daemon is enabled".to_string(),
+            );
+        }
+        Ok(())
     }
 }
 
