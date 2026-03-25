@@ -155,6 +155,9 @@ fn arb_workflow_start_result() -> impl Strategy<Value = WorkflowStartResult> {
                 held_by_execution,
             }
         ),
+        (0usize..200, 1usize..100).prop_map(|(active, limit)| {
+            WorkflowStartResult::ConcurrencyLimitReached { active, limit }
+        }),
         arb_short_text().prop_map(|error| WorkflowStartResult::Error { error }),
     ]
 }
@@ -425,6 +428,9 @@ proptest! {
                 prop_assert_eq!(ty, "no_matching_workflow");
             }
             WorkflowStartResult::PaneLocked { .. } => prop_assert_eq!(ty, "pane_locked"),
+            WorkflowStartResult::ConcurrencyLimitReached { .. } => {
+                prop_assert_eq!(ty, "concurrency_limit_reached");
+            }
             WorkflowStartResult::Error { .. } => prop_assert_eq!(ty, "error"),
         }
     }
