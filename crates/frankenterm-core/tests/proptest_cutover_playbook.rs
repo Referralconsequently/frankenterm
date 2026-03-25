@@ -248,6 +248,15 @@ proptest! {
             pb.pass_gate(&format!("G-{i}"), "evidence");
         }
 
+        // Preflight stage requires MigrationLead approval
+        pb.record_approval(ApprovalRecord {
+            approver: "test-lead".into(),
+            role: ApproverRole::MigrationLead,
+            stage: CutoverStage::Preflight,
+            approved_at_ms: 999,
+            notes: String::new(),
+        });
+
         let result = pb.try_advance(1000, "operator");
         prop_assert!(result.advanced, "should advance when all blocking gates pass");
         prop_assert_eq!(result.from, CutoverStage::Preflight);
