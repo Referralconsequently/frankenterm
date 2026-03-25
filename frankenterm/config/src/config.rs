@@ -21,16 +21,16 @@ use crate::tls::{TlsDomainClient, TlsDomainServer};
 use crate::units::Dimension;
 use crate::unix::UnixDomain;
 use crate::wsl::WslDomain;
+use crate::{
+    CONFIG_DIRS, CellWidth, GpuInfo, IntegratedTitleButtonColor, KeyMapPreference, LoadedConfig,
+    MouseEventTriggerMods, RgbaColor, SerialDomain, SystemBackdrop, WebGpuPowerPreference,
+    default_one_point_oh, default_one_point_oh_f64, default_true,
+    default_win32_acrylic_accent_color,
+};
 #[cfg(feature = "lua")]
 use crate::{
-    default_config_with_overrides_applied, CONFIG_FILE_OVERRIDE, CONFIG_OVERRIDES, CONFIG_SKIP,
-    HOME_DIR,
-};
-use crate::{
-    default_one_point_oh, default_one_point_oh_f64, default_true,
-    default_win32_acrylic_accent_color, CellWidth, GpuInfo, IntegratedTitleButtonColor,
-    KeyMapPreference, LoadedConfig, MouseEventTriggerMods, RgbaColor, SerialDomain, SystemBackdrop,
-    WebGpuPowerPreference, CONFIG_DIRS,
+    CONFIG_FILE_OVERRIDE, CONFIG_OVERRIDES, CONFIG_SKIP, HOME_DIR,
+    default_config_with_overrides_applied,
 };
 use anyhow::Context;
 use frankenterm_bidi::ParagraphDirectionHint;
@@ -366,7 +366,6 @@ pub struct Config {
     // TerminalConfiguration trait (kitty_image_budget_bytes()). The default is
     // 320 MiB, set in KittyImageState::default(). Full config-file wiring for
     // this vendored parameter is tracked by bead ft-ou001.
-
     /// Whether the terminal should respond to requests to read the
     /// title string.
     /// Disabled by default for security concerns with shells that might
@@ -871,6 +870,15 @@ pub struct Config {
     #[dynamic(default = "default_word_boundary")]
     pub selection_word_boundary: String,
 
+    /// Maximum interval in milliseconds between successive clicks that should
+    /// count as a double-click or triple-click selection. Increase this for
+    /// accessibility if the default cadence is too fast.
+    #[dynamic(
+        default = "default_click_interval_ms",
+        validate = "validate_click_interval_ms"
+    )]
+    pub click_interval_ms: u64,
+
     #[dynamic(default = "default_enq_answerback")]
     pub enq_answerback: String,
 
@@ -1084,7 +1092,7 @@ impl Config {
     pub fn update_ulimit(&self) -> anyhow::Result<()> {
         #[cfg(unix)]
         {
-            use nix::sys::resource::{getrlimit, rlim_t, setrlimit, Resource};
+            use nix::sys::resource::{Resource, getrlimit, rlim_t, setrlimit};
             use std::convert::TryInto;
 
             let (no_file_soft, no_file_hard) = getrlimit(Resource::RLIMIT_NOFILE)?;
@@ -1113,7 +1121,7 @@ impl Config {
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            use nix::sys::resource::{getrlimit, rlim_t, setrlimit, Resource};
+            use nix::sys::resource::{Resource, getrlimit, rlim_t, setrlimit};
             use std::convert::TryInto;
 
             let (nproc_soft, nproc_hard) = getrlimit(Resource::RLIMIT_NPROC)?;
@@ -1984,6 +1992,14 @@ fn validate_percent_0_100(value: &u8) -> Result<(), String> {
     }
 }
 
+fn validate_click_interval_ms(value: &u64) -> Result<(), String> {
+    if *value == 0 {
+        Err("click_interval_ms must be >= 1".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 fn default_initial_rows() -> u16 {
     24
 }
@@ -2145,6 +2161,10 @@ fn default_alphabet() -> String {
 
 fn default_word_boundary() -> String {
     " \t\n{[}]()\"'`".to_string()
+}
+
+fn default_click_interval_ms() -> u64 {
+    500
 }
 
 fn default_enq_answerback() -> String {
@@ -2691,6 +2711,12 @@ mod tests {
         assert!(validate_line_height(&1.5).is_ok());
     }
 
+    #[test]
+    fn validate_click_interval_ms_zero_rejected() {
+        assert!(validate_click_interval_ms(&0).is_err());
+        assert!(validate_click_interval_ms(&1).is_ok());
+    }
+
     // ── default_hyperlink_rules ────────────────────────────────
 
     #[test]
@@ -2739,6 +2765,11 @@ mod tests {
     #[test]
     fn default_unicode_version_is_nine() {
         assert_eq!(default_unicode_version(), 9);
+    }
+
+    #[test]
+    fn default_click_interval_ms_is_five_hundred() {
+        assert_eq!(default_click_interval_ms(), 500);
     }
 
     #[test]
@@ -2923,6 +2954,22 @@ mod tests {
         let size = config.initial_size(96, None);
         assert_eq!(size.pixel_width, 8 * config.initial_cols as usize);
         assert_eq!(size.pixel_height, 16 * config.initial_rows as usize);
+    }
+
+    #[test]
+    fn config_default_click_interval_ms_is_five_hundred() {
+        let config = Config::default();
+        assert_eq!(config.click_interval_ms, 500);
+    }
+
+    #[test]
+    fn config_from_dynamic_accepts_click_interval_ms_override() {
+        let mut obj = std::collections::BTreeMap::new();
+        obj.insert(Value::String("click_interval_ms".into()), Value::U64(1_500));
+        let config =
+            Config::from_dynamic(&Value::Object(obj.into()), FromDynamicOptions::default())
+                .expect("click_interval_ms override should parse");
+        assert_eq!(config.click_interval_ms, 1_500);
     }
 
     // ── compute_*_dir helpers ──────────────────────────────────

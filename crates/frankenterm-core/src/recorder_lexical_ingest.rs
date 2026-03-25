@@ -51,6 +51,20 @@ pub struct LexicalIndexerConfig {
     pub writer_memory_bytes: usize,
 }
 
+impl LexicalIndexerConfig {
+    /// Build indexer config from the live tuning config.
+    #[must_use]
+    pub fn from_tuning(
+        index_dir: impl Into<PathBuf>,
+        tuning: &crate::tuning_config::TuningConfig,
+    ) -> Self {
+        Self {
+            index_dir: index_dir.into(),
+            writer_memory_bytes: tuning.search.tantivy_writer_memory_bytes,
+        }
+    }
+}
+
 impl Default for LexicalIndexerConfig {
     fn default() -> Self {
         Self {
@@ -775,6 +789,16 @@ mod tests {
         let cfg = LexicalIndexerConfig::default();
         assert_eq!(cfg.writer_memory_bytes, 50_000_000);
         assert!(cfg.index_dir.to_str().unwrap().contains("tantivy-lexical"));
+    }
+
+    #[test]
+    fn config_from_tuning_uses_writer_memory_override() {
+        let mut tuning = crate::tuning_config::TuningConfig::default();
+        tuning.search.tantivy_writer_memory_bytes = 125_000_000;
+
+        let cfg = LexicalIndexerConfig::from_tuning("/tmp/ft-lexical", &tuning);
+        assert_eq!(cfg.index_dir, PathBuf::from("/tmp/ft-lexical"));
+        assert_eq!(cfg.writer_memory_bytes, 125_000_000);
     }
 
     // =========================================================================

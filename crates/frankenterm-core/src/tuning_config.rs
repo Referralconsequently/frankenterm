@@ -224,7 +224,7 @@ impl Default for BackpressureTuning {
 // =============================================================================
 
 /// Session snapshot maintenance timings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SnapshotTuning {
     /// Interval (seconds) for snapshot trigger bridge maintenance checks.
@@ -264,15 +264,15 @@ impl Default for SnapshotTuning {
 // =============================================================================
 
 /// Ingest pipeline parameters.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct IngestTuning {
     /// Max bytes per persisted output segment. Controls SQLite write granularity.
-    /// Source: ingest.rs DEFAULT_MAX_PERSIST_SEGMENT_BYTES = 64KB
+    /// Source: ingest.rs persistence segment size guard = 64KB
     pub max_persist_segment_bytes: usize,
 
     /// Max single record payload for tantivy ingestion (bytes).
-    /// Source: tantivy_ingest.rs MAX_RECORD_PAYLOAD = 64MB
+    /// Source: tantivy_ingest.rs append-log reader payload guard = 64MB
     pub max_record_payload_bytes: usize,
 }
 
@@ -340,7 +340,7 @@ impl Default for PatternsTuning {
 // =============================================================================
 
 /// Policy engine and rate limiting parameters.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct PolicyTuning {
     /// Sliding window (seconds) for send_text rate limiting.
@@ -384,7 +384,7 @@ impl Default for PolicyTuning {
 // =============================================================================
 
 /// Audit trail retention and limits.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AuditTuning {
     /// Days to retain audit log entries.
@@ -433,7 +433,7 @@ impl Default for AuditTuning {
 // =============================================================================
 
 /// Web API server parameters.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct WebTuning {
     /// Bind address for the web server.
@@ -516,7 +516,7 @@ impl Default for WebTuning {
 /// Three handlers use this pattern with slightly different defaults:
 /// session_start, on_error, and auth. This struct unifies the duplicated
 /// constant blocks from workflows/handlers.rs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct CassQueryConfig {
     /// Max hints to include in context injection.
@@ -595,7 +595,7 @@ impl Default for CassQueryConfig {
 }
 
 /// Workflow execution limits and CASS handler configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct WorkflowsTuning {
     /// Max steps per workflow descriptor.
@@ -682,7 +682,7 @@ impl Default for WorkflowsTuning {
 // =============================================================================
 
 /// Search and query parameters.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SearchTuning {
     /// Default result limit for search queries.
@@ -736,7 +736,7 @@ impl Default for SearchTuning {
 // =============================================================================
 
 /// Wire protocol (distributed mode) limits.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct WireProtocolTuning {
     /// Max message size for the distributed wire protocol (bytes).
@@ -770,7 +770,7 @@ impl Default for WireProtocolTuning {
 // =============================================================================
 
 /// IPC (local Unix socket RPC) parameters.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct IpcTuning {
     /// Max IPC message size (bytes).
@@ -804,7 +804,7 @@ impl Default for IpcTuning {
 // =============================================================================
 
 /// WezTerm backend adapter timeouts.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct WeztermTuning {
     /// CLI command timeout (seconds).

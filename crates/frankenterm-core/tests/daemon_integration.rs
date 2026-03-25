@@ -16,10 +16,16 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use frankenterm_core::ingest::{CapturedSegment, CapturedSegmentKind, persist_captured_segment};
+use frankenterm_core::ingest::{
+    CapturedSegment, CapturedSegmentKind, PersistedCapture,
+    persist_captured_segment as persist_captured_segment_inner,
+};
 use frankenterm_core::patterns::{DetectionContext, PatternEngine};
 use frankenterm_core::storage::{PaneRecord, StorageHandle, StoredEvent};
 use tempfile::TempDir;
+
+const TEST_MAX_PERSIST_SEGMENT_BYTES: usize =
+    frankenterm_core::tuning_config::IngestTuning::DEFAULT_MAX_PERSIST_SEGMENT_BYTES;
 
 fn run_async_test<F>(future: F)
 where
@@ -31,6 +37,13 @@ where
         .build()
         .expect("failed to build test runtime");
     runtime.block_on(future);
+}
+
+async fn persist_captured_segment(
+    storage: &StorageHandle,
+    segment: &CapturedSegment,
+) -> frankenterm_core::Result<PersistedCapture> {
+    persist_captured_segment_inner(storage, segment, TEST_MAX_PERSIST_SEGMENT_BYTES).await
 }
 
 /// Create a temp database path.

@@ -2866,13 +2866,10 @@ mod tests {
             let gap_segment = cursor
                 .capture_snapshot("a\nc\n", 1024, None)
                 .expect("gap capture");
-            let persisted = persist_captured_segment(
-                &handle,
-                &gap_segment,
-                TEST_MAX_PERSIST_SEGMENT_BYTES,
-            )
-                .await
-                .unwrap();
+            let persisted =
+                persist_captured_segment(&handle, &gap_segment, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                    .await
+                    .unwrap();
 
             let gap = persisted.gap.expect("gap recorded");
             let expected_reason = match &gap_segment.kind {
@@ -2922,9 +2919,10 @@ mod tests {
             assert_eq!(seg2.seq, 100); // Cursor produced seq=100
 
             // Persist should NOT error, instead record a gap
-            let persisted = persist_captured_segment(&handle, &seg2, TEST_MAX_PERSIST_SEGMENT_BYTES)
-                .await
-                .unwrap();
+            let persisted =
+                persist_captured_segment(&handle, &seg2, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                    .await
+                    .unwrap();
 
             // Storage used its own seq (2), not the cursor's (100)
             assert_eq!(persisted.segment.seq, 2);
@@ -2977,9 +2975,10 @@ mod tests {
                 .expect("second capture");
             assert_eq!(seg1.seq, 999);
 
-            let persisted = persist_captured_segment(&handle, &seg1, TEST_MAX_PERSIST_SEGMENT_BYTES)
-                .await
-                .unwrap();
+            let persisted =
+                persist_captured_segment(&handle, &seg1, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                    .await
+                    .unwrap();
             assert_eq!(persisted.segment.seq, 1); // Storage used seq=1
 
             // Resync cursor to storage

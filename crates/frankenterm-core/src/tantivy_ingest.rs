@@ -299,6 +299,8 @@ pub struct AppendLogReader {
     byte_offset: u64,
     /// Next ordinal to yield.
     next_ordinal: u64,
+    /// Maximum allowed record payload size before the log is treated as corrupt.
+    max_record_payload_bytes: u64,
 }
 
 /// A single record read from the append log.
@@ -353,12 +355,24 @@ impl From<std::io::Error> for LogReadError {
 impl AppendLogReader {
     /// Open a reader positioned at the start of the file.
     pub fn open(data_path: &Path) -> Result<Self, LogReadError> {
+        Self::open_with_max_record_payload(
+            data_path,
+            crate::tuning_config::IngestTuning::DEFAULT_MAX_RECORD_PAYLOAD_BYTES as u64,
+        )
+    }
+
+    /// Open a reader positioned at the start of the file with a custom max payload.
+    pub fn open_with_max_record_payload(
+        data_path: &Path,
+        max_record_payload_bytes: u64,
+    ) -> Result<Self, LogReadError> {
         let mut file = File::open(data_path)?;
         file.seek(SeekFrom::Start(0))?;
         Ok(Self {
             file,
             byte_offset: 0,
             next_ordinal: 0,
+            max_record_payload_bytes,
         })
     }
 
@@ -367,7 +381,20 @@ impl AppendLogReader {
     /// This scans from the beginning, skipping records until the target ordinal
     /// is reached. Returns the reader positioned to yield `start_ordinal` next.
     pub fn open_at_ordinal(data_path: &Path, start_ordinal: u64) -> Result<Self, LogReadError> {
-        let mut reader = Self::open(data_path)?;
+        Self::open_at_ordinal_with_max_record_payload(
+            data_path,
+            start_ordinal,
+            crate::tuning_config::IngestTuning::DEFAULT_MAX_RECORD_PAYLOAD_BYTES as u64,
+        )
+    }
+
+    /// Open a reader at `start_ordinal` with a custom max payload.
+    pub fn open_at_ordinal_with_max_record_payload(
+        data_path: &Path,
+        start_ordinal: u64,
+        max_record_payload_bytes: u64,
+    ) -> Result<Self, LogReadError> {
+        let mut reader = Self::open_with_max_record_payload(data_path, max_record_payload_bytes)?;
         reader.skip_to_ordinal(start_ordinal)?;
         Ok(reader)
     }
@@ -382,12 +409,28 @@ impl AppendLogReader {
         byte_offset: u64,
         ordinal: u64,
     ) -> Result<Self, LogReadError> {
+        Self::open_at_offset_with_max_record_payload(
+            data_path,
+            byte_offset,
+            ordinal,
+            crate::tuning_config::IngestTuning::DEFAULT_MAX_RECORD_PAYLOAD_BYTES as u64,
+        )
+    }
+
+    /// Open a reader at a trusted `(byte_offset, ordinal)` pair with a custom max payload.
+    pub fn open_at_offset_with_max_record_payload(
+        data_path: &Path,
+        byte_offset: u64,
+        ordinal: u64,
+        max_record_payload_bytes: u64,
+    ) -> Result<Self, LogReadError> {
         let mut file = File::open(data_path)?;
         file.seek(SeekFrom::Start(byte_offset))?;
         Ok(Self {
             file,
             byte_offset,
             next_ordinal: ordinal,
+            max_record_payload_bytes,
         })
     }
 
@@ -446,15 +489,13 @@ impl AppendLogReader {
             return Ok(None);
         }
 
-        // Guard against corrupt files with impossibly large payload lengths
-        // Canonical value in TuningConfig::IngestTuning.
-        const MAX_RECORD_PAYLOAD: u64 =
-            crate::tuning_config::IngestTuning::DEFAULT_MAX_RECORD_PAYLOAD_BYTES as u64;
-        if payload_len > MAX_RECORD_PAYLOAD {
+        // Guard against corrupt files with impossibly large payload lengths.
+        if payload_len > self.max_record_payload_bytes {
             return Err(LogReadError::Corrupt {
                 byte_offset: record_start,
                 reason: format!(
-                    "record payload too large: {payload_len} bytes (max {MAX_RECORD_PAYLOAD})"
+                    "record payload too large: {payload_len} bytes (max {})",
+                    self.max_record_payload_bytes
                 ),
             });
         }
@@ -513,19 +554,46 @@ impl AppendLogReader {
 /// record iteration.
 pub struct AppendLogEventSource {
     data_path: PathBuf,
+    max_record_payload_bytes: u64,
 }
 
 impl AppendLogEventSource {
     /// Create from an existing [`AppendLogRecorderStorage`].
     pub fn from_storage(storage: &crate::recorder_storage::AppendLogRecorderStorage) -> Self {
+        Self::from_storage_with_max_record_payload(
+            storage,
+            crate::tuning_config::IngestTuning::DEFAULT_MAX_RECORD_PAYLOAD_BYTES as u64,
+        )
+    }
+
+    /// Create from an existing storage handle with a custom max payload.
+    pub fn from_storage_with_max_record_payload(
+        storage: &crate::recorder_storage::AppendLogRecorderStorage,
+        max_record_payload_bytes: u64,
+    ) -> Self {
         Self {
             data_path: storage.data_path().to_path_buf(),
+            max_record_payload_bytes,
         }
     }
 
     /// Create from a raw data path.
     pub fn from_path(data_path: PathBuf) -> Self {
-        Self { data_path }
+        Self::from_path_with_max_record_payload(
+            data_path,
+            crate::tuning_config::IngestTuning::DEFAULT_MAX_RECORD_PAYLOAD_BYTES as u64,
+        )
+    }
+
+    /// Create from a raw data path with a custom max payload.
+    pub fn from_path_with_max_record_payload(
+        data_path: PathBuf,
+        max_record_payload_bytes: u64,
+    ) -> Self {
+        Self {
+            data_path,
+            max_record_payload_bytes,
+        }
     }
 }
 
@@ -545,11 +613,19 @@ impl crate::recorder_storage::RecorderEventReader for AppendLogEventSource {
             "opening event cursor"
         );
         let reader = if from.byte_offset == 0 && from.ordinal == 0 {
-            AppendLogReader::open(&self.data_path)
-                .map_err(|e| EventCursorError::Io(e.to_string()))?
+            AppendLogReader::open_with_max_record_payload(
+                &self.data_path,
+                self.max_record_payload_bytes,
+            )
+            .map_err(|e| EventCursorError::Io(e.to_string()))?
         } else {
-            AppendLogReader::open_at_offset(&self.data_path, from.byte_offset, from.ordinal)
-                .map_err(|e| EventCursorError::Io(e.to_string()))?
+            AppendLogReader::open_at_offset_with_max_record_payload(
+                &self.data_path,
+                from.byte_offset,
+                from.ordinal,
+                self.max_record_payload_bytes,
+            )
+            .map_err(|e| EventCursorError::Io(e.to_string()))?
         };
         Ok(Box::new(AppendLogCursor { reader }))
     }
@@ -562,8 +638,12 @@ impl crate::recorder_storage::RecorderEventReader for AppendLogEventSource {
         crate::recorder_storage::EventCursorError,
     > {
         use crate::recorder_storage::EventCursorError;
-        let reader = AppendLogReader::open_at_ordinal(&self.data_path, target_ordinal)
-            .map_err(|e| EventCursorError::Io(e.to_string()))?;
+        let reader = AppendLogReader::open_at_ordinal_with_max_record_payload(
+            &self.data_path,
+            target_ordinal,
+            self.max_record_payload_bytes,
+        )
+        .map_err(|e| EventCursorError::Io(e.to_string()))?;
         Ok(Box::new(AppendLogCursor { reader }))
     }
 
@@ -581,8 +661,11 @@ impl crate::recorder_storage::RecorderEventReader for AppendLogEventSource {
                 ordinal: 0,
             });
         }
-        let mut reader = AppendLogReader::open(&self.data_path)
-            .map_err(|e| EventCursorError::Io(e.to_string()))?;
+        let mut reader = AppendLogReader::open_with_max_record_payload(
+            &self.data_path,
+            self.max_record_payload_bytes,
+        )
+        .map_err(|e| EventCursorError::Io(e.to_string()))?;
         loop {
             match reader.next_record() {
                 Ok(Some(_)) => {}
@@ -3066,6 +3149,35 @@ mod tests {
         let mut reader = AppendLogReader::open(&path).unwrap();
         let record = reader.next_record().unwrap();
         assert!(record.is_none());
+    }
+
+    #[test]
+    fn reader_respects_configured_max_record_payload() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("oversized_payload.log");
+
+        let event = sample_event("e1", 1, 0, "payload larger than limit");
+        let payload = serde_json::to_vec(&event).unwrap();
+        let mut data = Vec::new();
+        data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        data.extend_from_slice(&payload);
+        std::fs::write(&path, &data).unwrap();
+
+        let mut reader =
+            AppendLogReader::open_with_max_record_payload(&path, (payload.len() - 1) as u64)
+                .unwrap();
+        let err = reader.next_record().unwrap_err();
+
+        match err {
+            LogReadError::Corrupt {
+                byte_offset,
+                reason,
+            } => {
+                assert_eq!(byte_offset, 0);
+                assert!(reason.contains("record payload too large"));
+            }
+            other => panic!("expected Corrupt error, got {other:?}"),
+        }
     }
 
     #[test]

@@ -52,9 +52,9 @@ pub struct ClickPosition {
 
 /// This is a little helper that keeps track of the "click streak",
 /// which is the number of successive clicks of the same mouse button
-/// within the `CLICK_INTERVAL`.  The streak is reset to 1 each time
-/// the mouse button differs from the last click, or when the elapsed
-/// time exceeds `CLICK_INTERVAL`, or when the cursor position
+/// within a caller-provided multi-click interval. The streak is reset
+/// to 1 each time the mouse button differs from the last click, or when
+/// the elapsed time exceeds that interval, or when the cursor position
 /// changes to a different character cell.
 #[derive(Debug, Clone)]
 pub struct LastMouseClick {
@@ -63,9 +63,6 @@ pub struct LastMouseClick {
     time: Instant,
     pub streak: usize,
 }
-
-/// The multi-click interval, measured in milliseconds
-const CLICK_INTERVAL: u64 = 500;
 
 impl LastMouseClick {
     pub fn new(button: MouseButton, position: ClickPosition) -> Self {
@@ -77,12 +74,17 @@ impl LastMouseClick {
         }
     }
 
-    pub fn add(&self, button: MouseButton, position: ClickPosition) -> Self {
+    pub fn add(
+        &self,
+        button: MouseButton,
+        position: ClickPosition,
+        click_interval_ms: u64,
+    ) -> Self {
         let now = Instant::now();
         let streak = if button == self.button
             && position.column == self.position.column
             && position.row == self.position.row
-            && now.duration_since(self.time) <= Duration::from_millis(CLICK_INTERVAL)
+            && now.duration_since(self.time) <= Duration::from_millis(click_interval_ms)
         {
             self.streak + 1
         } else {
@@ -232,30 +234,42 @@ mod tests {
     #[test]
     fn same_button_same_position_increments_streak() {
         let click1 = LastMouseClick::new(MouseButton::Left, pos(5, 3));
-        let click2 = click1.add(MouseButton::Left, pos(5, 3));
+        let click2 = click1.add(MouseButton::Left, pos(5, 3), 500);
         assert_eq!(click2.streak, 2);
-        let click3 = click2.add(MouseButton::Left, pos(5, 3));
+        let click3 = click2.add(MouseButton::Left, pos(5, 3), 500);
         assert_eq!(click3.streak, 3);
     }
 
     #[test]
     fn different_button_resets_streak() {
         let click1 = LastMouseClick::new(MouseButton::Left, pos(5, 3));
-        let click2 = click1.add(MouseButton::Right, pos(5, 3));
+        let click2 = click1.add(MouseButton::Right, pos(5, 3), 500);
         assert_eq!(click2.streak, 1);
     }
 
     #[test]
     fn different_position_resets_streak() {
         let click1 = LastMouseClick::new(MouseButton::Left, pos(5, 3));
-        let click2 = click1.add(MouseButton::Left, pos(6, 3));
+        let click2 = click1.add(MouseButton::Left, pos(6, 3), 500);
         assert_eq!(click2.streak, 1);
     }
 
     #[test]
     fn different_row_resets_streak() {
         let click1 = LastMouseClick::new(MouseButton::Left, pos(5, 3));
-        let click2 = click1.add(MouseButton::Left, pos(5, 4));
+        let click2 = click1.add(MouseButton::Left, pos(5, 4), 500);
+        assert_eq!(click2.streak, 1);
+    }
+
+    #[test]
+    fn elapsed_interval_resets_streak() {
+        let click1 = LastMouseClick {
+            button: MouseButton::Left,
+            position: pos(5, 3),
+            time: Instant::now() - Duration::from_millis(10),
+            streak: 2,
+        };
+        let click2 = click1.add(MouseButton::Left, pos(5, 3), 1);
         assert_eq!(click2.streak, 1);
     }
 

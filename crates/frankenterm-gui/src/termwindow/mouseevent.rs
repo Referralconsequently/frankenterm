@@ -147,10 +147,11 @@ impl super::TermWindow {
                     x_pixel_offset,
                     y_pixel_offset,
                 };
+                let click_interval_ms = self.config.click_interval_ms;
 
                 let click = match self.last_mouse_click.take() {
                     None => LastMouseClick::new(button, click_position),
-                    Some(click) => click.add(button, click_position),
+                    Some(click) => click.add(button, click_position, click_interval_ms),
                 };
                 self.last_mouse_click = Some(click);
                 self.current_mouse_buttons.retain(|p| p != press);

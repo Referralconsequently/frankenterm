@@ -140,6 +140,7 @@ Current default key set from `crates/frankenterm-gui/frankenterm.toml`:
 | `initial_cols` | `120` | window startup columns |
 | `window_decorations` | `"TITLE | RESIZE"` | OS-dependent behavior |
 | `window_close_confirmation` | `"NeverPrompt"` | set stricter confirmation if desired |
+| `click_interval_ms` | `500` | accessibility: raise to `1000`-`2000` for a slower double-click cadence |
 | `[window_padding].left/right/top/bottom` | `4` | pixel padding around terminal viewport |
 | `enable_tab_bar` | `true` | show/hide tab bar |
 | `hide_tab_bar_if_only_one_tab` | `true` | keeps single-tab window clean |
@@ -172,6 +173,10 @@ SSH domain fields (optional per entry):
 - `ssh_backend` (`"LibSsh"` or `"Ssh2"`)
 - `connect_automatically`
 - `default_prog`
+
+### Accessibility Timing
+
+`click_interval_ms` controls how much time FrankenTerm allows between successive clicks when deciding whether a gesture counts as a double-click or triple-click selection. The default is `500`, which matches common desktop defaults, but operators who need a slower cadence can raise it to `1000`-`2000` in `frankenterm.toml`.
 
 ## Migration Guide: WezTerm -> FrankenTerm
 
