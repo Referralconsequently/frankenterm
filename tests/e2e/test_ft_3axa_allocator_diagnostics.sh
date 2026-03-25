@@ -12,6 +12,7 @@ LOG_FILE="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}.jsonl"
 STDOUT_FILE="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}.stdout.log"
 SUMMARY_FILE="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}.summary.json"
 TARGET_DIR="${FT_3AXA_TARGET_DIR:-/tmp/target-rch-ft-3axa}-${RUN_ID}"
+FT_3AXA_CORE_STEP_TIMEOUT_SECS="${FT_3AXA_CORE_STEP_TIMEOUT_SECS:-1800}"
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib_rch_guards.sh"
 rch_init "${LOG_DIR}" "${RUN_ID}" "ft_3axa_allocator_diagnostics"
@@ -74,10 +75,15 @@ require_cmd() {
 }
 
 run_rch_step() {
-    local label="$1"
-    local decision_path="$2"
-    local input_summary="$3"
-    shift 3
+    run_rch_step_with_timeout "${RCH_STEP_TIMEOUT_SECS}" "$@"
+}
+
+run_rch_step_with_timeout() {
+    local timeout_secs="$1"
+    local label="$2"
+    local decision_path="$3"
+    local input_summary="$4"
+    shift 4
 
     local output_file="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}_${label}.log"
     emit_log \
@@ -90,7 +96,7 @@ run_rch_step() {
         "none" \
         "$(basename "${output_file}")"
 
-    if run_rch_cargo_logged "${output_file}" env CARGO_TARGET_DIR="${TARGET_DIR}" "$@"; then
+    if run_rch_cargo_logged_with_timeout "${timeout_secs}" "${output_file}" env CARGO_TARGET_DIR="${TARGET_DIR}" "$@"; then
         cat "${output_file}" >> "${STDOUT_FILE}"
         emit_log \
             "validation" \
@@ -162,25 +168,29 @@ run_rch_step \
     "cargo test -p frankenterm-alloc --test arena_stress stress_interleaved_reserve_release -- --nocapture" \
     cargo test -p frankenterm-alloc --test arena_stress stress_interleaved_reserve_release -- --nocapture
 
-run_rch_step \
+run_rch_step_with_timeout \
+    "${FT_3AXA_CORE_STEP_TIMEOUT_SECS}" \
     "ingest_lifecycle_bridge" \
     "integration.ingest.discovery_tracks_pane_arenas" \
     "cargo test -p frankenterm-core --lib --no-default-features discovery_tick_tracks_pane_arena_lifecycle -- --nocapture" \
     cargo test -p frankenterm-core --lib --no-default-features discovery_tick_tracks_pane_arena_lifecycle -- --nocapture
 
-run_rch_step \
+run_rch_step_with_timeout \
+    "${FT_3AXA_CORE_STEP_TIMEOUT_SECS}" \
     "ipc_observability_surface" \
     "integration.ipc.status_reports_pane_arenas" \
     "cargo test -p frankenterm-core --lib --no-default-features ipc_status_with_registry_reports_pane_arenas -- --nocapture" \
     cargo test -p frankenterm-core --lib --no-default-features ipc_status_with_registry_reports_pane_arenas -- --nocapture
 
-run_rch_step \
+run_rch_step_with_timeout \
+    "${FT_3AXA_CORE_STEP_TIMEOUT_SECS}" \
     "scrollback_accounting_sync" \
     "integration.scrollback.syncs_to_allocator_registry" \
     "cargo test -p frankenterm-core --lib --no-default-features sync_to_arena_registry_updates_tracked_bytes -- --nocapture" \
     cargo test -p frankenterm-core --lib --no-default-features sync_to_arena_registry_updates_tracked_bytes -- --nocapture
 
-run_rch_step \
+run_rch_step_with_timeout \
+    "${FT_3AXA_CORE_STEP_TIMEOUT_SECS}" \
     "scrollback_unregistered_skip" \
     "integration.scrollback.skips_unregistered_panes" \
     "cargo test -p frankenterm-core --lib --no-default-features sync_to_arena_registry_skips_unregistered_panes -- --nocapture" \

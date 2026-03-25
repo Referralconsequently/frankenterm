@@ -10158,8 +10158,9 @@ fn is_structured_uservar_name(name: &str) -> bool {
 }
 
 fn validate_uservar_request(pane_id: u64, name: &str, value: &str) -> Result<(), String> {
-    // Maximum message size for IPC (128KB) - mirrors frankenterm_core::ipc::MAX_MESSAGE_SIZE
-    const MAX_MESSAGE_SIZE: usize = 131_072;
+    // Use the canonical IPC message size limit from frankenterm-core.
+    // Previously duplicated here as 131_072 — now reads from the single source.
+    const MAX_MESSAGE_SIZE: usize = frankenterm_core::tuning_config::IpcTuning::DEFAULT_MAX_MESSAGE_SIZE;
 
     if name.trim().is_empty() {
         return Err("user-var name cannot be empty".to_string());

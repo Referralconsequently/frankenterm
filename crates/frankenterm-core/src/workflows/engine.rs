@@ -144,7 +144,7 @@ impl WorkflowEngine {
     /// Resume a workflow execution from storage
     ///
     /// Loads the workflow record and step logs to determine the next step.
-    /// Returns None if the workflow doesn't exist or is already completed.
+    /// Returns None if the workflow doesn't exist or is already terminal.
     pub async fn resume(
         &self,
         storage: &crate::storage::StorageHandle,
@@ -155,14 +155,15 @@ impl WorkflowEngine {
             return Ok(None);
         };
 
-        // Check if already completed
-        if record.status == "completed" || record.status == "aborted" {
+        // Do not resume workflows that have already reached a terminal state.
+        if matches!(record.status.as_str(), "completed" | "aborted" | "failed") {
             return Ok(None);
         }
 
-        // Load step logs to find the last completed step
+        // Reconcile durable FSM state with step logs so restart resume does not
+        // regress a workflow after the next-step transition was already persisted.
         let step_logs = storage.get_step_logs(execution_id).await?;
-        let next_step = compute_next_step(&step_logs);
+        let next_step = resolve_resume_step(&record, &step_logs);
 
         let execution = WorkflowExecution {
             id: record.id,
@@ -302,7 +303,13 @@ pub(super) fn compute_next_step(step_logs: &[crate::storage::WorkflowStepLogReco
             "jump_to" => {
                 if let Some(data) = &log.result_data {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                        if let Some(step) = json.get("step").and_then(|v| v.as_u64()) {
+                        if let Some(step) =
+                            json.get("step").and_then(|v| v.as_u64()).or_else(|| {
+                                json.get("step_result")
+                                    .and_then(|value| value.get("step"))
+                                    .and_then(|v| v.as_u64())
+                            })
+                        {
                             return step as usize;
                         }
                     }
@@ -313,6 +320,27 @@ pub(super) fn compute_next_step(step_logs: &[crate::storage::WorkflowStepLogReco
             _ => log.step_index,
         },
         None => 0,
+    }
+}
+
+pub(super) fn resolve_resume_step(
+    record: &crate::storage::WorkflowRecord,
+    step_logs: &[crate::storage::WorkflowStepLogRecord],
+) -> usize {
+    let next_from_logs = compute_next_step(step_logs);
+    let Some(last_log) = step_logs.iter().max_by_key(|log| log.id) else {
+        return record.current_step;
+    };
+
+    match last_log.result_type.as_str() {
+        "send_text" | "wait_for"
+            if record.status == "running"
+                && record.wait_condition.is_none()
+                && record.current_step == last_log.step_index.saturating_add(1) =>
+        {
+            record.current_step
+        }
+        _ => next_from_logs,
     }
 }
 
@@ -855,6 +883,24 @@ mod tests {
         (dir, db_path)
     }
 
+    fn test_pane_record(pane_id: u64) -> crate::storage::PaneRecord {
+        crate::storage::PaneRecord {
+            pane_id,
+            pane_uuid: None,
+            domain: "local".to_string(),
+            window_id: None,
+            tab_id: None,
+            title: None,
+            cwd: None,
+            tty_name: None,
+            first_seen_at: 1_700_000_000_000,
+            last_seen_at: 1_700_000_000_000,
+            observed: true,
+            ignore_reason: None,
+            last_decision_at: None,
+        }
+    }
+
     fn latest_audit_action(db_path: &Path, action_kind: &str) -> crate::storage::AuditActionRecord {
         let runtime = CompatRuntimeBuilder::current_thread().build().unwrap();
         runtime.block_on(async {
@@ -1289,6 +1335,101 @@ mod tests {
         let logs = vec![log_item_0.clone(), log_item_1.clone(), jump_log];
         // After jumping to 5, the next step should be 5
         assert_eq!(compute_next_step(&logs), 5);
+    }
+
+    #[test]
+    fn compute_next_step_jump_to_from_runner_log_envelope() {
+        let mut jump_log = make_step_log(2, "jump_to");
+        jump_log.result_data = Some(
+            serde_json::json!({
+                "step_result": {
+                    "type": "jump_to",
+                    "step": 5
+                },
+                "action_type": "branch",
+                "step_description": "jump to recovery branch"
+            })
+            .to_string(),
+        );
+        jump_log.id = 3;
+
+        let mut log_item_0 = make_step_log(0, "continue");
+        let mut log_item_1 = make_step_log(1, "continue");
+        log_item_0.id = 1;
+        log_item_1.id = 2;
+
+        let logs = vec![log_item_0, log_item_1, jump_log];
+        assert_eq!(compute_next_step(&logs), 5);
+    }
+
+    #[test]
+    fn resolve_resume_step_prefers_persisted_send_text_progress() {
+        let record = crate::storage::WorkflowRecord {
+            id: "wf-send-progress".to_string(),
+            workflow_name: "send_progress".to_string(),
+            pane_id: 7,
+            trigger_event_id: None,
+            current_step: 3,
+            status: "running".to_string(),
+            wait_condition: None,
+            context: None,
+            result: None,
+            error: None,
+            started_at: 1_000,
+            updated_at: 2_000,
+            completed_at: None,
+        };
+        let mut send_log = make_step_log(2, "send_text");
+        send_log.id = 11;
+
+        assert_eq!(resolve_resume_step(&record, &[send_log]), 3);
+    }
+
+    #[test]
+    fn workflow_engine_resume_skips_failed_execution() {
+        let (_dir, db_path) = temp_db_path();
+        let runtime = CompatRuntimeBuilder::current_thread().build().unwrap();
+
+        runtime.block_on(async {
+            let storage = crate::storage::StorageHandle::new(&db_path.to_string_lossy())
+                .await
+                .expect("storage should initialize");
+            let engine = WorkflowEngine::new(3);
+
+            storage
+                .upsert_pane(test_pane_record(13))
+                .await
+                .expect("pane upsert should succeed");
+
+            let execution = engine
+                .start(&storage, "resume_failed", 13, None, None)
+                .await
+                .expect("workflow should start");
+
+            let mut record = storage
+                .get_workflow(&execution.id)
+                .await
+                .expect("workflow lookup should succeed")
+                .expect("workflow should exist");
+            record.status = "failed".to_string();
+            record.error = Some("synthetic failure".to_string());
+            record.completed_at = Some(record.updated_at + 1);
+            storage
+                .upsert_workflow(record)
+                .await
+                .expect("failed workflow should persist");
+
+            let resumed = engine
+                .resume(&storage, &execution.id)
+                .await
+                .expect("resume should query successfully");
+            assert!(resumed.is_none(), "failed workflows should not be resumed");
+
+            storage
+                .shutdown()
+                .await
+                .expect("storage should shutdown cleanly");
+        });
     }
 
     // ========================================================================

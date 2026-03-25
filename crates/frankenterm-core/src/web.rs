@@ -50,8 +50,22 @@ use serde_json::json;
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Default host — overridable via `[tuning.web] default_host` in ft.toml.
 const DEFAULT_HOST: &str = "127.0.0.1";
+/// Default port — overridable via `[tuning.web] default_port` in ft.toml.
 const DEFAULT_PORT: u16 = 8000;
+
+/// Resolve web server host from TuningConfig, falling back to compile-time default.
+pub fn resolve_host(tuning: Option<&crate::tuning_config::WebTuning>) -> String {
+    tuning
+        .map(|t| t.default_host.clone())
+        .unwrap_or_else(|| DEFAULT_HOST.to_string())
+}
+
+/// Resolve web server port from TuningConfig, falling back to compile-time default.
+pub fn resolve_port(tuning: Option<&crate::tuning_config::WebTuning>) -> u16 {
+    tuning.map(|t| t.default_port).unwrap_or(DEFAULT_PORT)
+}
 
 /// Hard ceiling on list endpoint results.
 const MAX_LIMIT: usize = 500;

@@ -56,15 +56,19 @@ fn arb_pagination_cursor() -> impl Strategy<Value = PaginationCursor> {
     (
         -1_000_000i64..1_000_000,
         0i64..2_000_000_000_000,
+        0i64..2_000_000_000_000,
         0u64..1_000_000,
         0u64..1_000_000,
     )
         .prop_map(
-            |(score_millis, occurred_at_ms, sequence, log_offset)| PaginationCursor {
-                score_millis,
-                occurred_at_ms,
-                sequence,
-                log_offset,
+            |(score_millis, occurred_at_ms, recorded_at_ms, sequence, log_offset)| {
+                PaginationCursor {
+                    score_millis,
+                    occurred_at_ms,
+                    recorded_at_ms,
+                    sequence,
+                    log_offset,
+                }
             },
         )
 }

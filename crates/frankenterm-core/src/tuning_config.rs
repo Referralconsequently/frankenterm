@@ -638,10 +638,18 @@ pub struct IpcTuning {
     pub accept_poll_interval_ms: u64,
 }
 
+impl IpcTuning {
+    /// Canonical default IPC message size limit (128 KB).
+    ///
+    /// Exposed as a const so callers that cannot access a TuningConfig instance
+    /// (e.g., CLI validation in main.rs) can reference the single source of truth.
+    pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 128 * 1024;
+}
+
 impl Default for IpcTuning {
     fn default() -> Self {
         Self {
-            max_message_size: 128 * 1024,
+            max_message_size: Self::DEFAULT_MAX_MESSAGE_SIZE,
             accept_poll_interval_ms: 100,
         }
     }

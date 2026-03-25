@@ -1644,31 +1644,37 @@ impl WorkflowRunner {
                 continue;
             };
 
-            // Compute next step from logs
-            let step_logs = match self.storage.get_step_logs(&record.id).await {
-                Ok(logs) => logs,
+            let (execution, next_step) = match self.engine.resume(&self.storage, &record.id).await {
+                Ok(Some(resume)) => resume,
+                Ok(None) => {
+                    tracing::debug!(
+                        execution_id = %record.id,
+                        "Skipping resume for workflow already in a terminal state"
+                    );
+                    continue;
+                }
                 Err(e) => {
                     tracing::warn!(
                         execution_id = %record.id,
                         error = %e,
-                        "Failed to get step logs for resume"
+                        "Failed to load workflow state for resume"
                     );
                     continue;
                 }
             };
 
-            let next_step = compute_next_step(&step_logs);
-
             // Try to re-acquire lock
-            let lock_result =
-                self.lock_manager
-                    .try_acquire(record.pane_id, &record.workflow_name, &record.id);
+            let lock_result = self.lock_manager.try_acquire(
+                execution.pane_id,
+                &execution.workflow_name,
+                &execution.id,
+            );
 
             match lock_result {
                 LockAcquisitionResult::AlreadyLocked { .. } => {
                     tracing::warn!(
-                        execution_id = %record.id,
-                        pane_id = record.pane_id,
+                        execution_id = %execution.id,
+                        pane_id = execution.pane_id,
                         "Cannot resume: pane locked"
                     );
                     continue;
@@ -1677,15 +1683,15 @@ impl WorkflowRunner {
             }
 
             tracing::info!(
-                execution_id = %record.id,
-                workflow = %record.workflow_name,
-                pane_id = record.pane_id,
+                execution_id = %execution.id,
+                workflow = %execution.workflow_name,
+                pane_id = execution.pane_id,
                 resume_step = next_step,
                 "Resuming workflow"
             );
 
             let result = self
-                .run_workflow(record.pane_id, workflow, &record.id, next_step)
+                .run_workflow(execution.pane_id, workflow, &execution.id, next_step)
                 .await;
 
             results.push(result);

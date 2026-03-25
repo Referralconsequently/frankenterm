@@ -297,6 +297,8 @@ pub struct PaneEntry {
     pub last_seen_at: i64,
     /// When observation decision was made (epoch ms)
     pub decision_at: i64,
+    /// Next sequence number to resume from if observation is later restored.
+    pub resume_next_seq: u64,
     /// Generation number (increments when fingerprint changes)
     pub generation: u32,
     /// Whether pane is in alternate screen buffer.
@@ -342,6 +344,7 @@ impl PaneEntry {
             first_seen_at: now,
             last_seen_at: now,
             decision_at: now,
+            resume_next_seq: 0,
             generation: 0,
             is_alt_screen: false,
             last_status_at: None,
@@ -368,6 +371,7 @@ impl PaneEntry {
             first_seen_at: now,
             last_seen_at: now,
             decision_at: now,
+            resume_next_seq: 0,
             generation: 0,
             is_alt_screen: false,
             last_status_at: None,
@@ -818,6 +822,15 @@ impl PaneRegistry {
     /// Update the filter configuration
     pub fn set_filter(&mut self, filter_config: PaneFilterConfig) {
         self.filter_config = filter_config;
+
+        let pane_ids: Vec<u64> = self.entries.keys().copied().collect();
+        for pane_id in pane_ids {
+            self.re_evaluate_observation(pane_id);
+            if let Some(entry) = self.entries.get(&pane_id) {
+                let tracked_bytes = entry.estimated_bytes();
+                let _ = self.pane_arenas.set_tracked_bytes(pane_id, tracked_bytes);
+            }
+        }
     }
 
     /// Update trauma-guard tuning and apply it to tracked panes.
@@ -961,9 +974,15 @@ impl PaneRegistry {
                     diff.changed_panes.push(pane_id);
                 }
 
-                entry.update_info(pane);
-                let tracked_bytes = entry.estimated_bytes();
-                let _ = self.pane_arenas.set_tracked_bytes(pane_id, tracked_bytes);
+                entry.update_info(pane.clone());
+            }
+
+            if self.entries.contains_key(&pane_id) {
+                self.re_evaluate_observation(pane_id);
+                if let Some(entry) = self.entries.get(&pane_id) {
+                    let tracked_bytes = entry.estimated_bytes();
+                    let _ = self.pane_arenas.set_tracked_bytes(pane_id, tracked_bytes);
+                }
             } else {
                 // New pane
                 diff.new_panes.push(pane_id);
@@ -1208,11 +1227,16 @@ impl PaneRegistry {
 
             // Update cursor state
             if is_observed && !was_observed {
-                // Now observed - create cursor
-                self.cursors.insert(pane_id, PaneCursor::new(pane_id));
+                // Now observed - resume monotonic sequencing instead of restarting at zero.
+                self.cursors.insert(
+                    pane_id,
+                    PaneCursor::from_seq(pane_id, entry.resume_next_seq),
+                );
             } else if !is_observed && was_observed {
-                // Now ignored - remove cursor
-                self.cursors.remove(&pane_id);
+                // Now ignored - preserve the next sequence number for future resumption.
+                if let Some(cursor) = self.cursors.remove(&pane_id) {
+                    entry.resume_next_seq = cursor.next_seq;
+                }
             }
         }
     }
@@ -3428,6 +3452,80 @@ mod tests {
         assert!(registry.get_cursor(1).is_none());
         let entry = registry.entries.get(&1).unwrap();
         assert!(!entry.should_observe());
+    }
+
+    #[test]
+    fn set_filter_re_evaluates_existing_panes() {
+        use crate::config::{PaneFilterConfig, PaneFilterRule};
+
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash", Some("/home"))]);
+        assert!(registry.get_cursor(1).is_some());
+
+        let mut filter = PaneFilterConfig::default();
+        filter.exclude.push(PaneFilterRule {
+            id: "exclude-bash".to_string(),
+            domain: None,
+            title: Some("bash".to_string()),
+            cwd: None,
+        });
+
+        registry.set_filter(filter);
+
+        assert!(registry.get_cursor(1).is_none());
+        let entry = registry.entries.get(&1).unwrap();
+        assert!(!entry.should_observe());
+        assert_eq!(entry.observation.ignore_reason(), Some("exclude-bash"),);
+    }
+
+    #[test]
+    fn re_evaluate_observation_resumes_monotonic_sequence() {
+        use crate::config::{PaneFilterConfig, PaneFilterRule};
+
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash", Some("/home"))]);
+        registry.get_cursor_mut(1).unwrap().next_seq = 7;
+
+        let mut exclude_bash = PaneFilterConfig::default();
+        exclude_bash.exclude.push(PaneFilterRule {
+            id: "exclude-bash".to_string(),
+            domain: None,
+            title: Some("bash".to_string()),
+            cwd: None,
+        });
+
+        registry.set_filter(exclude_bash);
+        assert!(registry.get_cursor(1).is_none());
+
+        registry.set_filter(PaneFilterConfig::default());
+
+        let cursor = registry.get_cursor(1).unwrap();
+        assert_eq!(cursor.next_seq, 7);
+    }
+
+    #[test]
+    fn discovery_tick_re_evaluates_observation_after_title_change() {
+        use crate::config::{PaneFilterConfig, PaneFilterRule};
+
+        let mut filter = PaneFilterConfig::default();
+        filter.exclude.push(PaneFilterRule {
+            id: "exclude-vim".to_string(),
+            domain: None,
+            title: Some("vim".to_string()),
+            cwd: None,
+        });
+
+        let mut registry = PaneRegistry::with_filter(filter);
+        registry.discovery_tick(vec![make_pane(1, "bash", Some("/home"))]);
+        assert!(registry.get_cursor(1).is_some());
+
+        registry.discovery_tick(vec![make_pane(1, "vim", Some("/home"))]);
+
+        assert!(registry.get_cursor(1).is_none());
+        let entry = registry.entries.get(&1).unwrap();
+        assert!(!entry.should_observe());
+        assert_eq!(entry.info.title.as_deref(), Some("vim"));
+        assert_eq!(entry.observation.ignore_reason(), Some("exclude-vim"));
     }
 
     #[test]

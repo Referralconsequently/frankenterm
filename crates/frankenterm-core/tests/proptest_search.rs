@@ -1175,14 +1175,22 @@ fn arb_sort_order() -> impl Strategy<Value = SearchSortOrder> {
 }
 
 fn arb_pagination_cursor() -> impl Strategy<Value = PaginationCursor> {
-    (any::<i64>(), any::<i64>(), any::<u64>(), any::<u64>()).prop_map(
-        |(score, occurred, seq, offset)| PaginationCursor {
-            score_millis: score,
-            occurred_at_ms: occurred,
-            sequence: seq,
-            log_offset: offset,
-        },
+    (
+        any::<i64>(),
+        any::<i64>(),
+        any::<i64>(),
+        any::<u64>(),
+        any::<u64>(),
     )
+        .prop_map(
+            |(score, occurred, recorded, seq, offset)| PaginationCursor {
+                score_millis: score,
+                occurred_at_ms: occurred,
+                recorded_at_ms: recorded,
+                sequence: seq,
+                log_offset: offset,
+            },
+        )
 }
 
 fn arb_pagination() -> impl Strategy<Value = Pagination> {

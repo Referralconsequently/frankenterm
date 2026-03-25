@@ -310,6 +310,58 @@ impl TieBreakKey {
     }
 }
 
+fn score_millis(score: f32) -> i64 {
+    (score * 1000.0) as i64
+}
+
+fn apply_sort_direction(ordering: std::cmp::Ordering, descending: bool) -> std::cmp::Ordering {
+    if descending {
+        ordering.reverse()
+    } else {
+        ordering
+    }
+}
+
+fn compare_i64(left: i64, right: i64, descending: bool) -> std::cmp::Ordering {
+    apply_sort_direction(left.cmp(&right), descending)
+}
+
+fn compare_u64(left: u64, right: u64, descending: bool) -> std::cmp::Ordering {
+    apply_sort_direction(left.cmp(&right), descending)
+}
+
+fn compare_scored_docs(
+    left_score: f32,
+    left_doc: &IndexDocumentFields,
+    right_score: f32,
+    right_doc: &IndexDocumentFields,
+    sort: &SearchSortOrder,
+) -> std::cmp::Ordering {
+    let primary = match sort.primary {
+        SortField::Relevance => compare_i64(
+            score_millis(left_score),
+            score_millis(right_score),
+            sort.descending,
+        ),
+        SortField::OccurredAt => compare_i64(
+            left_doc.occurred_at_ms,
+            right_doc.occurred_at_ms,
+            sort.descending,
+        ),
+        SortField::RecordedAt => compare_i64(
+            left_doc.recorded_at_ms,
+            right_doc.recorded_at_ms,
+            sort.descending,
+        ),
+        SortField::Sequence => compare_u64(left_doc.sequence, right_doc.sequence, sort.descending),
+        SortField::LogOffset => {
+            compare_u64(left_doc.log_offset, right_doc.log_offset, sort.descending)
+        }
+    };
+
+    primary.then_with(|| TieBreakKey::from_doc(left_doc).cmp(&TieBreakKey::from_doc(right_doc)))
+}
+
 // ---------------------------------------------------------------------------
 // Pagination
 // ---------------------------------------------------------------------------
@@ -342,6 +394,8 @@ pub struct PaginationCursor {
     pub score_millis: i64,
     /// occurred_at_ms of the last result.
     pub occurred_at_ms: i64,
+    /// recorded_at_ms of the last result.
+    pub recorded_at_ms: i64,
     /// sequence of the last result.
     pub sequence: u64,
     /// log_offset of the last result.
@@ -352,10 +406,23 @@ impl PaginationCursor {
     /// Create a cursor from a search hit.
     pub fn from_hit(hit: &SearchHit) -> Self {
         Self {
-            score_millis: (hit.score * 1000.0) as i64,
+            score_millis: score_millis(hit.score),
             occurred_at_ms: hit.doc.occurred_at_ms,
+            recorded_at_ms: hit.doc.recorded_at_ms,
             sequence: hit.doc.sequence,
             log_offset: hit.doc.log_offset,
+        }
+    }
+
+    fn tie_break_key(&self) -> TieBreakKey {
+        TieBreakKey {
+            neg_occurred_at_ms: self.occurred_at_ms.wrapping_neg(),
+            neg_sequence: i64::try_from(self.sequence)
+                .unwrap_or(i64::MAX)
+                .wrapping_neg(),
+            neg_log_offset: i64::try_from(self.log_offset)
+                .unwrap_or(i64::MAX)
+                .wrapping_neg(),
         }
     }
 }
@@ -656,18 +723,28 @@ impl InMemorySearchService {
     }
 
     /// Check if a document passes the cursor filter for pagination.
-    fn passes_cursor(doc: &IndexDocumentFields, score: f32, cursor: &PaginationCursor) -> bool {
-        let score_millis = (score * 1000.0) as i64;
-        if score_millis < cursor.score_millis {
-            return true;
-        }
-        if score_millis > cursor.score_millis {
-            return false;
-        }
-        // Equal score: use tie-break ordering (desc)
-        let tb = (doc.occurred_at_ms, doc.sequence, doc.log_offset);
-        let cursor_tb = (cursor.occurred_at_ms, cursor.sequence, cursor.log_offset);
-        tb < cursor_tb
+    fn passes_cursor(
+        doc: &IndexDocumentFields,
+        score: f32,
+        cursor: &PaginationCursor,
+        sort: &SearchSortOrder,
+    ) -> bool {
+        let primary = match sort.primary {
+            SortField::Relevance => {
+                compare_i64(score_millis(score), cursor.score_millis, sort.descending)
+            }
+            SortField::OccurredAt => {
+                compare_i64(doc.occurred_at_ms, cursor.occurred_at_ms, sort.descending)
+            }
+            SortField::RecordedAt => {
+                compare_i64(doc.recorded_at_ms, cursor.recorded_at_ms, sort.descending)
+            }
+            SortField::Sequence => compare_u64(doc.sequence, cursor.sequence, sort.descending),
+            SortField::LogOffset => compare_u64(doc.log_offset, cursor.log_offset, sort.descending),
+        };
+
+        primary.then_with(|| TieBreakKey::from_doc(doc).cmp(&cursor.tie_break_key()))
+            == std::cmp::Ordering::Greater
     }
 }
 
@@ -714,56 +791,11 @@ impl LexicalSearchService for InMemorySearchService {
 
         // Apply cursor filter
         if let Some(ref cursor) = query.pagination.after {
-            scored.retain(|(score, doc)| Self::passes_cursor(doc, *score, cursor));
+            scored.retain(|(score, doc)| Self::passes_cursor(doc, *score, cursor, &query.sort));
         }
 
         // Sort results
-        match query.sort.primary {
-            SortField::Relevance => {
-                scored.sort_by(|(sa, da), (sb, db)| {
-                    // Score descending, then tie-break
-                    sb.partial_cmp(sa)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| TieBreakKey::from_doc(da).cmp(&TieBreakKey::from_doc(db)))
-                });
-            }
-            SortField::OccurredAt => {
-                if query.sort.descending {
-                    scored.sort_by(|(_, da), (_, db)| {
-                        db.occurred_at_ms
-                            .cmp(&da.occurred_at_ms)
-                            .then_with(|| TieBreakKey::from_doc(da).cmp(&TieBreakKey::from_doc(db)))
-                    });
-                } else {
-                    scored.sort_by(|(_, da), (_, db)| {
-                        da.occurred_at_ms
-                            .cmp(&db.occurred_at_ms)
-                            .then_with(|| TieBreakKey::from_doc(da).cmp(&TieBreakKey::from_doc(db)))
-                    });
-                }
-            }
-            SortField::RecordedAt => {
-                if query.sort.descending {
-                    scored.sort_by_key(|(_, d)| std::cmp::Reverse(d.recorded_at_ms));
-                } else {
-                    scored.sort_by_key(|(_, d)| d.recorded_at_ms);
-                }
-            }
-            SortField::Sequence => {
-                if query.sort.descending {
-                    scored.sort_by_key(|(_, d)| std::cmp::Reverse(d.sequence));
-                } else {
-                    scored.sort_by_key(|(_, d)| d.sequence);
-                }
-            }
-            SortField::LogOffset => {
-                if query.sort.descending {
-                    scored.sort_by_key(|(_, d)| std::cmp::Reverse(d.log_offset));
-                } else {
-                    scored.sort_by_key(|(_, d)| d.log_offset);
-                }
-            }
-        }
+        scored.sort_by(|(sa, da), (sb, db)| compare_scored_docs(*sa, da, *sb, db, &query.sort));
 
         // Paginate
         let limit = query.pagination.limit;
@@ -783,7 +815,11 @@ impl LexicalSearchService for InMemorySearchService {
             })
             .collect();
 
-        let next_cursor = hits.last().map(PaginationCursor::from_hit);
+        let next_cursor = if has_more {
+            hits.last().map(PaginationCursor::from_hit)
+        } else {
+            None
+        };
 
         let elapsed_us = start.elapsed().as_micros() as u64;
 
@@ -1165,55 +1201,13 @@ impl LexicalSearchService for TantivySearchService {
 
         // Apply cursor filter
         if let Some(ref cursor) = query.pagination.after {
-            scored.retain(|(score, doc)| InMemorySearchService::passes_cursor(doc, *score, cursor));
+            scored.retain(|(score, doc)| {
+                InMemorySearchService::passes_cursor(doc, *score, cursor, &query.sort)
+            });
         }
 
         // Sort results
-        match query.sort.primary {
-            SortField::Relevance => {
-                scored.sort_by(|(sa, da), (sb, db)| {
-                    sb.partial_cmp(sa)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| TieBreakKey::from_doc(da).cmp(&TieBreakKey::from_doc(db)))
-                });
-            }
-            SortField::OccurredAt => {
-                if query.sort.descending {
-                    scored.sort_by(|(_, da), (_, db)| {
-                        db.occurred_at_ms
-                            .cmp(&da.occurred_at_ms)
-                            .then_with(|| TieBreakKey::from_doc(da).cmp(&TieBreakKey::from_doc(db)))
-                    });
-                } else {
-                    scored.sort_by(|(_, da), (_, db)| {
-                        da.occurred_at_ms
-                            .cmp(&db.occurred_at_ms)
-                            .then_with(|| TieBreakKey::from_doc(da).cmp(&TieBreakKey::from_doc(db)))
-                    });
-                }
-            }
-            SortField::RecordedAt => {
-                if query.sort.descending {
-                    scored.sort_by_key(|(_, d)| std::cmp::Reverse(d.recorded_at_ms));
-                } else {
-                    scored.sort_by_key(|(_, d)| d.recorded_at_ms);
-                }
-            }
-            SortField::Sequence => {
-                if query.sort.descending {
-                    scored.sort_by_key(|(_, d)| std::cmp::Reverse(d.sequence));
-                } else {
-                    scored.sort_by_key(|(_, d)| d.sequence);
-                }
-            }
-            SortField::LogOffset => {
-                if query.sort.descending {
-                    scored.sort_by_key(|(_, d)| std::cmp::Reverse(d.log_offset));
-                } else {
-                    scored.sort_by_key(|(_, d)| d.log_offset);
-                }
-            }
-        }
+        scored.sort_by(|(sa, da), (sb, db)| compare_scored_docs(*sa, da, *sb, db, &query.sort));
 
         // Paginate
         let limit = query.pagination.limit;
@@ -1234,7 +1228,11 @@ impl LexicalSearchService for TantivySearchService {
             })
             .collect();
 
-        let next_cursor = hits.last().map(PaginationCursor::from_hit);
+        let next_cursor = if has_more {
+            hits.last().map(PaginationCursor::from_hit)
+        } else {
+            None
+        };
         let elapsed_us = start.elapsed().as_micros() as u64;
 
         Ok(SearchResults {
@@ -1718,6 +1716,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sort_by_relevance_ascending() {
+        let svc = test_service();
+        let q = SearchQuery {
+            text: "hello cargo echo git Compiling error".to_string(),
+            sort: SearchSortOrder {
+                primary: SortField::Relevance,
+                descending: false,
+            },
+            ..SearchQuery::simple("")
+        };
+        let results = svc.search(&q).unwrap();
+        for w in results.hits.windows(2) {
+            assert!(score_millis(w[0].score) <= score_millis(w[1].score));
+        }
+    }
+
     // =========================================================================
     // Pagination tests
     // =========================================================================
@@ -1754,6 +1769,50 @@ mod tests {
         for id in &ids2 {
             assert!(!ids1.contains(id), "page 2 overlaps with page 1");
         }
+    }
+
+    #[test]
+    fn pagination_cursor_advances_for_recorded_at_sort() {
+        let svc = test_service();
+
+        let q1 = SearchQuery {
+            text: "hello cargo echo git Compiling error".to_string(),
+            sort: SearchSortOrder {
+                primary: SortField::RecordedAt,
+                descending: false,
+            },
+            ..SearchQuery::simple("")
+        }
+        .with_limit(3);
+        let r1 = svc.search(&q1).unwrap();
+        let cursor = r1.next_cursor.clone().unwrap();
+
+        let q2 = SearchQuery {
+            text: "hello cargo echo git Compiling error".to_string(),
+            sort: SearchSortOrder {
+                primary: SortField::RecordedAt,
+                descending: false,
+            },
+            ..SearchQuery::simple("")
+        }
+        .with_limit(3)
+        .with_cursor(cursor);
+        let r2 = svc.search(&q2).unwrap();
+
+        let ids1: Vec<_> = r1.hits.iter().map(|h| &h.doc.event_id).collect();
+        let ids2: Vec<_> = r2.hits.iter().map(|h| &h.doc.event_id).collect();
+        for id in &ids2 {
+            assert!(!ids1.contains(id), "page 2 overlaps with page 1");
+        }
+    }
+
+    #[test]
+    fn pagination_terminal_page_has_no_cursor() {
+        let svc = test_service();
+        let q = SearchQuery::simple("hello").with_limit(10);
+        let results = svc.search(&q).unwrap();
+        assert!(!results.has_more);
+        assert!(results.next_cursor.is_none());
     }
 
     // =========================================================================
@@ -2103,6 +2162,7 @@ mod tests {
         let cursor = PaginationCursor {
             score_millis: 500,
             occurred_at_ms: 1000,
+            recorded_at_ms: 1001,
             sequence: 1,
             log_offset: 0,
         };
@@ -2240,6 +2300,7 @@ mod tests {
             after: Some(PaginationCursor {
                 score_millis: 100,
                 occurred_at_ms: 5000,
+                recorded_at_ms: 5001,
                 sequence: 42,
                 log_offset: 99,
             }),
@@ -2257,6 +2318,7 @@ mod tests {
         let cursor = PaginationCursor {
             score_millis: 500,
             occurred_at_ms: 1000,
+            recorded_at_ms: 1001,
             sequence: 1,
             log_offset: 0,
         };
@@ -2271,6 +2333,7 @@ mod tests {
         let cursor = PaginationCursor {
             score_millis: 750,
             occurred_at_ms: 2000,
+            recorded_at_ms: 2001,
             sequence: 10,
             log_offset: 55,
         };
@@ -2619,6 +2682,67 @@ mod tests {
         let q = SearchQuery::simple("hello echo cargo git Compiling error").with_limit(2);
         let results = svc.search(&q).unwrap();
         assert!(results.hits.len() <= 2);
+    }
+
+    #[test]
+    fn tantivy_pagination_cursor_advances_for_recorded_at_sort() {
+        let (svc, _tmp) = tantivy_service();
+
+        let q1 = SearchQuery {
+            text: "hello echo cargo git Compiling error".to_string(),
+            sort: SearchSortOrder {
+                primary: SortField::RecordedAt,
+                descending: false,
+            },
+            ..SearchQuery::simple("")
+        }
+        .with_limit(2);
+        let r1 = svc.search(&q1).unwrap();
+        let cursor = r1.next_cursor.clone().unwrap();
+
+        let q2 = SearchQuery {
+            text: "hello echo cargo git Compiling error".to_string(),
+            sort: SearchSortOrder {
+                primary: SortField::RecordedAt,
+                descending: false,
+            },
+            ..SearchQuery::simple("")
+        }
+        .with_limit(2)
+        .with_cursor(cursor);
+        let r2 = svc.search(&q2).unwrap();
+
+        let ids1: Vec<_> = r1.hits.iter().map(|h| &h.doc.event_id).collect();
+        let ids2: Vec<_> = r2.hits.iter().map(|h| &h.doc.event_id).collect();
+        for id in &ids2 {
+            assert!(!ids1.contains(id), "page 2 overlaps with page 1");
+        }
+    }
+
+    #[test]
+    fn tantivy_pagination_terminal_page_has_no_cursor() {
+        let (svc, _tmp) = tantivy_service();
+        let q = SearchQuery::simple("hello").with_limit(10);
+        let results = svc.search(&q).unwrap();
+        assert!(!results.has_more);
+        assert!(results.next_cursor.is_none());
+    }
+
+    #[test]
+    fn tantivy_sort_by_relevance_ascending() {
+        let (svc, _tmp) = tantivy_service();
+        let q = SearchQuery {
+            text: "hello cargo echo git Compiling error".to_string(),
+            sort: SearchSortOrder {
+                primary: SortField::Relevance,
+                descending: false,
+            },
+            ..SearchQuery::simple("")
+        };
+        let results = svc.search(&q).unwrap();
+        for w in results.hits.windows(2) {
+            assert!(score_millis(w[0].score) <= score_millis(w[1].score));
+        }
     }
 
     #[test]
