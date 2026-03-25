@@ -2650,12 +2650,15 @@ impl ObservationRuntime {
         let event_bus = self.event_bus.clone();
         let recording = self.recording.clone();
         let heartbeats = Arc::clone(&self.heartbeats);
+        let tuning = Arc::clone(&self.tuning);
         let mut config_rx = self.config_rx.clone();
         let mut current_patterns = self.config.patterns.clone();
         let patterns_root = self.config.patterns_root.clone();
         let registry = Arc::clone(&registry);
 
         task::spawn(async move {
+            let max_persist_segment_bytes = tuning.ingest.max_persist_segment_bytes;
+
             // Process events until producer is closed and the ring is drained.
             while let Some(event) = capture_rx.recv().await {
                 heartbeats.record_persistence();
@@ -2688,12 +2691,19 @@ impl ObservationRuntime {
                     }
                 }
                 let pane_id = event.segment.pane_id;
-                let bounded_segment = bounded_segment_for_persistence(&event.segment);
+                let bounded_segment =
+                    bounded_segment_for_persistence(&event.segment, max_persist_segment_bytes);
                 let captured_at = bounded_segment.captured_at;
                 let captured_seq = bounded_segment.seq;
 
                 // Persist the segment
-                match persist_captured_segment(&storage, &bounded_segment).await {
+                match persist_captured_segment(
+                    &storage,
+                    &bounded_segment,
+                    max_persist_segment_bytes,
+                )
+                .await
+                {
                     Ok(persisted) => {
                         // Check for sequence discontinuity and resync cursor if needed
                         if persisted.segment.seq != captured_seq {

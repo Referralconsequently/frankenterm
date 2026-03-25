@@ -904,6 +904,14 @@ impl TuningConfig {
             errors.push("tuning.snapshot.trigger_bridge_tick_secs must be >= 5".into());
         }
 
+        // Ingest
+        if self.ingest.max_persist_segment_bytes < 1024 {
+            errors.push("tuning.ingest.max_persist_segment_bytes must be >= 1024".into());
+        }
+        if self.ingest.max_record_payload_bytes < 1024 * 1024 {
+            errors.push("tuning.ingest.max_record_payload_bytes must be >= 1MB".into());
+        }
+
         // Patterns
         if self.patterns.max_seen_keys < 100 {
             errors.push("tuning.patterns.max_seen_keys must be >= 100".into());
@@ -1147,13 +1155,34 @@ default_port = 9000
     #[test]
     fn validation_catches_bad_values() {
         let mut cfg = TuningConfig::default();
+        cfg.ingest.max_persist_segment_bytes = 512;
+        cfg.ingest.max_record_payload_bytes = 512 * 1024;
         cfg.backpressure.warn_ratio = 1.5;
         cfg.patterns.bloom_false_positive_rate = 0.0;
+        cfg.search.tantivy_writer_memory_bytes = 5 * 1024 * 1024;
         cfg.web.default_list_limit = 1000;
         cfg.web.max_list_limit = 5;
 
         let errors = cfg.validate();
-        assert!(errors.len() >= 3, "expected multiple errors: {errors:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err == "tuning.ingest.max_persist_segment_bytes must be >= 1024")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|err| err == "tuning.ingest.max_record_payload_bytes must be >= 1MB")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|err| err == "tuning.search.tantivy_writer_memory_bytes must be >= 10MB")
+        );
+        assert!(
+            errors.len() >= 6,
+            "expected multiple errors including ingest/search bounds: {errors:?}"
+        );
     }
 
     #[test]

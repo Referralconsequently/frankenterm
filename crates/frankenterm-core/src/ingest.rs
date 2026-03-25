@@ -1393,10 +1393,6 @@ pub struct PersistedCapture {
 ///
 /// This keeps per-segment storage, FTS, and regex detection work bounded even
 /// if a pane emits pathological bursts of output.
-// Canonical value in TuningConfig::IngestTuning.
-// To override: set [tuning.ingest] max_persist_segment_bytes in ft.toml.
-const DEFAULT_MAX_PERSIST_SEGMENT_BYTES: usize =
-    crate::tuning_config::IngestTuning::DEFAULT_MAX_PERSIST_SEGMENT_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SegmentSizeEnforcement {
@@ -1474,14 +1470,16 @@ fn enforce_segment_size_for_persistence(
     )
 }
 
-/// Return the capture payload bounded to the default persistence size limit.
+/// Return the capture payload bounded to the configured persistence size limit.
 ///
 /// This is used by callers that need deterministic downstream behavior (for
 /// example, bounded regex detection work) to match persistence semantics.
 #[must_use]
-pub(crate) fn bounded_segment_for_persistence(captured: &CapturedSegment) -> CapturedSegment {
-    let (bounded, _) =
-        enforce_segment_size_for_persistence(captured, DEFAULT_MAX_PERSIST_SEGMENT_BYTES);
+pub(crate) fn bounded_segment_for_persistence(
+    captured: &CapturedSegment,
+    max_segment_bytes: usize,
+) -> CapturedSegment {
+    let (bounded, _) = enforce_segment_size_for_persistence(captured, max_segment_bytes);
     bounded
 }
 
@@ -1502,9 +1500,10 @@ pub(crate) fn bounded_segment_for_persistence(captured: &CapturedSegment) -> Cap
 pub async fn persist_captured_segment(
     storage: &StorageHandle,
     captured: &CapturedSegment,
+    max_segment_bytes: usize,
 ) -> Result<PersistedCapture> {
     let (bounded_segment, truncation) =
-        enforce_segment_size_for_persistence(captured, DEFAULT_MAX_PERSIST_SEGMENT_BYTES);
+        enforce_segment_size_for_persistence(captured, max_segment_bytes);
 
     if let Some(detail) = truncation.as_ref() {
         warn!(
@@ -2610,6 +2609,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+    const TEST_MAX_PERSIST_SEGMENT_BYTES: usize =
+        crate::tuning_config::IngestTuning::DEFAULT_MAX_PERSIST_SEGMENT_BYTES;
 
     fn temp_db_path() -> String {
         let counter = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -2827,8 +2828,12 @@ mod tests {
                 .capture_snapshot("hello\nworld\n", 1024, None)
                 .expect("second capture");
 
-            let stored0 = persist_captured_segment(&handle, &seg0).await.unwrap();
-            let stored1 = persist_captured_segment(&handle, &seg1).await.unwrap();
+            let stored0 = persist_captured_segment(&handle, &seg0, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
+            let stored1 = persist_captured_segment(&handle, &seg1, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
 
             assert_eq!(stored0.segment.seq, seg0.seq);
             assert_eq!(stored1.segment.seq, seg1.seq);
@@ -2854,12 +2859,18 @@ mod tests {
             let seg0 = cursor
                 .capture_snapshot("a\nb\n", 1024, None)
                 .expect("first capture");
-            persist_captured_segment(&handle, &seg0).await.unwrap();
+            persist_captured_segment(&handle, &seg0, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
 
             let gap_segment = cursor
                 .capture_snapshot("a\nc\n", 1024, None)
                 .expect("gap capture");
-            let persisted = persist_captured_segment(&handle, &gap_segment)
+            let persisted = persist_captured_segment(
+                &handle,
+                &gap_segment,
+                TEST_MAX_PERSIST_SEGMENT_BYTES,
+            )
                 .await
                 .unwrap();
 
@@ -2891,12 +2902,16 @@ mod tests {
             let seg0 = cursor
                 .capture_snapshot("line1\n", 1024, None)
                 .expect("first capture");
-            persist_captured_segment(&handle, &seg0).await.unwrap();
+            persist_captured_segment(&handle, &seg0, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
 
             let seg1 = cursor
                 .capture_snapshot("line1\nline2\n", 1024, None)
                 .expect("second capture");
-            persist_captured_segment(&handle, &seg1).await.unwrap();
+            persist_captured_segment(&handle, &seg1, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
 
             // Now simulate a desync: manually advance the cursor's seq beyond what storage expects
             cursor.next_seq = 100; // Storage expects seq=2, cursor will produce seq=100
@@ -2907,7 +2922,9 @@ mod tests {
             assert_eq!(seg2.seq, 100); // Cursor produced seq=100
 
             // Persist should NOT error, instead record a gap
-            let persisted = persist_captured_segment(&handle, &seg2).await.unwrap();
+            let persisted = persist_captured_segment(&handle, &seg2, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
 
             // Storage used its own seq (2), not the cursor's (100)
             assert_eq!(persisted.segment.seq, 2);
@@ -2948,7 +2965,9 @@ mod tests {
             let seg0 = cursor
                 .capture_snapshot("a\n", 1024, None)
                 .expect("first capture");
-            persist_captured_segment(&handle, &seg0).await.unwrap();
+            persist_captured_segment(&handle, &seg0, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
 
             // Simulate desync
             cursor.next_seq = 999;
@@ -2958,7 +2977,9 @@ mod tests {
                 .expect("second capture");
             assert_eq!(seg1.seq, 999);
 
-            let persisted = persist_captured_segment(&handle, &seg1).await.unwrap();
+            let persisted = persist_captured_segment(&handle, &seg1, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                .await
+                .unwrap();
             assert_eq!(persisted.segment.seq, 1); // Storage used seq=1
 
             // Resync cursor to storage
@@ -2972,7 +2993,10 @@ mod tests {
                 .expect("third capture");
             assert_eq!(seg2.seq, 2);
 
-            let persisted2 = persist_captured_segment(&handle, &seg2).await.unwrap();
+            let persisted2 =
+                persist_captured_segment(&handle, &seg2, TEST_MAX_PERSIST_SEGMENT_BYTES)
+                    .await
+                    .unwrap();
             assert_eq!(persisted2.segment.seq, 2);
             // No gap this time since we resynced
             assert!(persisted2.gap.is_none());
@@ -3017,12 +3041,9 @@ mod tests {
             let handle = StorageHandle::new(&db_path).await.unwrap();
             handle.upsert_pane(test_pane_record(1)).await.unwrap();
 
-            let oversized_content = format!(
-                "HEADER:{}",
-                "x".repeat(DEFAULT_MAX_PERSIST_SEGMENT_BYTES + 32)
-            );
-            let expected_tail =
-                trim_utf8_tail_to_max_bytes(&oversized_content, DEFAULT_MAX_PERSIST_SEGMENT_BYTES);
+            let max_segment_bytes = 32;
+            let oversized_content = format!("HEADER:{}", "x".repeat(max_segment_bytes + 48));
+            let expected_tail = trim_utf8_tail_to_max_bytes(&oversized_content, max_segment_bytes);
             let oversized = CapturedSegment {
                 pane_id: 1,
                 seq: 0,
@@ -3031,19 +3052,18 @@ mod tests {
                 captured_at: 0,
             };
 
-            let persisted = persist_captured_segment(&handle, &oversized).await.unwrap();
+            let persisted = persist_captured_segment(&handle, &oversized, max_segment_bytes)
+                .await
+                .unwrap();
             let gap = persisted.gap.expect("truncation should record gap");
             assert!(
                 gap.reason.contains("segment_truncated:original_bytes="),
                 "gap reason should include truncation marker: {}",
                 gap.reason
             );
-            assert!(gap.reason.contains("max_bytes=65536"));
+            assert!(gap.reason.contains("max_bytes=32"));
             assert_eq!(persisted.segment.content, expected_tail);
-            assert_eq!(
-                persisted.segment.content.len(),
-                DEFAULT_MAX_PERSIST_SEGMENT_BYTES
-            );
+            assert_eq!(persisted.segment.content.len(), max_segment_bytes);
 
             handle.shutdown().await.unwrap();
             cleanup_db(&db_path);
@@ -3051,28 +3071,26 @@ mod tests {
     }
 
     #[test]
-    fn bounded_segment_for_persistence_uses_default_limit() {
+    fn bounded_segment_for_persistence_uses_configured_limit() {
+        let max_segment_bytes = 64;
         let oversized = CapturedSegment {
             pane_id: 9,
             seq: 1,
-            content: format!(
-                "prefix-{}",
-                "x".repeat(DEFAULT_MAX_PERSIST_SEGMENT_BYTES + 17)
-            ),
+            content: format!("prefix-{}", "x".repeat(max_segment_bytes + 17)),
             kind: CapturedSegmentKind::Delta,
             captured_at: 123,
         };
 
-        let bounded = bounded_segment_for_persistence(&oversized);
+        let bounded = bounded_segment_for_persistence(&oversized, max_segment_bytes);
         assert_eq!(bounded.pane_id, oversized.pane_id);
         assert_eq!(bounded.seq, oversized.seq);
         assert_eq!(bounded.captured_at, oversized.captured_at);
-        assert_eq!(bounded.content.len(), DEFAULT_MAX_PERSIST_SEGMENT_BYTES);
+        assert_eq!(bounded.content.len(), max_segment_bytes);
 
         match bounded.kind {
             CapturedSegmentKind::Gap { reason } => {
                 assert!(reason.contains("segment_truncated:original_bytes="));
-                assert!(reason.contains("max_bytes=65536"));
+                assert!(reason.contains("max_bytes=64"));
             }
             CapturedSegmentKind::Delta => {
                 panic!("bounded segment should promote oversized delta to gap")
