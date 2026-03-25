@@ -71,11 +71,11 @@ fn make_violation(in_test: bool, severity: ViolationSeverity) -> ForbiddenImport
 fn make_warning() -> ForbiddenImport {
     ForbiddenImport {
         pattern_id: "FP-WARN".into(),
-        file_path: "src/warn.rs".into(),
+        file_path: "tests/warn.rs".into(),
         line_number: 5,
         line_content: "// tokio legacy shim".into(),
         severity: ViolationSeverity::Warning,
-        in_test_context: false,
+        in_test_context: true,
         runtime: ForbiddenRuntime::Tokio,
     }
 }
