@@ -184,8 +184,8 @@ proptest! {
 }
 
 #[test]
-fn api_surface_all_has_33_variants() {
-    assert_eq!(ApiSurface::ALL.len(), 33);
+fn api_surface_all_has_expected_variants() {
+    assert_eq!(ApiSurface::ALL.len(), 34);
 }
 
 #[test]
@@ -280,11 +280,11 @@ proptest! {
         }
         let (covered, total_surfaces) = matrix.surface_coverage();
         prop_assert!(covered <= total_surfaces);
-        prop_assert_eq!(total_surfaces, 33);
+        prop_assert_eq!(total_surfaces, 34);
     }
 
     #[test]
-    fn matrix_uncovered_plus_covered_equals_33(
+    fn matrix_uncovered_plus_covered_equals_total(
         checks in prop::collection::vec(arb_contract_check(), 0..20)
     ) {
         let mut matrix = ContractMatrix::new("test-matrix");
@@ -293,8 +293,8 @@ proptest! {
         }
         let (covered, _) = matrix.surface_coverage();
         let uncovered = matrix.uncovered_surfaces().len();
-        prop_assert_eq!(covered + uncovered, 33,
-            "covered ({}) + uncovered ({}) should equal 33", covered, uncovered);
+        prop_assert_eq!(covered + uncovered, 34,
+            "covered ({}) + uncovered ({}) should equal 34", covered, uncovered);
     }
 }
 
@@ -316,18 +316,21 @@ proptest! {
         let total = exec.results.len();
         let passed = exec.passed();
         let failed = exec.failed();
+        let skipped = exec.results.iter().filter(|r| r.outcome == CheckOutcome::Skipped).count();
 
-        prop_assert_eq!(passed + failed, total,
-            "passed ({}) + failed ({}) should equal total ({})", passed, failed, total);
+        prop_assert_eq!(passed + failed + skipped, total,
+            "passed ({}) + failed ({}) + skipped ({}) should equal total ({})", passed, failed, skipped, total);
 
-        // pass_rate sanity
-        if total > 0 {
+        // pass_rate sanity: pass_rate() = passed / (passed + failed), excluding skipped
+        let executed = passed + failed;
+        if executed > 0 {
             let rate = exec.pass_rate();
             prop_assert!((0.0..=1.0).contains(&rate),
                 "pass_rate {:.4} should be in [0, 1]", rate);
-            let expected = passed as f64 / total as f64;
+            let expected = passed as f64 / executed as f64;
             prop_assert!((rate - expected).abs() < 1e-10);
         } else {
+            // No executed (all skipped or empty) → pass_rate defaults to 1.0
             prop_assert!((exec.pass_rate() - 1.0).abs() < 1e-10);
         }
     }
@@ -489,11 +492,11 @@ proptest! {
 // =============================================================================
 
 #[test]
-fn standard_matrix_covers_all_33_surfaces() {
+fn standard_matrix_covers_all_surfaces() {
     let matrix = standard_contract_matrix();
     let (covered, total) = matrix.surface_coverage();
-    assert_eq!(total, 33);
-    assert_eq!(covered, 33, "standard matrix should cover all surfaces");
+    assert_eq!(total, 34);
+    assert_eq!(covered, 34, "standard matrix should cover all surfaces");
     assert!(matrix.uncovered_surfaces().is_empty());
 }
 
