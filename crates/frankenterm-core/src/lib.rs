@@ -436,6 +436,7 @@ pub mod traceability_verification;
 pub mod trauma_guard;
 pub mod treap;
 pub mod trie;
+pub mod tuning_config;
 #[cfg(feature = "subprocess-bridge")]
 pub mod tx_execution;
 #[cfg(feature = "subprocess-bridge")]

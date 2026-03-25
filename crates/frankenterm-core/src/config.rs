@@ -95,6 +95,10 @@ pub struct Config {
 
     /// Semantic search settings (embedding models, fusion, daemon)
     pub search: SearchConfig,
+
+    /// Operator-tunable constants (timeouts, buffer sizes, thresholds).
+    /// All fields default to the original hard-coded values when omitted.
+    pub tuning: crate::tuning_config::TuningConfig,
 }
 
 // =============================================================================
