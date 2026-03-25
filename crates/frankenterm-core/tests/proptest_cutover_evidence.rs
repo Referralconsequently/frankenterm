@@ -179,9 +179,10 @@ proptest! {
         prop_assert_eq!(suite.total_count(), n_pass + n_fail);
         prop_assert_eq!(suite.failing().len(), n_fail);
 
-        if n_fail == 0 {
+        if n_fail == 0 && n_pass > 0 {
             prop_assert!(suite.all_pass());
         } else {
+            // Empty suites or suites with failures do not pass
             prop_assert!(!suite.all_pass());
         }
     }
@@ -269,10 +270,14 @@ proptest! {
         let within = comp.within_threshold(threshold);
 
         // For higher-is-better: ratio = after/before
-        // Within threshold if ratio >= (1 - threshold)
-        if ratio >= (1.0 - threshold) {
+        // Within threshold if ratio >= 1.0 / threshold
+        let cutoff = 1.0 / threshold;
+        if ratio >= cutoff {
             prop_assert!(within, "ratio {:.4} >= {:.4} should be within threshold",
-                ratio, 1.0 - threshold);
+                ratio, cutoff);
+        } else {
+            prop_assert!(!within, "ratio {:.4} < {:.4} should NOT be within threshold",
+                ratio, cutoff);
         }
     }
 
