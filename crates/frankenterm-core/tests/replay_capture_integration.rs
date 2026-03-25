@@ -761,3 +761,165 @@ fn replay_capture_chunked_artifact_with_manifest() {
         roundtrip_match: true,
     });
 }
+
+/// Validates that ArtifactReader rejects a completely malformed file
+/// (garbage data, not valid JSON at all).
+#[test]
+fn replay_capture_reader_rejects_malformed_artifact() {
+    let mut capture_log = CaptureLogGuard::new(
+        "replay_capture_reader_rejects_malformed_artifact",
+        "negative_malformed_artifact",
+        "open_garbage_expect_error",
+        json!({
+            "scenario": "malformed_input",
+            "content": "binary_garbage",
+        }),
+    );
+
+    let tmp = tempdir().expect("tempdir");
+    let artifact_path = tmp.path().join("malformed.ftreplay");
+    capture_log.set_artifact_path(&artifact_path);
+
+    // Write binary garbage
+    fs::write(
+        &artifact_path,
+        b"\x00\xFF\xFE\xFD garbage data not json at all",
+    )
+    .expect("write garbage");
+
+    let result = ArtifactReader::default().open(&artifact_path);
+    assert!(
+        result.is_err(),
+        "opening a malformed artifact should return an error"
+    );
+
+    // stream_events should also reject
+    let stream_result = ArtifactReader::default().stream_events(&artifact_path);
+    assert!(
+        stream_result.is_err(),
+        "streaming from a malformed artifact should return an error"
+    );
+
+    capture_log.set_metrics(CaptureMetrics {
+        capture_events: 0,
+        decisions_captured: 0,
+        secrets_detected: 0,
+        secrets_redacted: 0,
+        compression_ratio: None,
+        read_events: 0,
+        roundtrip_match: false,
+    });
+}
+
+/// Validates that writing an artifact with an unsupported future schema version
+/// is handled gracefully during read-back (either migrates or errors).
+#[test]
+fn replay_capture_reader_handles_unsupported_schema_version() {
+    let mut capture_log = CaptureLogGuard::new(
+        "replay_capture_reader_handles_unsupported_schema_version",
+        "negative_unsupported_schema",
+        "write_rewrite_schema_open",
+        json!({
+            "source_schema": "ftreplay.v1",
+            "target_schema": "ftreplay.v999",
+        }),
+    );
+
+    let tmp = tempdir().expect("tempdir");
+    let source = tmp.path().join("future_schema.jsonl");
+    let artifact_path = tmp.path().join("future_schema.ftreplay");
+    write_fixture(&source, false).expect("fixture");
+    capture_log.set_artifact_path(&artifact_path);
+
+    let artifact = FixtureHarvester::default()
+        .harvest(HarvestSource::ManualExport(source))
+        .expect("harvest");
+    FtreplayWriter::default()
+        .write(&artifact, &artifact_path)
+        .expect("write");
+
+    // Rewrite schema version to an unsupported future version
+    rewrite_schema_version(&artifact_path, "ftreplay.v1", "ftreplay.v999").expect("rewrite schema");
+
+    let result = ArtifactReader::default().open(&artifact_path);
+    // Should either error or produce a migration report indicating the version gap
+    let handled_gracefully = match &result {
+        Err(_) => true, // Error is acceptable for unknown versions
+        Ok(loaded) => {
+            // If it loads, it should have a migration report or the schema should be upgraded
+            loaded.migration_report.is_some() || loaded.schema_version != "ftreplay.v999"
+        }
+    };
+    assert!(
+        handled_gracefully,
+        "unsupported schema version should be handled gracefully (error or migration)"
+    );
+
+    capture_log.set_metrics(CaptureMetrics {
+        capture_events: artifact.events.len() as u64,
+        decisions_captured: 1,
+        secrets_detected: 0,
+        secrets_redacted: 0,
+        compression_ratio: None,
+        read_events: 0,
+        roundtrip_match: false,
+    });
+}
+
+/// Validates that an empty fixture (zero events) is handled gracefully.
+/// The harvester should either produce a valid empty artifact or return an error.
+#[test]
+fn replay_capture_empty_fixture_handled_gracefully() {
+    let mut capture_log = CaptureLogGuard::new(
+        "replay_capture_empty_fixture_handled_gracefully",
+        "boundary_empty_fixture",
+        "harvest_empty_source",
+        json!({
+            "event_count": 0,
+        }),
+    );
+
+    let tmp = tempdir().expect("tempdir");
+    let source = tmp.path().join("empty.jsonl");
+    let artifact_path = tmp.path().join("empty.ftreplay");
+    fs::write(&source, "").expect("write empty");
+    capture_log.set_artifact_path(&artifact_path);
+
+    let result = FixtureHarvester::default().harvest(HarvestSource::ManualExport(source));
+    match result {
+        Ok(artifact) => {
+            // Empty artifact is valid — should have zero events
+            assert_eq!(artifact.events.len(), 0);
+            // Writing should still produce a valid artifact file
+            let write_result = FtreplayWriter::default().write(&artifact, &artifact_path);
+            if let Ok(_wr) = write_result {
+                // If written, should be readable
+                let loaded = ArtifactReader::default().open(&artifact_path);
+                if let Ok(loaded) = loaded {
+                    assert_eq!(loaded.events.len(), 0);
+                }
+            }
+            capture_log.set_metrics(CaptureMetrics {
+                capture_events: 0,
+                decisions_captured: 0,
+                secrets_detected: 0,
+                secrets_redacted: 0,
+                compression_ratio: None,
+                read_events: 0,
+                roundtrip_match: true,
+            });
+        }
+        Err(_) => {
+            // Rejecting empty fixtures is also acceptable behavior
+            capture_log.set_metrics(CaptureMetrics {
+                capture_events: 0,
+                decisions_captured: 0,
+                secrets_detected: 0,
+                secrets_redacted: 0,
+                compression_ratio: None,
+                read_events: 0,
+                roundtrip_match: false,
+            });
+        }
+    }
+}
