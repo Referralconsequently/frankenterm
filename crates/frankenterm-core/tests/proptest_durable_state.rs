@@ -608,13 +608,14 @@ fn default_manager_is_empty() {
 }
 
 #[test]
-#[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
-fn with_max_checkpoints_zero_panics() {
-    // Known edge case: max_checkpoints=0 causes panic in checkpoint() because
-    // all entries are drained then .last().unwrap() is called on empty vec.
+fn with_max_checkpoints_zero_clamps_to_one() {
+    // max_checkpoints=0 is normalized to 1 via normalize_max_checkpoints(),
+    // so checkpoint() succeeds without panic.
     let reg = make_registry(&[1]);
     let mut mgr = DurableStateManager::with_max_checkpoints(0);
-    mgr.checkpoint(&reg, "a", CheckpointTrigger::Manual, HashMap::new());
+    let cp = mgr.checkpoint(&reg, "a", CheckpointTrigger::Manual, HashMap::new());
+    assert_eq!(cp.label, "a");
+    assert_eq!(mgr.checkpoint_count(), 1);
 }
 
 #[test]
