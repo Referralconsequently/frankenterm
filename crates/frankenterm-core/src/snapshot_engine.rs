@@ -175,8 +175,9 @@ pub struct SnapshotEngineTelemetrySnapshot {
 // Types
 // =============================================================================
 
-/// Maximum age of a stored detection event to consider for agent state inference.
-const STATE_DETECTION_MAX_AGE: Duration = Duration::from_secs(300); // 5 minutes
+// Canonical value in TuningConfig::RuntimeTuning (unified — was duplicated in agent_correlator.rs).
+const STATE_DETECTION_MAX_AGE: Duration =
+    Duration::from_secs(crate::tuning_config::RuntimeTuning::DEFAULT_STATE_DETECTION_MAX_AGE_SECS);
 
 /// What triggered the snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

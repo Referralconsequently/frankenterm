@@ -40,14 +40,14 @@ pub const AUDIT_SCHEMA_VERSION: &str = "ft.recorder.audit.v1";
 /// Hash of the genesis entry (all zeros).
 pub const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
-/// Default audit log retention in days.
-pub const DEFAULT_AUDIT_RETENTION_DAYS: u32 = 90;
-
-/// Maximum raw-access query rows (default).
-pub const DEFAULT_MAX_RAW_QUERY_ROWS: u32 = 100;
-
-/// Default approval TTL in seconds.
-pub const DEFAULT_APPROVAL_TTL_SECONDS: u32 = 900;
+// Canonical values in TuningConfig::AuditTuning.
+// To override: set [tuning.audit] in ft.toml.
+pub const DEFAULT_AUDIT_RETENTION_DAYS: u32 =
+    crate::tuning_config::AuditTuning::DEFAULT_RETENTION_DAYS;
+pub const DEFAULT_MAX_RAW_QUERY_ROWS: u32 =
+    crate::tuning_config::AuditTuning::DEFAULT_MAX_RAW_QUERY_ROWS as u32;
+pub const DEFAULT_APPROVAL_TTL_SECONDS: u32 =
+    crate::tuning_config::AuditTuning::DEFAULT_APPROVAL_TTL_SECS as u32;
 
 // =============================================================================
 // Access Tiers
@@ -308,6 +308,29 @@ impl Default for AuditLogConfig {
             policy_version: "governance.v1".to_string(),
         }
     }
+}
+
+impl AuditLogConfig {
+    /// Build audit log settings from the live tuning config.
+    #[must_use]
+    pub fn from_tuning(tuning: &crate::tuning_config::TuningConfig) -> Self {
+        Self {
+            retention_days: tuning.audit.retention_days,
+            ..Self::default()
+        }
+    }
+}
+
+/// Resolve the live max-row limit for raw audit queries from tuning.
+#[must_use]
+pub fn max_raw_query_rows_from_tuning(tuning: &crate::tuning_config::TuningConfig) -> u32 {
+    u32::try_from(tuning.audit.max_raw_query_rows).unwrap_or(u32::MAX)
+}
+
+/// Resolve the live approval TTL from tuning.
+#[must_use]
+pub fn approval_ttl_seconds_from_tuning(tuning: &crate::tuning_config::TuningConfig) -> u32 {
+    u32::try_from(tuning.audit.approval_ttl_secs).unwrap_or(u32::MAX)
 }
 
 // =============================================================================
@@ -2045,6 +2068,19 @@ mod tests {
         assert_eq!(DEFAULT_AUDIT_RETENTION_DAYS, 90);
         assert_eq!(DEFAULT_MAX_RAW_QUERY_ROWS, 100);
         assert_eq!(DEFAULT_APPROVAL_TTL_SECONDS, 900);
+    }
+
+    #[test]
+    fn audit_tuning_helpers_follow_live_values() {
+        let mut tuning = crate::tuning_config::TuningConfig::default();
+        tuning.audit.retention_days = 45;
+        tuning.audit.max_raw_query_rows = 250;
+        tuning.audit.approval_ttl_secs = 3_600;
+
+        let config = AuditLogConfig::from_tuning(&tuning);
+        assert_eq!(config.retention_days, 45);
+        assert_eq!(max_raw_query_rows_from_tuning(&tuning), 250);
+        assert_eq!(approval_ttl_seconds_from_tuning(&tuning), 3_600);
     }
 
     #[test]

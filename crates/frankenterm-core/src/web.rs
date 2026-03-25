@@ -67,20 +67,20 @@ pub fn resolve_port(tuning: Option<&crate::tuning_config::WebTuning>) -> u16 {
     tuning.map(|t| t.default_port).unwrap_or(DEFAULT_PORT)
 }
 
-/// Hard ceiling on list endpoint results.
-const MAX_LIMIT: usize = 500;
-/// Default limit when none is provided.
-const DEFAULT_LIMIT: usize = 50;
-
-/// Maximum request body size (64 KB). Rejects oversized requests early.
-const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+// Web API limits — canonical values in TuningConfig::WebTuning.
+// To override: set [tuning.web] in ft.toml.
+const MAX_LIMIT: usize = crate::tuning_config::WebTuning::DEFAULT_MAX_LIST_LIMIT;
+const DEFAULT_LIMIT: usize = crate::tuning_config::WebTuning::DEFAULT_LIST_LIMIT;
+const MAX_REQUEST_BODY_BYTES: usize =
+    crate::tuning_config::WebTuning::DEFAULT_MAX_REQUEST_BODY_BYTES;
 const STREAM_SCHEMA_VERSION: &str = "ft.stream.v1";
-const STREAM_DEFAULT_MAX_HZ: u64 = 50;
-const STREAM_MAX_MAX_HZ: u64 = 500;
+const STREAM_DEFAULT_MAX_HZ: u64 =
+    crate::tuning_config::WebTuning::DEFAULT_STREAM_DEFAULT_MAX_HZ as u64;
+const STREAM_MAX_MAX_HZ: u64 = crate::tuning_config::WebTuning::DEFAULT_STREAM_MAX_MAX_HZ as u64;
 const STREAM_CHANNEL_BUFFER: usize = 256;
-const STREAM_KEEPALIVE_SECS: u64 = 15;
-const STREAM_SCAN_LIMIT: usize = 256;
-const STREAM_SCAN_MAX_PAGES: usize = 8;
+const STREAM_KEEPALIVE_SECS: u64 = crate::tuning_config::WebTuning::DEFAULT_STREAM_KEEPALIVE_SECS;
+const STREAM_SCAN_LIMIT: usize = crate::tuning_config::WebTuning::DEFAULT_STREAM_SCAN_LIMIT;
+const STREAM_SCAN_MAX_PAGES: usize = crate::tuning_config::WebTuning::DEFAULT_STREAM_SCAN_MAX_PAGES;
 const STREAM_MAX_CONSECUTIVE_DROPS: u64 = 64;
 
 /// Configuration for the web server.

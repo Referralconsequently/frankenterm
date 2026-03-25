@@ -3375,8 +3375,9 @@ pub struct PaneBookmarkRecord {
 pub const SAVED_SEARCH_SINCE_MODE_LAST_RUN: &str = "last_run";
 /// Fixed since-mode uses the stored since_ms value.
 pub const SAVED_SEARCH_SINCE_MODE_FIXED: &str = "fixed";
-/// Default maximum results for saved searches.
-pub const SAVED_SEARCH_DEFAULT_LIMIT: i64 = 50;
+// Canonical value in TuningConfig::SearchTuning.
+pub const SAVED_SEARCH_DEFAULT_LIMIT: i64 =
+    crate::tuning_config::SearchTuning::DEFAULT_SAVED_SEARCH_LIMIT as i64;
 
 impl SavedSearchRecord {
     /// Build a new saved search record with defaults.

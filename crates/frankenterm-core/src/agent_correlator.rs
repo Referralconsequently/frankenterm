@@ -35,8 +35,9 @@ use crate::patterns::{AgentType, Detection};
 use crate::session_pane_state::AgentMetadata;
 use crate::wezterm::PaneInfo;
 
-/// Maximum age of a detection to consider for state inference.
-const STATE_DETECTION_MAX_AGE: Duration = Duration::from_secs(300); // 5 minutes
+// Canonical value in TuningConfig::RuntimeTuning (unified — was duplicated in snapshot_engine.rs).
+const STATE_DETECTION_MAX_AGE: Duration =
+    Duration::from_secs(crate::tuning_config::RuntimeTuning::DEFAULT_STATE_DETECTION_MAX_AGE_SECS);
 
 /// Agent installation inventory entry for robot/API consumers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

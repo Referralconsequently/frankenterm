@@ -101,6 +101,13 @@ pub struct SshDomain {
     #[dynamic(default)]
     pub ssh_option: HashMap<String, String>,
 
+    /// Optional override path for the ssh_config file used for this domain.
+    ///
+    /// When set, ft resolves host defaults from this file instead of the
+    /// standard ssh config search path and passes the same override to the
+    /// libssh session initialization path.
+    pub ssh_config_file: Option<String>,
+
     pub default_prog: Option<Vec<String>>,
 
     #[dynamic(default)]
@@ -265,6 +272,7 @@ mod tests {
         assert_eq!(domain.remote_address, "");
         assert!(!domain.no_agent_auth);
         assert!(domain.username.is_none());
+        assert!(domain.ssh_config_file.is_none());
         assert!(!domain.connect_automatically);
         assert!(matches!(domain.multiplexing, SshMultiplexing::WezTerm));
         assert!(matches!(domain.assume_shell, Shell::Unknown));

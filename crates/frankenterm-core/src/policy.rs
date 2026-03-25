@@ -1962,8 +1962,9 @@ pub fn parse_serialized_decision_surface(serialized: Option<&str>) -> Option<Pol
         })
 }
 
-/// Rolling window for rate limiting
-const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+// Canonical default in TuningConfig::PolicyTuning.
+const DEFAULT_RATE_LIMIT_WINDOW: Duration =
+    Duration::from_secs(crate::tuning_config::PolicyTuning::DEFAULT_RATE_LIMIT_WINDOW_SECS);
 
 /// Scope for a rate limit decision
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1984,10 +1985,12 @@ pub struct RateLimitHit {
     pub scope: RateLimitScope,
     /// Action kind being limited
     pub action: ActionKind,
-    /// Limit in operations per minute
+    /// Limit in operations per sliding window
     pub limit: u32,
     /// Current count in the window
     pub current: usize,
+    /// Sliding window duration used for the decision
+    pub window: Duration,
     /// Suggested retry-after delay
     pub retry_after: Duration,
 }
@@ -1997,19 +2000,22 @@ impl RateLimitHit {
     #[must_use]
     pub fn reason(&self) -> String {
         let retry_secs = self.retry_after.as_millis().div_ceil(1000);
+        let window_secs = self.window.as_secs();
         let mut reason = match self.scope {
             RateLimitScope::PerPane { pane_id } => format!(
-                "Rate limit exceeded for action '{}' on pane {}: {}/{} per minute (per-pane)",
+                "Rate limit exceeded for action '{}' on pane {}: {}/{} in {}s window (per-pane)",
                 self.action.as_str(),
                 pane_id,
                 self.current,
-                self.limit
+                self.limit,
+                window_secs
             ),
             RateLimitScope::Global => format!(
-                "Global rate limit exceeded for action '{}': {}/{} per minute",
+                "Global rate limit exceeded for action '{}': {}/{} in {}s window",
                 self.action.as_str(),
                 self.current,
-                self.limit
+                self.limit,
+                window_secs
             ),
         };
 
@@ -2060,10 +2066,12 @@ impl RateLimitOutcome {
 
 /// Rate limiter per pane and action kind
 pub struct RateLimiter {
-    /// Maximum operations per minute per pane/action
+    /// Maximum operations per sliding window per pane/action
     limit_per_pane: u32,
-    /// Maximum operations per minute globally per action
+    /// Maximum operations per sliding window globally per action
     limit_global: u32,
+    /// Sliding window duration
+    window: Duration,
     /// Tracking per pane/action
     pane_counts: HashMap<(u64, ActionKind), Vec<Instant>>,
     /// Tracking per action globally
@@ -2077,16 +2085,24 @@ impl RateLimiter {
         Self {
             limit_per_pane,
             limit_global,
+            window: DEFAULT_RATE_LIMIT_WINDOW,
             pane_counts: HashMap::new(),
             global_counts: HashMap::new(),
         }
+    }
+
+    /// Override the sliding rate-limit window.
+    #[must_use]
+    pub fn with_window(mut self, window: Duration) -> Self {
+        self.window = window;
+        self
     }
 
     /// Check if operation is allowed for pane/action
     #[must_use]
     pub fn check(&mut self, action: ActionKind, pane_id: Option<u64>) -> RateLimitOutcome {
         let now = Instant::now();
-        let window_start = now.checked_sub(RATE_LIMIT_WINDOW).unwrap_or(now);
+        let window_start = now.checked_sub(self.window).unwrap_or(now);
 
         if let Some(pane_id) = pane_id {
             if self.limit_per_pane > 0 {
@@ -2094,12 +2110,13 @@ impl RateLimiter {
                 prune_old(timestamps, window_start);
                 let current = timestamps.len();
                 if current >= self.limit_per_pane as usize {
-                    let retry_after = retry_after(now, timestamps);
+                    let retry_after = retry_after(now, timestamps, self.window);
                     return RateLimitOutcome::Limited(RateLimitHit {
                         scope: RateLimitScope::PerPane { pane_id },
                         action,
                         limit: self.limit_per_pane,
                         current,
+                        window: self.window,
                         retry_after,
                     });
                 }
@@ -2111,12 +2128,13 @@ impl RateLimiter {
             prune_old(timestamps, window_start);
             let current = timestamps.len();
             if current >= self.limit_global as usize {
-                let retry_after = retry_after(now, timestamps);
+                let retry_after = retry_after(now, timestamps, self.window);
                 return RateLimitOutcome::Limited(RateLimitHit {
                     scope: RateLimitScope::Global,
                     action,
                     limit: self.limit_global,
                     current,
+                    window: self.window,
                     retry_after,
                 });
             }
@@ -2145,10 +2163,10 @@ fn prune_old(timestamps: &mut Vec<Instant>, window_start: Instant) {
     timestamps.retain(|t| *t >= window_start);
 }
 
-fn retry_after(now: Instant, timestamps: &[Instant]) -> Duration {
+fn retry_after(now: Instant, timestamps: &[Instant], window: Duration) -> Duration {
     timestamps
         .first()
-        .and_then(|oldest| oldest.checked_add(RATE_LIMIT_WINDOW))
+        .and_then(|oldest| oldest.checked_add(window))
         .map_or(Duration::from_secs(0), |deadline| {
             deadline.saturating_duration_since(now)
         })
@@ -3615,6 +3633,15 @@ impl PolicyEngine {
     #[must_use]
     pub fn strict() -> Self {
         Self::new(30, 100, true)
+    }
+
+    /// Apply runtime tuning values that affect policy behavior.
+    #[must_use]
+    pub fn with_tuning(mut self, tuning: &crate::tuning_config::TuningConfig) -> Self {
+        self.rate_limiter = self
+            .rate_limiter
+            .with_window(Duration::from_secs(tuning.policy.rate_limit_window_secs));
+        self
     }
 
     /// Set command safety gate configuration
@@ -6728,6 +6755,18 @@ mod tests {
             RateLimitOutcome::Allowed => panic!("Expected rate limit"),
         };
         assert!(hit.retry_after > Duration::from_secs(0));
+    }
+
+    #[test]
+    fn rate_limiter_custom_window_expires_entries() {
+        let mut limiter = RateLimiter::new(1, 100).with_window(Duration::from_millis(10));
+        assert!(limiter.check(ActionKind::SendText, Some(1)).is_allowed());
+        assert!(matches!(
+            limiter.check(ActionKind::SendText, Some(1)),
+            RateLimitOutcome::Limited(_)
+        ));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(limiter.check(ActionKind::SendText, Some(1)).is_allowed());
     }
 
     // ========================================================================
@@ -10457,6 +10496,7 @@ mod tests {
             action: ActionKind::SendText,
             limit: 60,
             current: 61,
+            window: DEFAULT_RATE_LIMIT_WINDOW,
             retry_after: Duration::from_secs(5),
         };
         let cloned = h.clone();
@@ -10472,6 +10512,7 @@ mod tests {
             action: ActionKind::SendText,
             limit: 10,
             current: 11,
+            window: DEFAULT_RATE_LIMIT_WINDOW,
             retry_after: Duration::from_secs(3),
         };
         let reason = h.reason();
@@ -10487,6 +10528,7 @@ mod tests {
             action: ActionKind::Close,
             limit: 5,
             current: 6,
+            window: DEFAULT_RATE_LIMIT_WINDOW,
             retry_after: Duration::ZERO,
         };
         let reason = h.reason();
@@ -10509,6 +10551,7 @@ mod tests {
             action: ActionKind::Spawn,
             limit: 1,
             current: 2,
+            window: DEFAULT_RATE_LIMIT_WINDOW,
             retry_after: Duration::from_secs(1),
         });
         assert!(!limited.is_allowed());

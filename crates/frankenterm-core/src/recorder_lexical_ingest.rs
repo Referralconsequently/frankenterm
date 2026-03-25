@@ -30,8 +30,10 @@ use crate::tantivy_ingest::{IndexCommitStats, IndexDocumentFields, IndexWriteErr
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default Tantivy writer heap size (50 MB).
-const DEFAULT_WRITER_MEMORY_BYTES: usize = 50_000_000;
+// Canonical value in TuningConfig::SearchTuning.
+// To override: set [tuning.search] tantivy_writer_memory_bytes in ft.toml.
+const DEFAULT_WRITER_MEMORY_BYTES: usize =
+    crate::tuning_config::SearchTuning::DEFAULT_TANTIVY_WRITER_MEMORY_BYTES;
 
 /// Filename for the persisted schema fingerprint alongside the index.
 const FINGERPRINT_FILENAME: &str = ".ft_schema_fingerprint";

@@ -86,11 +86,10 @@ pub struct RateLimitTelemetrySnapshot {
     pub events_pruned: u64,
 }
 
-/// Maximum number of tracked panes to prevent unbounded growth.
-const MAX_TRACKED_PANES: usize = 256;
-
-/// Maximum rate limit events per pane before oldest are evicted.
-const MAX_EVENTS_PER_PANE: usize = 64;
+// Canonical values in TuningConfig::PolicyTuning.
+// To override: set [tuning.policy] in ft.toml.
+const MAX_TRACKED_PANES: usize = crate::tuning_config::PolicyTuning::DEFAULT_MAX_TRACKED_PANES;
+const MAX_EVENTS_PER_PANE: usize = crate::tuning_config::PolicyTuning::DEFAULT_MAX_EVENTS_PER_PANE;
 
 /// Default cooldown if no retry_after is extracted from the detection.
 const DEFAULT_COOLDOWN_SECS: u64 = 300; // 5 minutes

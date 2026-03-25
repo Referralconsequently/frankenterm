@@ -16,8 +16,9 @@ use crate::replay_ci_gate::{GateId, GateReport, GateStatus};
 /// Environment variable to disable gate enforcement.
 pub const KILL_SWITCH_ENV: &str = "FT_REPLAY_GATES_ENFORCE";
 
-/// Default shadow period in days.
-pub const DEFAULT_SHADOW_DAYS: u64 = 14;
+// Canonical value in TuningConfig::AuditTuning.
+pub const DEFAULT_SHADOW_DAYS: u64 =
+    crate::tuning_config::AuditTuning::DEFAULT_SHADOW_ROLLOUT_DAYS as u64;
 
 /// Flaky rate warning threshold (3%).
 pub const FLAKY_RATE_WARNING: f64 = 0.03;
@@ -110,6 +111,15 @@ impl Default for RolloutConfig {
 }
 
 impl RolloutConfig {
+    /// Build rollout settings from the live tuning config.
+    #[must_use]
+    pub fn from_tuning(tuning: &crate::tuning_config::TuningConfig) -> Self {
+        Self {
+            shadow_days: u64::from(tuning.audit.shadow_rollout_days),
+            ..Self::default()
+        }
+    }
+
     /// Check the kill switch env var (without calling set_var).
     #[must_use]
     pub fn is_enforcement_disabled_by_env(env_value: Option<&str>) -> bool {
@@ -513,6 +523,16 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let restored: RolloutConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, config);
+    }
+
+    #[test]
+    fn rollout_config_from_tuning_uses_live_shadow_days() {
+        let mut tuning = crate::tuning_config::TuningConfig::default();
+        tuning.audit.shadow_rollout_days = 21;
+
+        let config = RolloutConfig::from_tuning(&tuning);
+        assert_eq!(config.shadow_days, 21);
+        assert_eq!(config.stage, RolloutStage::Shadow);
     }
 
     #[test]

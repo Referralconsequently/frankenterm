@@ -189,7 +189,11 @@ pub struct RemoteSshDomain {
 
 pub fn ssh_domain_to_ssh_config(ssh_dom: &SshDomain) -> anyhow::Result<ConfigMap> {
     let mut ssh_config = frankenterm_ssh::Config::new();
-    ssh_config.add_default_config_files();
+    if let Some(config_file) = &ssh_dom.ssh_config_file {
+        ssh_config.add_config_file(config_file);
+    } else {
+        ssh_config.add_default_config_files();
+    }
 
     let (remote_host_name, port) = {
         let parts: Vec<&str> = ssh_dom.remote_address.split(':').collect();
@@ -215,6 +219,12 @@ pub fn ssh_domain_to_ssh_config(ssh_dom: &SshDomain) -> anyhow::Result<ConfigMap
     );
     for (k, v) in &ssh_dom.ssh_option {
         ssh_config.insert(k.to_string(), v.to_string());
+    }
+    if let Some(config_file) = &ssh_dom.ssh_config_file {
+        ssh_config.insert(
+            "frankenterm_ssh_config_file".to_string(),
+            config_file.to_string(),
+        );
     }
 
     if let Some(username) = &ssh_dom.username {
@@ -1244,6 +1254,40 @@ mod tests {
                 .get("frankenterm_ssh_backend")
                 .map(String::as_str),
             Some("ssh2")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ssh_domain_to_ssh_config_uses_override_config_file() -> anyhow::Result<()> {
+        let _guard = TestConfigGuard::new();
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let config_path =
+            std::env::temp_dir().join(format!("frankenterm-ssh-config-{unique}.conf"));
+        std::fs::write(
+            &config_path,
+            "Host override.example.invalid\n  User overridden-user\n",
+        )?;
+
+        let mut domain = test_domain("override.example.invalid");
+        domain.ssh_config_file = Some(config_path.display().to_string());
+
+        let ssh_config = ssh_domain_to_ssh_config(&domain)?;
+        std::fs::remove_file(&config_path).ok();
+
+        assert_eq!(
+            ssh_config.get("user").map(String::as_str),
+            Some("overridden-user")
+        );
+        assert_eq!(
+            ssh_config
+                .get("frankenterm_ssh_config_file")
+                .map(String::as_str),
+            domain.ssh_config_file.as_deref()
         );
         Ok(())
     }

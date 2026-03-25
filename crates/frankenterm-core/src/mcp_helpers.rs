@@ -99,6 +99,7 @@ pub(super) fn build_policy_engine(config: &Config, require_prompt_active: bool) 
         config.safety.rate_limit_global,
         require_prompt_active,
     )
+    .with_tuning(&config.tuning)
     .with_command_gate_config(config.safety.command_gate.clone())
     .with_trauma_guard_enabled(config.safety.trauma_guard.enabled)
     .with_policy_rules(config.safety.rules.clone())

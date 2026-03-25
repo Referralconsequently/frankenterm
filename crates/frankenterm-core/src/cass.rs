@@ -418,8 +418,10 @@ pub struct ViewOptions {
     pub context_lines: Option<usize>,
 }
 
+// Canonical value in TuningConfig::SearchTuning.
 #[cfg(feature = "cass-export")]
-const DEFAULT_CASS_EXPORT_LIMIT: usize = 1_000;
+const DEFAULT_CASS_EXPORT_LIMIT: usize =
+    crate::tuning_config::SearchTuning::DEFAULT_CASS_EXPORT_LIMIT;
 #[cfg(feature = "cass-export")]
 const CASS_EXPORT_SESSION_PREFIX: &str = "ft-session-";
 

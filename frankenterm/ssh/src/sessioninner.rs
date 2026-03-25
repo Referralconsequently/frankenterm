@@ -72,6 +72,13 @@ impl Drop for SessionInner {
 }
 
 impl SessionInner {
+    fn ssh_config_file_override(&self) -> Option<&str> {
+        self.config
+            .get("frankenterm_ssh_config_file")
+            .map(String::as_str)
+            .filter(|path| !path.is_empty())
+    }
+
     pub fn run(&mut self) {
         if let Err(err) = self.run_impl() {
             self.tx_event
@@ -191,7 +198,7 @@ impl SessionInner {
         sess.set_option(libssh_rs::SshOption::Hostname(hostname.clone()))?;
         sess.set_option(libssh_rs::SshOption::User(Some(user)))?;
         sess.set_option(libssh_rs::SshOption::Port(port))?;
-        sess.options_parse_config(None)?; // FIXME: overridden config path?
+        sess.options_parse_config(self.ssh_config_file_override())?;
         if let Some(agent) = self.config.get("identityagent") {
             sess.set_option(libssh_rs::SshOption::IdentityAgent(Some(agent.clone())))?;
         }
@@ -1431,5 +1438,56 @@ mod tests {
         let closed = maybe_close_exited_output(&mut running, false, 0);
         assert!(!closed, "running stream must stay open");
         assert!(running.fd.is_some(), "fd should remain for running stream");
+    }
+
+    #[test]
+    fn ssh_config_file_override_defaults_to_none() {
+        let sess = SessionInner {
+            config: ConfigMap::new(),
+            tx_event: bounded(1).0,
+            rx_req: bounded(1).1,
+            channels: HashMap::new(),
+            files: HashMap::new(),
+            dirs: HashMap::new(),
+            next_channel_id: 1,
+            next_file_id: 1,
+            sender_read: socketpair().expect("socketpair failed").1,
+            session_was_dropped: false,
+            shown_accept_env_error: false,
+            last_keep_alive: Instant::now(),
+            keep_alive: None,
+        };
+
+        assert_eq!(sess.ssh_config_file_override(), None);
+    }
+
+    #[test]
+    fn ssh_config_file_override_reads_internal_config_key() {
+        let mut config = ConfigMap::new();
+        config.insert(
+            "frankenterm_ssh_config_file".to_string(),
+            "/tmp/override-ssh-config".to_string(),
+        );
+
+        let sess = SessionInner {
+            config,
+            tx_event: bounded(1).0,
+            rx_req: bounded(1).1,
+            channels: HashMap::new(),
+            files: HashMap::new(),
+            dirs: HashMap::new(),
+            next_channel_id: 1,
+            next_file_id: 1,
+            sender_read: socketpair().expect("socketpair failed").1,
+            session_was_dropped: false,
+            shown_accept_env_error: false,
+            last_keep_alive: Instant::now(),
+            keep_alive: None,
+        };
+
+        assert_eq!(
+            sess.ssh_config_file_override(),
+            Some("/tmp/override-ssh-config")
+        );
     }
 }

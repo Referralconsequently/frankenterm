@@ -92,7 +92,10 @@ impl Rope {
         rope
     }
 
-    /// Return the total character count.
+    /// Return the total byte length of the rope content.
+    ///
+    /// Note: this is a byte count, not a character count. For multi-byte
+    /// UTF-8 text, this will be larger than the number of characters.
     #[must_use]
     pub fn len(&self) -> usize {
         match self.root {
@@ -107,9 +110,9 @@ impl Rope {
         self.len() == 0
     }
 
-    /// Get the character at the given index.
+    /// Get the character at the given byte offset.
     ///
-    /// Returns `None` if the index is out of bounds.
+    /// Returns `None` if the offset is out of bounds or not on a char boundary.
     #[must_use]
     pub fn char_at(&self, index: usize) -> Option<char> {
         let root = self.root?;
@@ -118,7 +121,8 @@ impl Rope {
 
     /// Extract a substring as a new `String`.
     ///
-    /// Returns characters in the range `[start, end)`.
+    /// Returns bytes in the range `[start, end)`. Both `start` and `end`
+    /// are byte offsets and should fall on UTF-8 character boundaries.
     #[must_use]
     pub fn substring(&self, start: usize, end: usize) -> String {
         if start >= end || start >= self.len() {

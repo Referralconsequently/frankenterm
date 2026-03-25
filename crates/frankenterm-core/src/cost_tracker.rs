@@ -119,8 +119,8 @@ pub struct CostTrackerConfig {
 // Cost data types
 // =============================================================================
 
-/// Maximum number of tracked panes to prevent unbounded growth.
-const MAX_TRACKED_PANES: usize = 512;
+// Canonical value in TuningConfig::PolicyTuning.
+const MAX_TRACKED_PANES: usize = crate::tuning_config::PolicyTuning::DEFAULT_COST_TRACKER_MAX_PANES;
 
 /// A single usage cost record.
 #[derive(Debug, Clone, Serialize, Deserialize)]

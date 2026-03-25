@@ -737,4 +737,29 @@ no_agent_auth = true
         assert!(domains[0].no_agent_auth);
         assert_eq!(domains[0].multiplexing, crate::SshMultiplexing::None);
     }
+
+    #[test]
+    fn ssh_domain_config_file_override_parses() {
+        let toml_str = r#"
+[[ssh_domains]]
+name = "custom"
+remote_address = "myhost.local"
+ssh_config_file = "/tmp/ft-ssh-config"
+"#;
+        let toml_value: toml::Value = toml_str.parse().unwrap();
+        let dynamic = toml_to_dynamic(&toml_value);
+        let cfg = Config::from_dynamic(
+            &dynamic,
+            FromDynamicOptions {
+                unknown_fields: UnknownFieldAction::Warn,
+                deprecated_fields: UnknownFieldAction::Warn,
+            },
+        )
+        .unwrap();
+        let domains = cfg.ssh_domains.expect("ssh_domains should be Some");
+        assert_eq!(
+            domains[0].ssh_config_file.as_deref(),
+            Some("/tmp/ft-ssh-config")
+        );
+    }
 }

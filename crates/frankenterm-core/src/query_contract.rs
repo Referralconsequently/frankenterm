@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage::{SearchLint, SearchLintSeverity, SearchOptions, lint_fts_query};
 
-/// Default result limit across search interfaces.
-pub const SEARCH_LIMIT_DEFAULT: usize = 20;
-/// Maximum allowed result limit across search interfaces.
-pub const SEARCH_LIMIT_MAX: usize = 1000;
+// Canonical values in TuningConfig::SearchTuning.
+// To override: set [tuning.search] in ft.toml.
+pub const SEARCH_LIMIT_DEFAULT: usize = crate::tuning_config::SearchTuning::DEFAULT_LIMIT;
+pub const SEARCH_LIMIT_MAX: usize = crate::tuning_config::SearchTuning::DEFAULT_MAX_LIMIT;
 /// Default snippet token budget.
 pub const SEARCH_SNIPPET_MAX_TOKENS: usize = 30;
 /// Default snippet highlight prefix.

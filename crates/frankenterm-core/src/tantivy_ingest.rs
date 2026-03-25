@@ -447,7 +447,9 @@ impl AppendLogReader {
         }
 
         // Guard against corrupt files with impossibly large payload lengths
-        const MAX_RECORD_PAYLOAD: u64 = 64 * 1024 * 1024; // 64 MiB
+        // Canonical value in TuningConfig::IngestTuning.
+        const MAX_RECORD_PAYLOAD: u64 =
+            crate::tuning_config::IngestTuning::DEFAULT_MAX_RECORD_PAYLOAD_BYTES as u64;
         if payload_len > MAX_RECORD_PAYLOAD {
             return Err(LogReadError::Corrupt {
                 byte_offset: record_start,

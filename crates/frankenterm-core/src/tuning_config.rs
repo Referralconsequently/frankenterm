@@ -276,11 +276,18 @@ pub struct IngestTuning {
     pub max_record_payload_bytes: usize,
 }
 
+impl IngestTuning {
+    /// Default max persist segment bytes (64 KB).
+    pub const DEFAULT_MAX_PERSIST_SEGMENT_BYTES: usize = 64 * 1024;
+    /// Default max record payload bytes (64 MB).
+    pub const DEFAULT_MAX_RECORD_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+}
+
 impl Default for IngestTuning {
     fn default() -> Self {
         Self {
-            max_persist_segment_bytes: 64 * 1024,
-            max_record_payload_bytes: 64 * 1024 * 1024,
+            max_persist_segment_bytes: Self::DEFAULT_MAX_PERSIST_SEGMENT_BYTES,
+            max_record_payload_bytes: Self::DEFAULT_MAX_RECORD_PAYLOAD_BYTES,
         }
     }
 }
@@ -354,13 +361,20 @@ pub struct PolicyTuning {
     pub cost_tracker_max_panes: usize,
 }
 
+impl PolicyTuning {
+    pub const DEFAULT_RATE_LIMIT_WINDOW_SECS: u64 = 60;
+    pub const DEFAULT_MAX_TRACKED_PANES: usize = 256;
+    pub const DEFAULT_MAX_EVENTS_PER_PANE: usize = 64;
+    pub const DEFAULT_COST_TRACKER_MAX_PANES: usize = 512;
+}
+
 impl Default for PolicyTuning {
     fn default() -> Self {
         Self {
-            rate_limit_window_secs: 60,
-            max_tracked_panes: 256,
-            max_events_per_pane: 64,
-            cost_tracker_max_panes: 512,
+            rate_limit_window_secs: Self::DEFAULT_RATE_LIMIT_WINDOW_SECS,
+            max_tracked_panes: Self::DEFAULT_MAX_TRACKED_PANES,
+            max_events_per_pane: Self::DEFAULT_MAX_EVENTS_PER_PANE,
+            cost_tracker_max_panes: Self::DEFAULT_COST_TRACKER_MAX_PANES,
         }
     }
 }
@@ -394,14 +408,22 @@ pub struct AuditTuning {
     pub shadow_rollout_days: u32,
 }
 
+impl AuditTuning {
+    pub const DEFAULT_RETENTION_DAYS: u32 = 90;
+    pub const DEFAULT_APPROVAL_TTL_SECS: u64 = 900;
+    pub const DEFAULT_MAX_RAW_QUERY_ROWS: usize = 100;
+    pub const DEFAULT_ARTIFACT_RETENTION_DAYS: u32 = 30;
+    pub const DEFAULT_SHADOW_ROLLOUT_DAYS: u32 = 14;
+}
+
 impl Default for AuditTuning {
     fn default() -> Self {
         Self {
-            retention_days: 90,
-            approval_ttl_secs: 900,
-            max_raw_query_rows: 100,
-            artifact_retention_days: 30,
-            shadow_rollout_days: 14,
+            retention_days: Self::DEFAULT_RETENTION_DAYS,
+            approval_ttl_secs: Self::DEFAULT_APPROVAL_TTL_SECS,
+            max_raw_query_rows: Self::DEFAULT_MAX_RAW_QUERY_ROWS,
+            artifact_retention_days: Self::DEFAULT_ARTIFACT_RETENTION_DAYS,
+            shadow_rollout_days: Self::DEFAULT_SHADOW_ROLLOUT_DAYS,
         }
     }
 }
@@ -455,19 +477,32 @@ pub struct WebTuning {
     pub stream_scan_max_pages: usize,
 }
 
+impl WebTuning {
+    pub const DEFAULT_HOST: &'static str = "127.0.0.1";
+    pub const DEFAULT_PORT: u16 = 8000;
+    pub const DEFAULT_MAX_LIST_LIMIT: usize = 500;
+    pub const DEFAULT_LIST_LIMIT: usize = 50;
+    pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+    pub const DEFAULT_STREAM_DEFAULT_MAX_HZ: u32 = 50;
+    pub const DEFAULT_STREAM_MAX_MAX_HZ: u32 = 500;
+    pub const DEFAULT_STREAM_KEEPALIVE_SECS: u64 = 15;
+    pub const DEFAULT_STREAM_SCAN_LIMIT: usize = 256;
+    pub const DEFAULT_STREAM_SCAN_MAX_PAGES: usize = 8;
+}
+
 impl Default for WebTuning {
     fn default() -> Self {
         Self {
-            default_host: "127.0.0.1".to_string(),
-            default_port: 8000,
-            max_list_limit: 500,
-            default_list_limit: 50,
-            max_request_body_bytes: 64 * 1024,
-            stream_default_max_hz: 50,
-            stream_max_max_hz: 500,
-            stream_keepalive_secs: 15,
-            stream_scan_limit: 256,
-            stream_scan_max_pages: 8,
+            default_host: Self::DEFAULT_HOST.to_string(),
+            default_port: Self::DEFAULT_PORT,
+            max_list_limit: Self::DEFAULT_MAX_LIST_LIMIT,
+            default_list_limit: Self::DEFAULT_LIST_LIMIT,
+            max_request_body_bytes: Self::DEFAULT_MAX_REQUEST_BODY_BYTES,
+            stream_default_max_hz: Self::DEFAULT_STREAM_DEFAULT_MAX_HZ,
+            stream_max_max_hz: Self::DEFAULT_STREAM_MAX_MAX_HZ,
+            stream_keepalive_secs: Self::DEFAULT_STREAM_KEEPALIVE_SECS,
+            stream_scan_limit: Self::DEFAULT_STREAM_SCAN_LIMIT,
+            stream_scan_max_pages: Self::DEFAULT_STREAM_SCAN_MAX_PAGES,
         }
     }
 }
@@ -606,6 +641,12 @@ pub struct WorkflowsTuning {
 }
 
 impl WorkflowsTuning {
+    // Descriptor limits
+    pub const DEFAULT_MAX_STEPS: usize = 32;
+    pub const DEFAULT_MAX_WAIT_TIMEOUT_MS: u64 = 120_000;
+    pub const DEFAULT_MAX_SLEEP_MS: u64 = 30_000;
+    pub const DEFAULT_MAX_TEXT_LEN: usize = 8192;
+    pub const DEFAULT_MAX_MATCH_LEN: usize = 1024;
     /// Default session-start context cooldown (ms).
     pub const DEFAULT_SESSION_START_CONTEXT_COOLDOWN_MS: u64 = 600_000;
     /// Default Claude Code limits cooldown (ms).
@@ -621,11 +662,11 @@ impl WorkflowsTuning {
 impl Default for WorkflowsTuning {
     fn default() -> Self {
         Self {
-            max_steps: 32,
-            max_wait_timeout_ms: 120_000,
-            max_sleep_ms: 30_000,
-            max_text_len: 8192,
-            max_match_len: 1024,
+            max_steps: Self::DEFAULT_MAX_STEPS,
+            max_wait_timeout_ms: Self::DEFAULT_MAX_WAIT_TIMEOUT_MS,
+            max_sleep_ms: Self::DEFAULT_MAX_SLEEP_MS,
+            max_text_len: Self::DEFAULT_MAX_TEXT_LEN,
+            max_match_len: Self::DEFAULT_MAX_MATCH_LEN,
             cass_session_start: CassQueryConfig::session_start(),
             cass_on_error: CassQueryConfig::on_error(),
             cass_auth: CassQueryConfig::auth(),
@@ -665,14 +706,27 @@ pub struct SearchTuning {
     pub tantivy_writer_memory_bytes: usize,
 }
 
+impl SearchTuning {
+    /// Default search limit.
+    pub const DEFAULT_LIMIT: usize = 20;
+    /// Default max search limit.
+    pub const DEFAULT_MAX_LIMIT: usize = 1000;
+    /// Default saved search limit.
+    pub const DEFAULT_SAVED_SEARCH_LIMIT: usize = 50;
+    /// Default CASS export limit.
+    pub const DEFAULT_CASS_EXPORT_LIMIT: usize = 1000;
+    /// Default tantivy writer memory (50 MB, exactly 50_000_000 bytes).
+    pub const DEFAULT_TANTIVY_WRITER_MEMORY_BYTES: usize = 50_000_000;
+}
+
 impl Default for SearchTuning {
     fn default() -> Self {
         Self {
-            default_limit: 20,
-            max_limit: 1000,
-            saved_search_limit: 50,
-            cass_export_limit: 1000,
-            tantivy_writer_memory_bytes: 50 * 1024 * 1024,
+            default_limit: Self::DEFAULT_LIMIT,
+            max_limit: Self::DEFAULT_MAX_LIMIT,
+            saved_search_limit: Self::DEFAULT_SAVED_SEARCH_LIMIT,
+            cass_export_limit: Self::DEFAULT_CASS_EXPORT_LIMIT,
+            tantivy_writer_memory_bytes: Self::DEFAULT_TANTIVY_WRITER_MEMORY_BYTES,
         }
     }
 }
@@ -778,15 +832,30 @@ pub struct WeztermTuning {
     pub write_timeout_ms: u64,
 }
 
+impl WeztermTuning {
+    /// Default CLI timeout (seconds).
+    pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+    /// Default retry delay (ms).
+    pub const DEFAULT_RETRY_DELAY_MS: u64 = 200;
+    /// Default max error bytes.
+    pub const DEFAULT_MAX_ERROR_BYTES: usize = 8192;
+    /// Default mux connect timeout (ms).
+    pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5000;
+    /// Default mux read timeout (ms).
+    pub const DEFAULT_READ_TIMEOUT_MS: u64 = 5000;
+    /// Default mux write timeout (ms).
+    pub const DEFAULT_WRITE_TIMEOUT_MS: u64 = 5000;
+}
+
 impl Default for WeztermTuning {
     fn default() -> Self {
         Self {
-            timeout_secs: 30,
-            retry_delay_ms: 200,
-            max_error_bytes: 8192,
-            connect_timeout_ms: 5000,
-            read_timeout_ms: 5000,
-            write_timeout_ms: 5000,
+            timeout_secs: Self::DEFAULT_TIMEOUT_SECS,
+            retry_delay_ms: Self::DEFAULT_RETRY_DELAY_MS,
+            max_error_bytes: Self::DEFAULT_MAX_ERROR_BYTES,
+            connect_timeout_ms: Self::DEFAULT_CONNECT_TIMEOUT_MS,
+            read_timeout_ms: Self::DEFAULT_READ_TIMEOUT_MS,
+            write_timeout_ms: Self::DEFAULT_WRITE_TIMEOUT_MS,
         }
     }
 }
@@ -1056,7 +1125,7 @@ default_port = 9000
         assert_eq!(cfg.search.max_limit, 1000);
         assert_eq!(cfg.search.saved_search_limit, 50);
         assert_eq!(cfg.search.cass_export_limit, 1000);
-        assert_eq!(cfg.search.tantivy_writer_memory_bytes, 50 * 1024 * 1024);
+        assert_eq!(cfg.search.tantivy_writer_memory_bytes, 50_000_000);
 
         // Wire protocol
         assert_eq!(cfg.wire_protocol.max_message_size, 1024 * 1024);
@@ -1102,5 +1171,111 @@ default_port = 9000
     fn empty_toml_produces_default() {
         let cfg: TuningConfig = toml::from_str("").expect("parse empty");
         assert_eq!(cfg, TuningConfig::default());
+    }
+
+    /// Verify all DEFAULT_ associated consts match the Default impl values.
+    /// This catches accidental divergence between the const and the Default.
+    #[test]
+    fn associated_consts_match_default_impl() {
+        let r = RuntimeTuning::default();
+        assert_eq!(
+            r.output_coalesce_window_ms,
+            RuntimeTuning::DEFAULT_OUTPUT_COALESCE_WINDOW_MS
+        );
+        assert_eq!(
+            r.resize_watchdog_warning_ms,
+            RuntimeTuning::DEFAULT_RESIZE_WATCHDOG_WARNING_MS
+        );
+        assert_eq!(
+            r.state_detection_max_age_secs,
+            RuntimeTuning::DEFAULT_STATE_DETECTION_MAX_AGE_SECS
+        );
+
+        let b = BackpressureTuning::default();
+        assert_eq!(b.warn_ratio, BackpressureTuning::DEFAULT_WARN_RATIO);
+
+        let s = SnapshotTuning::default();
+        assert_eq!(s.idle_window_secs, SnapshotTuning::DEFAULT_IDLE_WINDOW_SECS);
+
+        let i = IngestTuning::default();
+        assert_eq!(
+            i.max_persist_segment_bytes,
+            IngestTuning::DEFAULT_MAX_PERSIST_SEGMENT_BYTES
+        );
+
+        let p = PatternsTuning::default();
+        assert_eq!(p.max_seen_keys, PatternsTuning::DEFAULT_MAX_SEEN_KEYS);
+        assert_eq!(
+            p.bloom_false_positive_rate,
+            PatternsTuning::DEFAULT_BLOOM_FALSE_POSITIVE_RATE
+        );
+
+        let pol = PolicyTuning::default();
+        assert_eq!(
+            pol.rate_limit_window_secs,
+            PolicyTuning::DEFAULT_RATE_LIMIT_WINDOW_SECS
+        );
+        assert_eq!(
+            pol.max_tracked_panes,
+            PolicyTuning::DEFAULT_MAX_TRACKED_PANES
+        );
+        assert_eq!(
+            pol.cost_tracker_max_panes,
+            PolicyTuning::DEFAULT_COST_TRACKER_MAX_PANES
+        );
+
+        let a = AuditTuning::default();
+        assert_eq!(a.retention_days, AuditTuning::DEFAULT_RETENTION_DAYS);
+        assert_eq!(a.approval_ttl_secs, AuditTuning::DEFAULT_APPROVAL_TTL_SECS);
+
+        let w = WebTuning::default();
+        assert_eq!(w.default_port, WebTuning::DEFAULT_PORT);
+        assert_eq!(w.max_list_limit, WebTuning::DEFAULT_MAX_LIST_LIMIT);
+        assert_eq!(w.stream_scan_limit, WebTuning::DEFAULT_STREAM_SCAN_LIMIT);
+
+        let wf = WorkflowsTuning::default();
+        assert_eq!(wf.max_steps, WorkflowsTuning::DEFAULT_MAX_STEPS);
+        assert_eq!(
+            wf.claude_code_limits_cooldown_ms,
+            WorkflowsTuning::DEFAULT_CLAUDE_CODE_LIMITS_COOLDOWN_MS
+        );
+
+        let sr = SearchTuning::default();
+        assert_eq!(sr.default_limit, SearchTuning::DEFAULT_LIMIT);
+        assert_eq!(sr.max_limit, SearchTuning::DEFAULT_MAX_LIMIT);
+        assert_eq!(
+            sr.tantivy_writer_memory_bytes,
+            SearchTuning::DEFAULT_TANTIVY_WRITER_MEMORY_BYTES
+        );
+
+        let wp = WireProtocolTuning::default();
+        assert_eq!(
+            wp.max_message_size,
+            WireProtocolTuning::DEFAULT_MAX_MESSAGE_SIZE
+        );
+
+        let ip = IpcTuning::default();
+        assert_eq!(ip.max_message_size, IpcTuning::DEFAULT_MAX_MESSAGE_SIZE);
+
+        let wz = WeztermTuning::default();
+        assert_eq!(wz.timeout_secs, WeztermTuning::DEFAULT_TIMEOUT_SECS);
+        assert_eq!(
+            wz.connect_timeout_ms,
+            WeztermTuning::DEFAULT_CONNECT_TIMEOUT_MS
+        );
+
+        // CassQueryConfig associated consts
+        assert_eq!(
+            CassQueryConfig::SESSION_START_TIMEOUT_SECS,
+            CassQueryConfig::session_start().timeout_secs
+        );
+        assert_eq!(
+            CassQueryConfig::ON_ERROR_TIMEOUT_SECS,
+            CassQueryConfig::on_error().timeout_secs
+        );
+        assert_eq!(
+            CassQueryConfig::AUTH_HINT_MAX_CHARS,
+            CassQueryConfig::auth().hint_max_chars
+        );
     }
 }

@@ -1393,7 +1393,10 @@ pub struct PersistedCapture {
 ///
 /// This keeps per-segment storage, FTS, and regex detection work bounded even
 /// if a pane emits pathological bursts of output.
-const DEFAULT_MAX_PERSIST_SEGMENT_BYTES: usize = 64 * 1024;
+// Canonical value in TuningConfig::IngestTuning.
+// To override: set [tuning.ingest] max_persist_segment_bytes in ft.toml.
+const DEFAULT_MAX_PERSIST_SEGMENT_BYTES: usize =
+    crate::tuning_config::IngestTuning::DEFAULT_MAX_PERSIST_SEGMENT_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SegmentSizeEnforcement {

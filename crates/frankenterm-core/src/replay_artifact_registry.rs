@@ -31,8 +31,9 @@ use serde::{Deserialize, Serialize};
 /// Current manifest schema version.
 pub const MANIFEST_SCHEMA_VERSION: &str = "replay.manifest.v1";
 
-/// Default retention period for retired artifacts (days).
-pub const DEFAULT_RETENTION_DAYS: u64 = 30;
+// Canonical value in TuningConfig::AuditTuning.
+pub const DEFAULT_RETENTION_DAYS: u64 =
+    crate::tuning_config::AuditTuning::DEFAULT_ARTIFACT_RETENTION_DAYS as u64;
 
 // ---------------------------------------------------------------------------
 // Sensitivity tier (mirrors replay_capture::CaptureSensitivityTier)
@@ -314,6 +315,22 @@ impl Default for PruneOptions {
             dry_run: false,
             max_age_days: DEFAULT_RETENTION_DAYS,
             now_ms: 0,
+        }
+    }
+}
+
+impl PruneOptions {
+    /// Build prune options from the live tuning config.
+    #[must_use]
+    pub fn from_tuning(
+        tuning: &crate::tuning_config::TuningConfig,
+        dry_run: bool,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            dry_run,
+            max_age_days: u64::from(tuning.audit.artifact_retention_days),
+            now_ms,
         }
     }
 }
@@ -1267,6 +1284,17 @@ mod tests {
         assert_eq!(result.pruned_count, 1);
         assert_eq!(result.pruned_paths, vec!["old.ftreplay"]);
         assert!(reg.manifest().artifacts.is_empty());
+    }
+
+    #[test]
+    fn prune_options_from_tuning_use_live_retention() {
+        let mut tuning = crate::tuning_config::TuningConfig::default();
+        tuning.audit.artifact_retention_days = 45;
+
+        let options = PruneOptions::from_tuning(&tuning, true, 1234);
+        assert!(options.dry_run);
+        assert_eq!(options.max_age_days, 45);
+        assert_eq!(options.now_ms, 1234);
     }
 
     #[test]

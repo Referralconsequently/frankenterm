@@ -2172,9 +2172,10 @@ enum ArtifactCommands {
         #[arg(long)]
         dry_run: bool,
 
-        /// Maximum age in days for retired artifacts
-        #[arg(long, default_value = "30")]
-        max_age_days: u64,
+        /// Maximum age in days for retired artifacts.
+        /// Defaults to `tuning.audit.artifact_retention_days` when omitted.
+        #[arg(long)]
+        max_age_days: Option<u64>,
     },
 }
 
@@ -6928,6 +6929,7 @@ async fn authorize_read_or_search_policy(
         config.safety.rate_limit_global,
         false,
     )
+    .with_tuning(&config.tuning)
     .with_command_gate_config(config.safety.command_gate.clone())
     .with_policy_rules(config.safety.rules.clone());
 
@@ -7738,6 +7740,7 @@ fn build_send_dry_run_report(
         config.safety.rate_limit_global,
         config.safety.require_prompt_active,
     )
+    .with_tuning(&config.tuning)
     .with_command_gate_config(config.safety.command_gate.clone())
     .with_policy_rules(config.safety.rules.clone());
 
@@ -16050,6 +16053,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     config.safety.rate_limit_global,
                                     config.safety.require_prompt_active,
                                 )
+                                .with_tuning(&config.tuning)
                                 .with_command_gate_config(config.safety.command_gate.clone())
                                 .with_policy_rules(config.safety.rules.clone());
 
@@ -18025,7 +18029,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                         config.safety.rate_limit_per_pane,
                                         config.safety.rate_limit_global,
                                         false, // Don't require prompt active for robot mode
-                                    );
+                                    )
+                                    .with_tuning(&config.tuning);
 
                                     // Create policy-gated injector with WezTerm client
                                     let wezterm_handle =
@@ -18659,7 +18664,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                         config.safety.rate_limit_per_pane,
                                         config.safety.rate_limit_global,
                                         false,
-                                    );
+                                    )
+                                    .with_tuning(&config.tuning);
                                     let wezterm_handle =
                                         frankenterm_core::wezterm::default_wezterm_handle();
                                     let injector =
@@ -22991,6 +22997,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     config.safety.rate_limit_global,
                     config.safety.require_prompt_active,
                 )
+                .with_tuning(&config.tuning)
                 .with_command_gate_config(config.safety.command_gate.clone())
                 .with_policy_rules(config.safety.rules.clone());
 
@@ -23390,7 +23397,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             config.safety.rate_limit_per_pane,
                             config.safety.rate_limit_global,
                             true, // Require prompt active for human mode
-                        );
+                        )
+                        .with_tuning(&config.tuning);
 
                         let wezterm_handle = frankenterm_core::wezterm::default_wezterm_handle();
                         let injector = Arc::new(frankenterm_core::runtime_compat::Mutex::new(
@@ -25291,6 +25299,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     config.safety.rate_limit_global,
                     config.safety.require_prompt_active,
                 )
+                .with_tuning(&config.tuning)
                 .with_command_gate_config(config.safety.command_gate.clone())
                 .with_policy_rules(config.safety.rules.clone());
 
@@ -25550,6 +25559,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         config.safety.rate_limit_global,
                         config.safety.require_prompt_active,
                     )
+                    .with_tuning(&config.tuning)
                     .with_command_gate_config(config.safety.command_gate.clone())
                     .with_policy_rules(config.safety.rules.clone());
 
@@ -25839,6 +25849,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         config.safety.rate_limit_global,
                         config.safety.require_prompt_active,
                     )
+                    .with_tuning(&config.tuning)
                     .with_command_gate_config(config.safety.command_gate.clone())
                     .with_policy_rules(config.safety.rules.clone());
 
@@ -26094,6 +26105,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         config.safety.rate_limit_global,
                         config.safety.require_prompt_active,
                     )
+                    .with_tuning(&config.tuning)
                     .with_command_gate_config(config.safety.command_gate.clone())
                     .with_policy_rules(config.safety.rules.clone());
 
@@ -26171,7 +26183,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         config.safety.rate_limit_per_pane,
                         config.safety.rate_limit_global,
                         true,
-                    );
+                    )
+                    .with_tuning(&config.tuning);
                     let wezterm_handle = frankenterm_core::wezterm::default_wezterm_handle();
                     let injector =
                         std::sync::Arc::new(frankenterm_core::runtime_compat::Mutex::new(
@@ -28942,11 +28955,12 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-                    let result = registry.prune(&PruneOptions {
-                        dry_run,
-                        max_age_days,
-                        now_ms,
-                    });
+                    let mut prune_options =
+                        PruneOptions::from_tuning(&config.tuning, dry_run, now_ms);
+                    if let Some(max_age_days) = max_age_days {
+                        prune_options.max_age_days = max_age_days;
+                    }
+                    let result = registry.prune(&prune_options);
                     print!("{}", result.render_human());
                     if !dry_run && !result.pruned_paths.is_empty() {
                         let toml_str = registry
@@ -39764,7 +39778,8 @@ fn run_diagnostics(
     // Surface policy-layer health in the same doctor output path used for
     // environment/runtime diagnostics.
     let mut policy_engine =
-        frankenterm_core::policy::PolicyEngine::from_safety_config(&config.safety);
+        frankenterm_core::policy::PolicyEngine::from_safety_config(&config.safety)
+            .with_tuning(&config.tuning);
     let policy_checks = frankenterm_core::policy_diagnostics::check_policy_engine_health(
         &mut policy_engine,
         now_ms(),

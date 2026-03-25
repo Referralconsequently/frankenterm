@@ -529,11 +529,11 @@ pub enum MoveDirection {
 ///
 /// This is the fallback when no `CliConfig` is provided. The recommended
 /// production default is 15s (see `CliConfig::default()`).
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-/// Default retry attempts for safe operations
+// Canonical values in TuningConfig::WeztermTuning.
+// To override: set [tuning.wezterm] in ft.toml.
+const DEFAULT_TIMEOUT_SECS: u64 = crate::tuning_config::WeztermTuning::DEFAULT_TIMEOUT_SECS;
 const DEFAULT_RETRY_ATTEMPTS: u32 = 3;
-/// Default delay between retries (ms)
-const DEFAULT_RETRY_DELAY_MS: u64 = 200;
+const DEFAULT_RETRY_DELAY_MS: u64 = crate::tuning_config::WeztermTuning::DEFAULT_RETRY_DELAY_MS;
 /// Environment variable to override the wezterm binary path.
 const WEZTERM_CLI_ENV: &str = "FT_WEZTERM_CLI";
 
