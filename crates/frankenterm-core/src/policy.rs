@@ -6486,7 +6486,15 @@ where
                             .await
                     }
                     ActionKind::SendControl => client.send_control(pane_id, &text_owned).await,
-                    _ => unreachable!("inject called with non-injection action"),
+                    other => {
+                        return InjectionResult::Error {
+                            decision: decision.clone(),
+                            error: format!("inject called with non-injection action: {other:?}"),
+                            pane_id,
+                            action,
+                            audit_action_id: None,
+                        };
+                    }
                 };
 
                 match send_result {
