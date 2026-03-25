@@ -840,12 +840,12 @@ impl WeztermClient {
     /// not expose the tiered scrollback status.
     pub async fn pane_tiered_scrollback_summary(
         &self,
-        pane_id: u64,
+        _pane_id: u64,
     ) -> Result<Option<PaneTieredScrollbackSummary>> {
         #[cfg(all(feature = "vendored", unix))]
         if let Some(ref pool) = self.mux_pool {
             if self.mux_circuit_guard() {
-                match pool.get_pane_render_changes(pane_id).await {
+                match pool.get_pane_render_changes(_pane_id).await {
                     Ok(changes) => {
                         self.mux_circuit_record_success();
                         return Ok(changes.tiered_scrollback_status.map(Into::into));
@@ -853,7 +853,7 @@ impl WeztermClient {
                     Err(err) => {
                         self.mux_circuit_record_failure(&err);
                         return Err(WeztermError::CommandFailed(format!(
-                            "failed to read tiered scrollback status for pane {pane_id}: {err}"
+                            "failed to read tiered scrollback status for pane {_pane_id}: {err}"
                         ))
                         .into());
                     }
