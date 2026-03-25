@@ -62,8 +62,7 @@ use crate::query_contract::{
 use crate::runtime_compat::{CompatRuntime, RuntimeBuilder as CompatRuntimeBuilder};
 use crate::storage::{EventQuery, PaneReservation, StorageHandle};
 use crate::wezterm::{
-    PaneInfo, PaneWaiter, WaitMatcher, WaitOptions, WaitResult, WeztermHandleSource,
-    default_wezterm_handle,
+    PaneInfo, PaneWaiter, WaitOptions, WaitResult, WeztermHandleSource, default_wezterm_handle,
 };
 use crate::workflows::{
     HandleAuthRequired, HandleClaudeCodeLimits, HandleCompaction, HandleGeminiQuota,

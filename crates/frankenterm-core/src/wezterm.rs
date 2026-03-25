@@ -1806,6 +1806,20 @@ impl WaitMatcher {
     }
 }
 
+/// Compile a wait matcher from user-provided pattern parameters.
+///
+/// This validates regex patterns before any side-effecting send operation
+/// begins so higher layers can fail closed on invalid verification input.
+pub fn compile_wait_matcher(pattern: &str, regex: bool) -> Result<WaitMatcher> {
+    if regex {
+        let compiled = fancy_regex::Regex::new(pattern)
+            .map_err(|e| crate::error::PatternError::InvalidRegex(e.to_string()))?;
+        Ok(WaitMatcher::regex(compiled))
+    } else {
+        Ok(WaitMatcher::substring(pattern))
+    }
+}
+
 /// Options for wait-for polling behavior.
 #[derive(Debug, Clone)]
 pub struct WaitOptions {
@@ -2836,6 +2850,15 @@ mod tests {
         // Empty substring matches everything
         assert!(m.matches("anything").unwrap());
         assert!(m.matches("").unwrap());
+    }
+
+    #[test]
+    fn compile_wait_matcher_rejects_invalid_regex() {
+        let err = compile_wait_matcher("(", true).expect_err("invalid regex should fail");
+        assert!(matches!(
+            err,
+            crate::Error::Pattern(crate::error::PatternError::InvalidRegex(_))
+        ));
     }
 
     // =====================================================================

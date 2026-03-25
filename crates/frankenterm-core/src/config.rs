@@ -3874,6 +3874,10 @@ impl Config {
             .validate()
             .map_err(crate::error::ConfigError::ValidationError)?;
 
+        self.search
+            .validate()
+            .map_err(crate::error::ConfigError::ValidationError)?;
+
         self.distributed
             .validate()
             .map_err(crate::error::ConfigError::ValidationError)?;
@@ -4587,6 +4591,36 @@ disabled_rules = ["codex.usage_warning"]
         config.ingest.poll_interval_ms = 50;
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("poll_interval_ms"));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_search_quality_weight() {
+        let mut config = Config::default();
+        config.search.quality_weight = 1.5;
+
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("search.quality_weight"));
+    }
+
+    #[test]
+    fn load_with_overrides_rejects_invalid_search_config() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_path = temp.path().join("ft.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[search]
+enabled = true
+quality_weight = 1.5
+"#,
+        )
+        .expect("write ft.toml");
+
+        let err =
+            Config::load_with_overrides(Some(&config_path), true, &ConfigOverrides::default())
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("search.quality_weight"));
     }
 
     #[test]

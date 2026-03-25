@@ -167,14 +167,13 @@ impl RecorderQueryRequest {
         if !self.include_text {
             // Metadata-only queries need A0.
             AccessTier::A0PublicMetadata
-        } else if self.max_sensitivity == Some(SensitivityTier::T3Restricted) {
-            // Explicitly requesting T3 content needs A3.
-            AccessTier::A3PrivilegedRaw
         } else if self.pane_ids.len() > 1 || self.text_pattern.is_some() {
             // Cross-pane correlation or text search needs A2.
             AccessTier::A2FullQuery
         } else {
-            // Single-pane redacted query needs A1.
+            // Sensitivity filters do not request raw access by themselves; raw vs.
+            // redacted content is decided later from the actor's effective tier.
+            // Single-pane redacted queries therefore remain A1.
             AccessTier::A1RedactedQuery
         }
     }
@@ -580,31 +579,24 @@ impl<R: RecorderEventReader> RecorderQueryExecutor<R> {
         // 4. Apply sensitivity filter.
         let filtered: Vec<_> = raw_events
             .into_iter()
-            .filter(|e| {
-                let tier = classify_event_sensitivity(e);
-                if let Some(min) = request.min_sensitivity {
-                    if tier < min {
-                        return false;
-                    }
-                }
-                if let Some(max) = request.max_sensitivity {
-                    if tier > max {
-                        return false;
-                    }
-                }
-                true
+            .filter(|event| {
+                sensitivity_tier_matches_range(
+                    classify_event_sensitivity(event),
+                    request.min_sensitivity,
+                    request.max_sensitivity,
+                )
             })
             .collect();
 
         let total_matched = filtered.len();
 
         // 5. Apply pagination.
-        let has_more = request.offset + request.limit < total_matched;
         let page: Vec<_> = filtered
             .into_iter()
             .skip(request.offset)
             .take(request.limit)
             .collect();
+        let has_more = request.offset.saturating_add(page.len()) < total_matched;
 
         // 6. Redact and convert to response events.
         let mut events_redacted = 0;
@@ -699,22 +691,16 @@ impl<R: RecorderEventReader> RecorderQueryExecutor<R> {
         };
         let estimated_scan_count = self.reader.count_events(&filter);
 
-        let mut tiers_accessed = Vec::new();
-        if request.min_sensitivity.is_none()
-            || request.min_sensitivity == Some(SensitivityTier::T1Standard)
-        {
-            tiers_accessed.push(SensitivityTier::T1Standard);
-        }
-        if request.max_sensitivity.is_none()
-            || request.max_sensitivity >= Some(SensitivityTier::T2Sensitive)
-        {
-            tiers_accessed.push(SensitivityTier::T2Sensitive);
-        }
-        if request.max_sensitivity.is_none()
-            || request.max_sensitivity >= Some(SensitivityTier::T3Restricted)
-        {
-            tiers_accessed.push(SensitivityTier::T3Restricted);
-        }
+        let tiers_accessed = [
+            SensitivityTier::T1Standard,
+            SensitivityTier::T2Sensitive,
+            SensitivityTier::T3Restricted,
+        ]
+        .into_iter()
+        .filter(|tier| {
+            sensitivity_tier_matches_range(*tier, request.min_sensitivity, request.max_sensitivity)
+        })
+        .collect();
 
         let explanation = if can_execute {
             format!(
@@ -938,6 +924,24 @@ fn classify_event_kind(payload: &RecorderEventPayload) -> QueryEventKind {
     }
 }
 
+fn sensitivity_tier_matches_range(
+    tier: SensitivityTier,
+    min_sensitivity: Option<SensitivityTier>,
+    max_sensitivity: Option<SensitivityTier>,
+) -> bool {
+    if let Some(min) = min_sensitivity {
+        if tier < min {
+            return false;
+        }
+    }
+    if let Some(max) = max_sensitivity {
+        if tier > max {
+            return false;
+        }
+    }
+    true
+}
+
 /// Redact event text based on the actor's effective access tier and the event's
 /// sensitivity tier. Returns (text, was_redacted).
 fn redact_for_tier(
@@ -1063,9 +1067,9 @@ mod tests {
     use crate::policy::ActorKind;
     use crate::recorder_audit::AuditLogConfig;
     use crate::recording::{
-        RECORDER_EVENT_SCHEMA_VERSION_V1, RecorderEventCausality, RecorderEventPayload,
-        RecorderEventSource, RecorderIngressKind, RecorderRedactionLevel, RecorderSegmentKind,
-        RecorderTextEncoding,
+        RecorderEventCausality, RecorderEventPayload, RecorderEventSource, RecorderIngressKind,
+        RecorderRedactionLevel, RecorderSegmentKind, RecorderTextEncoding,
+        RECORDER_EVENT_SCHEMA_VERSION_V1,
     };
 
     // -----------------------------------------------------------------------
@@ -1226,10 +1230,16 @@ mod tests {
     }
 
     #[test]
-    fn query_required_tier_t3_explicit() {
-        let mut req = RecorderQueryRequest::default();
+    fn query_required_tier_t3_filter_respects_query_shape() {
+        let mut req = RecorderQueryRequest::for_panes(vec![1]);
+        req.min_sensitivity = Some(SensitivityTier::T3Restricted);
         req.max_sensitivity = Some(SensitivityTier::T3Restricted);
-        assert_eq!(req.required_tier(), AccessTier::A3PrivilegedRaw);
+        assert_eq!(req.required_tier(), AccessTier::A1RedactedQuery);
+
+        let mut search_req = RecorderQueryRequest::text_search("secret");
+        search_req.min_sensitivity = Some(SensitivityTier::T3Restricted);
+        search_req.max_sensitivity = Some(SensitivityTier::T3Restricted);
+        assert_eq!(search_req.required_tier(), AccessTier::A2FullQuery);
     }
 
     // -----------------------------------------------------------------------
@@ -1756,6 +1766,26 @@ mod tests {
         assert!(plan.elevation_needed);
     }
 
+    #[test]
+    fn explain_respects_min_sensitivity_bounds() {
+        let exec = test_executor(vec![make_event(
+            1,
+            0,
+            100,
+            "secret",
+            RecorderRedactionLevel::Full,
+        )]);
+
+        let mut req = RecorderQueryRequest::for_panes(vec![1]);
+        req.min_sensitivity = Some(SensitivityTier::T3Restricted);
+
+        let plan = exec.explain(&human_actor(), &req, now());
+        assert_eq!(
+            plan.sensitivity_tiers_accessed,
+            vec![SensitivityTier::T3Restricted]
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Sensitivity filtering
     // -----------------------------------------------------------------------
@@ -1788,6 +1818,28 @@ mod tests {
         let resp = exec.execute(&human_actor(), &req, now()).unwrap();
         assert_eq!(resp.events.len(), 1);
         assert_eq!(resp.events[0].sensitivity, SensitivityTier::T2Sensitive);
+    }
+
+    #[test]
+    fn t3_filter_uses_redaction_instead_of_privileged_requirement() {
+        let exec = test_executor(vec![make_event(
+            1,
+            0,
+            100,
+            "super secret content",
+            RecorderRedactionLevel::Full,
+        )]);
+
+        let mut req = RecorderQueryRequest::for_panes(vec![1]);
+        req.min_sensitivity = Some(SensitivityTier::T3Restricted);
+        req.max_sensitivity = Some(SensitivityTier::T3Restricted);
+
+        let resp = exec.execute(&human_actor(), &req, now()).unwrap();
+        assert_eq!(resp.effective_tier, AccessTier::A2FullQuery);
+        assert_eq!(resp.events.len(), 1);
+        assert_eq!(resp.events[0].sensitivity, SensitivityTier::T3Restricted);
+        assert!(resp.events[0].redacted);
+        assert_ne!(resp.events[0].text.as_deref(), Some("super secret content"));
     }
 
     // -----------------------------------------------------------------------
@@ -1989,6 +2041,25 @@ mod tests {
 
         assert_eq!(resp.events.len(), 0);
         assert_eq!(resp.total_count, 0);
+        assert!(!resp.has_more);
+    }
+
+    #[test]
+    fn pagination_overflow_safe_with_extreme_offset() {
+        let exec = test_executor(vec![make_event(
+            1,
+            0,
+            100,
+            "hello",
+            RecorderRedactionLevel::None,
+        )]);
+
+        let req = RecorderQueryRequest::for_panes(vec![1])
+            .with_limit(8)
+            .with_offset(usize::MAX);
+        let resp = exec.execute(&human_actor(), &req, now()).unwrap();
+        assert!(resp.events.is_empty());
+        assert_eq!(resp.total_count, 1);
         assert!(!resp.has_more);
     }
 

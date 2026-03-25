@@ -515,7 +515,15 @@ impl ProcessLauncher {
         cwd: &Path,
         agent_type: &str,
     ) -> Result<(), String> {
-        // The command template may include cd, but ensure we're in the right dir
+        // Custom templates may omit cwd handling entirely, so anchor the pane first.
+        let cd_cmd = format!("cd {}\r", shell_escape(cwd));
+        self.wezterm
+            .send_text(pane_id, &cd_cmd)
+            .await
+            .map_err(|e| format!("send cd: {e}"))?;
+
+        crate::runtime_compat::sleep(Duration::from_millis(50)).await;
+
         let full_cmd = format!("{command}\r");
         self.wezterm
             .send_text(pane_id, &full_cmd)
@@ -557,22 +565,37 @@ fn normalize_cwd(cwd: &str) -> PathBuf {
 
 /// Simple percent-decoding for common path characters.
 fn percent_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
-            } else {
-                result.push('%');
-                result.push_str(&hex);
-            }
-        } else {
-            result.push(c);
+    fn decode_hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
         }
     }
-    result
+
+    let input = s.as_bytes();
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut idx = 0;
+    while idx < input.len() {
+        if input[idx] == b'%' && idx + 2 < input.len() {
+            if let (Some(high), Some(low)) =
+                (decode_hex(input[idx + 1]), decode_hex(input[idx + 2]))
+            {
+                decoded.push((high << 4) | low);
+                idx += 3;
+                continue;
+            }
+        }
+
+        decoded.push(input[idx]);
+        idx += 1;
+    }
+
+    String::from_utf8(decoded).unwrap_or_else(|err| {
+        let bytes = err.into_bytes();
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
 }
 
 /// Escape a path for use in a shell command.
@@ -1406,6 +1429,14 @@ mod tests {
     }
 
     #[test]
+    fn normalize_cwd_percent_encoded_utf8() {
+        assert_eq!(
+            normalize_cwd("file:///home/user/%E2%9C%93"),
+            PathBuf::from("/home/user/\u{2713}")
+        );
+    }
+
+    #[test]
     fn normalize_cwd_root_only() {
         assert_eq!(normalize_cwd("/"), PathBuf::from("/"));
     }
@@ -1457,18 +1488,17 @@ mod tests {
 
     #[test]
     fn percent_decode_trailing_percent() {
-        // Trailing % with nothing after → incomplete but we still get output
-        let result = percent_decode("test%");
-        // With only 0 chars taken, from_str_radix("", 16) fails → preserved
-        assert!(result.contains("test"));
+        assert_eq!(percent_decode("test%"), "test%");
     }
 
     #[test]
     fn percent_decode_single_char_after_percent() {
-        // Only 1 hex char after % → from_str_radix with 1 char
-        let result = percent_decode("test%4");
-        // With only 1 char, it may parse as 4 (valid hex) or error depending on take(2)
-        assert!(result.starts_with("test"));
+        assert_eq!(percent_decode("test%4"), "test%4");
+    }
+
+    #[test]
+    fn percent_decode_utf8_multibyte_sequence() {
+        assert_eq!(percent_decode("%E2%9C%93"), "\u{2713}");
     }
 
     // =========================================================================
@@ -2026,6 +2056,39 @@ mod tests {
             assert_eq!(report.agents_launched, 1);
             assert_eq!(report.failed, 0);
             assert!(report.results[0].success);
+        });
+    }
+
+    #[test]
+    fn execute_agent_launch_anchors_cwd_before_custom_command() {
+        run_async_test(async {
+            let mock = std::sync::Arc::new(crate::wezterm::MockWezterm::new());
+            mock.add_default_pane(100).await;
+            let wez: crate::wezterm::WeztermHandle = mock.clone();
+            let launcher = ProcessLauncher::new(
+                wez,
+                LaunchConfig {
+                    launch_delay_ms: 0,
+                    ..Default::default()
+                },
+            );
+            let plans = vec![ProcessPlan {
+                old_pane_id: 1,
+                new_pane_id: 100,
+                action: LaunchAction::LaunchAgent {
+                    command: "claude --resume".into(),
+                    cwd: PathBuf::from("/tmp/project with spaces"),
+                    agent_type: "claude_code".into(),
+                },
+                state_warning: Some("new session warning".into()),
+            }];
+
+            let report = launcher.execute(&plans).await;
+            assert_eq!(report.agents_launched, 1);
+            assert_eq!(report.failed, 0);
+
+            let content = mock.pane_state(100).await.unwrap().content;
+            assert_eq!(content, "cd '/tmp/project with spaces'\rclaude --resume\r");
         });
     }
 

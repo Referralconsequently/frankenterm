@@ -1,10 +1,10 @@
 use crate::{Position, StableRowIndex, TerminalState};
 use anyhow::Context;
-use frankenterm_cell::image::{ImageCell, ImageDataType};
 use frankenterm_cell::Cell;
-use frankenterm_surface::change::ImageData;
+use frankenterm_cell::image::{ImageCell, ImageDataType};
 use frankenterm_surface::TextureCoordinate;
-use humansize::{SizeFormatter, DECIMAL};
+use frankenterm_surface::change::ImageData;
+use humansize::{DECIMAL, SizeFormatter};
 use num_traits::{One, Zero};
 use ordered_float::NotNan;
 use std::sync::Arc;
@@ -311,11 +311,7 @@ pub(crate) fn dimensions(data: &[u8]) -> anyhow::Result<ImageInfo> {
 
 /// Returns `1` if `b` is true, else `0`,
 fn one_or_zero<T: Zero + One>(b: bool) -> T {
-    if b {
-        T::one()
-    } else {
-        T::zero()
-    }
+    if b { T::one() } else { T::zero() }
 }
 
 #[cfg(test)]

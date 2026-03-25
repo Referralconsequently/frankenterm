@@ -725,6 +725,11 @@ impl Screen {
         self.keyboard_stack.clear();
     }
 
+    pub(crate) fn set_config(&mut self, config: &Arc<dyn TerminalConfiguration>) {
+        self.config = Arc::clone(config);
+        self.resize_wrap_policy = ResizeWrapPolicy::from_terminal_configuration(config.as_ref());
+    }
+
     #[cfg(test)]
     pub(crate) fn resize_wrap_policy(&self) -> ResizeWrapPolicy {
         self.resize_wrap_policy

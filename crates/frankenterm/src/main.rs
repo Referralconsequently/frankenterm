@@ -7646,6 +7646,40 @@ async fn resolve_pane_capabilities(
     }
 }
 
+fn build_mux_send_policy_input(
+    pane_id: u64,
+    pane_info: Option<&frankenterm_core::wezterm::PaneInfo>,
+    capabilities: frankenterm_core::policy::PaneCapabilities,
+    summary: &str,
+    text: &str,
+    actor_kind: frankenterm_core::policy::ActorKind,
+) -> frankenterm_core::policy::PolicyInput {
+    use frankenterm_core::policy::{ActionKind, PolicyInput, PolicySurface};
+
+    let domain = pane_info
+        .map(frankenterm_core::wezterm::PaneInfo::inferred_domain)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut input = PolicyInput::new(ActionKind::SendText, actor_kind)
+        .with_surface(PolicySurface::Mux)
+        .with_pane(pane_id)
+        .with_domain(domain)
+        .with_capabilities(capabilities)
+        .with_text_summary(summary)
+        .with_command_text(text);
+
+    if let Some(info) = pane_info {
+        if let Some(title) = &info.title {
+            input = input.with_pane_title(title.clone());
+        }
+        if let Some(cwd) = &info.cwd {
+            input = input.with_pane_cwd(cwd.clone());
+        }
+    }
+
+    input
+}
+
 fn build_send_dry_run_report(
     command_ctx: &frankenterm_core::dry_run::CommandContext,
     pane_id: u64,
@@ -7662,7 +7696,7 @@ fn build_send_dry_run_report(
         PolicyCheck, TargetResolution, build_send_policy_evaluation, create_send_action,
         create_wait_for_action,
     };
-    use frankenterm_core::policy::{ActionKind, PaneCapabilities, PolicyEngine, PolicyInput};
+    use frankenterm_core::policy::{PaneCapabilities, PolicyEngine};
 
     let mut ctx = command_ctx.dry_run_context();
 
@@ -7708,21 +7742,14 @@ fn build_send_dry_run_report(
     .with_policy_rules(config.safety.rules.clone());
 
     let summary = engine.redact_secrets(text);
-    let mut input = PolicyInput::new(ActionKind::SendText, actor_kind)
-        .with_surface(frankenterm_core::policy::PolicySurface::Mux)
-        .with_pane(pane_id)
-        .with_domain(domain.clone())
-        .with_capabilities(capabilities.clone())
-        .with_text_summary(summary)
-        .with_command_text(text);
-    if let Some(info) = pane_info {
-        if let Some(title) = &info.title {
-            input = input.with_pane_title(title.clone());
-        }
-        if let Some(cwd) = &info.cwd {
-            input = input.with_pane_cwd(cwd.clone());
-        }
-    }
+    let input = build_mux_send_policy_input(
+        pane_id,
+        pane_info,
+        capabilities.clone(),
+        &summary,
+        text,
+        actor_kind,
+    );
 
     let decision = engine.authorize(&input);
     let mut decision_check = PolicyCheck::from(&decision);
@@ -10160,7 +10187,8 @@ fn is_structured_uservar_name(name: &str) -> bool {
 fn validate_uservar_request(pane_id: u64, name: &str, value: &str) -> Result<(), String> {
     // Use the canonical IPC message size limit from frankenterm-core.
     // Previously duplicated here as 131_072 — now reads from the single source.
-    const MAX_MESSAGE_SIZE: usize = frankenterm_core::tuning_config::IpcTuning::DEFAULT_MAX_MESSAGE_SIZE;
+    const MAX_MESSAGE_SIZE: usize =
+        frankenterm_core::tuning_config::IpcTuning::DEFAULT_MAX_MESSAGE_SIZE;
 
     if name.trim().is_empty() {
         return Err("user-var name cannot be empty".to_string());
@@ -13330,6 +13358,29 @@ async fn distributed_agent_stream_forever(
 }
 
 #[cfg(feature = "distributed")]
+#[derive(Debug, PartialEq, Eq)]
+enum DistributedTaskOutcome {
+    Success,
+    TaskFailed(String),
+    JoinFailed(String),
+}
+
+#[cfg(feature = "distributed")]
+fn classify_distributed_task_result<E, J>(
+    join_result: &std::result::Result<std::result::Result<(), E>, J>,
+) -> DistributedTaskOutcome
+where
+    E: std::fmt::Display,
+    J: std::fmt::Display,
+{
+    match join_result {
+        Ok(Ok(())) => DistributedTaskOutcome::Success,
+        Ok(Err(err)) => DistributedTaskOutcome::TaskFailed(err.to_string()),
+        Err(err) => DistributedTaskOutcome::JoinFailed(err.to_string()),
+    }
+}
+
+#[cfg(feature = "distributed")]
 async fn run_distributed_agent(
     layout: &frankenterm_core::config::WorkspaceLayout,
     config: &frankenterm_core::config::Config,
@@ -13443,6 +13494,7 @@ async fn run_distributed_agent(
     };
 
     let mut runtime = ObservationRuntime::new(runtime_config, storage, pattern_engine)
+        .with_tuning(config.tuning.clone())
         .with_event_bus(Arc::clone(&event_bus))
         .with_wezterm_handle(wezterm_handle);
     let handle = Arc::new(runtime.start().await?);
@@ -13530,15 +13582,21 @@ async fn run_distributed_agent(
         Some(result) => result,
         None => distributed_task.await,
     };
-    match join_result {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
+    let task_failure = match classify_distributed_task_result(&join_result) {
+        DistributedTaskOutcome::Success => None,
+        DistributedTaskOutcome::TaskFailed(err) => {
             tracing::error!(error = %err, "Distributed agent streaming task failed");
+            Some(anyhow::anyhow!(
+                "Distributed agent streaming task failed: {err}"
+            ))
         }
-        Err(err) => {
+        DistributedTaskOutcome::JoinFailed(err) => {
             tracing::warn!(error = %err, "Distributed agent streaming task join failed");
+            Some(anyhow::anyhow!(
+                "Distributed agent streaming task join failed: {err}"
+            ))
         }
-    }
+    };
 
     match Arc::try_unwrap(handle) {
         Ok(handle) => handle.shutdown().await,
@@ -13548,6 +13606,10 @@ async fn run_distributed_agent(
                 "Distributed runtime handle still has outstanding references; skipping join"
             );
         }
+    }
+
+    if let Some(err) = task_failure {
+        return Err(err);
     }
 
     tracing::info!(connect = %resolved_connect_addr, agent_id = %agent_id, "Distributed agent stopped");
@@ -14102,6 +14164,7 @@ async fn run_watcher(
 
     // Create and start the observation runtime (with event bus for workflow integration)
     let mut runtime = ObservationRuntime::new(runtime_config, storage, pattern_engine)
+        .with_tuning(config.tuning.clone())
         .with_event_bus(Arc::clone(&event_bus))
         .with_wezterm_handle(wezterm_handle.clone());
     let handle = Arc::new(runtime.start().await?);
@@ -15880,6 +15943,28 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             }
                             let command_ctx =
                                 frankenterm_core::dry_run::CommandContext::new(command, dry_run);
+                            let wait_matcher = match wait_for.as_ref() {
+                                Some(pattern) => {
+                                    match frankenterm_core::wezterm::compile_wait_matcher(
+                                        pattern,
+                                        wait_for_regex,
+                                    ) {
+                                        Ok(matcher) => Some(matcher),
+                                        Err(e) => {
+                                            let response =
+                                                RobotResponse::<RobotSendData>::error_with_code(
+                                                    ROBOT_ERR_INVALID_ARGS,
+                                                    format!("Invalid wait-for regex: {e}"),
+                                                    Some("Check the regex syntax".to_string()),
+                                                    elapsed_ms(start),
+                                                );
+                                            print_robot_response(&response, format, stats)?;
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                                None => None,
+                            };
 
                             if command_ctx.is_dry_run() {
                                 let wezterm = frankenterm_core::wezterm::default_wezterm_handle();
@@ -15915,11 +16000,9 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             } else {
                                 use frankenterm_core::policy::{
                                     ActionKind, ActorKind, InjectionResult, PolicyDecision,
-                                    PolicyEngine, PolicyInput,
+                                    PolicyEngine,
                                 };
-                                use frankenterm_core::wezterm::{
-                                    PaneWaiter, WaitMatcher, WaitOptions,
-                                };
+                                use frankenterm_core::wezterm::{PaneWaiter, WaitOptions};
 
                                 let db_path = &ctx.effective.paths.db_path;
                                 let storage = match frankenterm_core::storage::StorageHandle::new(
@@ -15980,14 +16063,14 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                 let capabilities = resolution.capabilities;
 
                                 let summary = engine.redact_secrets(&text);
-                                let input =
-                                    PolicyInput::new(ActionKind::SendText, ActorKind::Robot)
-                                        .with_surface(frankenterm_core::policy::PolicySurface::Mux)
-                                        .with_pane(pane_id)
-                                        .with_domain(domain.clone())
-                                        .with_capabilities(capabilities)
-                                        .with_text_summary(&summary)
-                                        .with_command_text(&text);
+                                let input = build_mux_send_policy_input(
+                                    pane_id,
+                                    Some(&pane_info),
+                                    capabilities,
+                                    &summary,
+                                    &text,
+                                    ActorKind::Robot,
+                                );
 
                                 let decision = engine.authorize(&input);
                                 let decision = match resolve_inline_send_approval(
@@ -16079,71 +16162,58 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                 let mut wait_for_data = None;
                                 let mut verification_error = None;
                                 if injection.is_allowed() {
-                                    if let Some(pattern) = &wait_for {
-                                        let matcher = if wait_for_regex {
-                                            match fancy_regex::Regex::new(pattern) {
-                                                Ok(compiled) => Some(WaitMatcher::regex(compiled)),
-                                                Err(e) => {
-                                                    verification_error = Some(format!(
-                                                        "Invalid wait-for regex: {e}"
-                                                    ));
-                                                    None
-                                                }
-                                            }
-                                        } else {
-                                            Some(WaitMatcher::substring(pattern))
+                                    if let (Some(pattern), Some(matcher)) =
+                                        (wait_for.as_ref(), wait_matcher.as_ref())
+                                    {
+                                        let options = WaitOptions {
+                                            tail_lines: 200,
+                                            escapes: false,
+                                            ..WaitOptions::default()
                                         };
-
-                                        if let Some(matcher) = matcher {
-                                            let options = WaitOptions {
-                                                tail_lines: 200,
-                                                escapes: false,
-                                                ..WaitOptions::default()
-                                            };
-                                            let source =
-                                                frankenterm_core::wezterm::WeztermHandleSource::new(
-                                                    Arc::clone(&wezterm),
-                                                );
-                                            let waiter =
-                                                PaneWaiter::new(&source).with_options(options);
-                                            let timeout =
-                                                std::time::Duration::from_secs(timeout_secs);
-                                            match waiter.wait_for(pane_id, &matcher, timeout).await
-                                            {
-                                                Ok(frankenterm_core::wezterm::WaitResult::Matched {
+                                        let source =
+                                            frankenterm_core::wezterm::WeztermHandleSource::new(
+                                                Arc::clone(&wezterm),
+                                            );
+                                        let waiter = PaneWaiter::new(&source).with_options(options);
+                                        let timeout = std::time::Duration::from_secs(timeout_secs);
+                                        match waiter.wait_for(pane_id, matcher, timeout).await {
+                                            Ok(
+                                                frankenterm_core::wezterm::WaitResult::Matched {
                                                     elapsed_ms,
                                                     polls,
-                                                }) => {
-                                                    wait_for_data = Some(RobotWaitForData {
-                                                        pane_id,
-                                                        pattern: pattern.clone(),
-                                                        matched: true,
-                                                        elapsed_ms,
-                                                        polls,
-                                                        is_regex: wait_for_regex,
-                                                    });
-                                                }
-                                                Ok(frankenterm_core::wezterm::WaitResult::TimedOut {
+                                                },
+                                            ) => {
+                                                wait_for_data = Some(RobotWaitForData {
+                                                    pane_id,
+                                                    pattern: pattern.clone(),
+                                                    matched: true,
+                                                    elapsed_ms,
+                                                    polls,
+                                                    is_regex: wait_for_regex,
+                                                });
+                                            }
+                                            Ok(
+                                                frankenterm_core::wezterm::WaitResult::TimedOut {
                                                     elapsed_ms,
                                                     polls,
                                                     ..
-                                                }) => {
-                                                    wait_for_data = Some(RobotWaitForData {
-                                                        pane_id,
-                                                        pattern: pattern.clone(),
-                                                        matched: false,
-                                                        elapsed_ms,
-                                                        polls,
-                                                        is_regex: wait_for_regex,
-                                                    });
-                                                    verification_error = Some(format!(
-                                                        "Timeout waiting for pattern '{pattern}'"
-                                                    ));
-                                                }
-                                                Err(e) => {
-                                                    verification_error =
-                                                        Some(format!("wait-for failed: {e}"));
-                                                }
+                                                },
+                                            ) => {
+                                                wait_for_data = Some(RobotWaitForData {
+                                                    pane_id,
+                                                    pattern: pattern.clone(),
+                                                    matched: false,
+                                                    elapsed_ms,
+                                                    polls,
+                                                    is_regex: wait_for_regex,
+                                                });
+                                                verification_error = Some(format!(
+                                                    "Timeout waiting for pattern '{pattern}'"
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                verification_error =
+                                                    Some(format!("wait-for failed: {e}"));
                                             }
                                         }
                                     }
@@ -16167,29 +16237,27 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                             regex,
                         } => {
                             use frankenterm_core::wezterm::{
-                                PaneWaiter, WaitMatcher, WaitOptions, WaitResult,
-                                WeztermHandleSource, default_wezterm_handle,
+                                PaneWaiter, WaitOptions, WaitResult, WeztermHandleSource,
+                                default_wezterm_handle,
                             };
                             use std::time::Duration;
 
                             // Build the matcher
-                            let matcher = if regex {
-                                match fancy_regex::Regex::new(&pattern) {
-                                    Ok(compiled) => WaitMatcher::regex(compiled),
-                                    Err(e) => {
-                                        let response =
-                                            RobotResponse::<RobotWaitForData>::error_with_code(
-                                                ROBOT_ERR_INVALID_ARGS,
-                                                format!("Invalid regex pattern: {e}"),
-                                                Some("Check the regex syntax".to_string()),
-                                                elapsed_ms(start),
-                                            );
-                                        print_robot_response(&response, format, stats)?;
-                                        return Ok(());
-                                    }
+                            let matcher = match frankenterm_core::wezterm::compile_wait_matcher(
+                                &pattern, regex,
+                            ) {
+                                Ok(matcher) => matcher,
+                                Err(e) => {
+                                    let response =
+                                        RobotResponse::<RobotWaitForData>::error_with_code(
+                                            ROBOT_ERR_INVALID_ARGS,
+                                            format!("Invalid regex pattern: {e}"),
+                                            Some("Check the regex syntax".to_string()),
+                                            elapsed_ms(start),
+                                        );
+                                    print_robot_response(&response, format, stats)?;
+                                    return Ok(());
                                 }
-                            } else {
-                                WaitMatcher::substring(&pattern)
                             };
 
                             // Create WezTerm client
@@ -22822,6 +22890,39 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 command.push_str(&format!(" --approval-code {code}"));
             }
             let command_ctx = frankenterm_core::dry_run::CommandContext::new(command, dry_run);
+            let emit_error = |message: &str, hint: Option<&str>| {
+                if emit_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": false,
+                            "error": message,
+                            "hint": hint,
+                            "version": frankenterm_core::VERSION,
+                        })
+                    );
+                } else {
+                    eprintln!("Error: {message}");
+                    if let Some(hint) = hint {
+                        eprintln!("{hint}");
+                    }
+                }
+            };
+            let wait_matcher = match wait_for.as_ref() {
+                Some(pattern) => {
+                    match frankenterm_core::wezterm::compile_wait_matcher(pattern, wait_for_regex) {
+                        Ok(matcher) => Some(matcher),
+                        Err(e) => {
+                            emit_error(
+                                &format!("Invalid wait-for regex: {e}"),
+                                Some("Check the regex syntax."),
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+                None => None,
+            };
 
             if command_ctx.is_dry_run() {
                 let wezterm = frankenterm_core::wezterm::default_wezterm_handle();
@@ -22861,24 +22962,6 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     no_paste,
                     redacted_text
                 );
-                let emit_error = |message: &str, hint: Option<&str>| {
-                    if emit_json {
-                        println!(
-                            "{}",
-                            serde_json::json!({
-                                "ok": false,
-                                "error": message,
-                                "hint": hint,
-                                "version": frankenterm_core::VERSION,
-                            })
-                        );
-                    } else {
-                        eprintln!("Error: {message}");
-                        if let Some(hint) = hint {
-                            eprintln!("{hint}");
-                        }
-                    }
-                };
 
                 let db_path = layout.db_path.to_string_lossy();
                 let storage = match frankenterm_core::storage::StorageHandle::new(&db_path).await {
@@ -22920,16 +23003,14 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 let capabilities = resolution.capabilities;
 
                 let summary = engine.redact_secrets(&text);
-                let input = frankenterm_core::policy::PolicyInput::new(
-                    frankenterm_core::policy::ActionKind::SendText,
+                let input = build_mux_send_policy_input(
+                    pane_id,
+                    Some(&pane_info),
+                    capabilities,
+                    &summary,
+                    &text,
                     frankenterm_core::policy::ActorKind::Human,
-                )
-                .with_surface(frankenterm_core::policy::PolicySurface::Mux)
-                .with_pane(pane_id)
-                .with_domain(domain.clone())
-                .with_capabilities(capabilities)
-                .with_text_summary(&summary)
-                .with_command_text(&text);
+                );
 
                 let workspace_id = workspace_root.to_string_lossy().to_string();
                 let decision = engine.authorize(&input);
@@ -23020,73 +23101,56 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 let mut wait_for_data = None;
                 let mut verification_error = None;
                 if injection.is_allowed() {
-                    if let Some(pattern) = &wait_for {
-                        let matcher = if wait_for_regex {
-                            match fancy_regex::Regex::new(pattern) {
-                                Ok(compiled) => {
-                                    Some(frankenterm_core::wezterm::WaitMatcher::regex(compiled))
-                                }
-                                Err(e) => {
-                                    verification_error =
-                                        Some(format!("Invalid wait-for regex: {e}"));
-                                    None
-                                }
-                            }
-                        } else {
-                            Some(frankenterm_core::wezterm::WaitMatcher::substring(pattern))
+                    if let (Some(pattern), Some(matcher)) =
+                        (wait_for.as_ref(), wait_matcher.as_ref())
+                    {
+                        let options = frankenterm_core::wezterm::WaitOptions {
+                            tail_lines: 200,
+                            escapes: false,
+                            ..frankenterm_core::wezterm::WaitOptions::default()
                         };
-
-                        if let Some(matcher) = matcher {
-                            let options = frankenterm_core::wezterm::WaitOptions {
-                                tail_lines: 200,
-                                escapes: false,
-                                ..frankenterm_core::wezterm::WaitOptions::default()
-                            };
-                            let source = frankenterm_core::wezterm::WeztermHandleSource::new(
-                                Arc::clone(&wezterm),
-                            );
-                            let waiter = frankenterm_core::wezterm::PaneWaiter::new(&source)
-                                .with_options(options);
-                            let timeout = std::time::Duration::from_secs(timeout_secs);
-                            match waiter.wait_for(pane_id, &matcher, timeout).await {
-                                Ok(frankenterm_core::wezterm::WaitResult::Matched {
+                        let source = frankenterm_core::wezterm::WeztermHandleSource::new(
+                            Arc::clone(&wezterm),
+                        );
+                        let waiter = frankenterm_core::wezterm::PaneWaiter::new(&source)
+                            .with_options(options);
+                        let timeout = std::time::Duration::from_secs(timeout_secs);
+                        match waiter.wait_for(pane_id, matcher, timeout).await {
+                            Ok(frankenterm_core::wezterm::WaitResult::Matched {
+                                elapsed_ms,
+                                polls,
+                            }) => {
+                                let pattern_out =
+                                    redacted_wait_for.clone().unwrap_or_else(|| pattern.clone());
+                                wait_for_data = Some(RobotWaitForData {
+                                    pane_id,
+                                    pattern: pattern_out,
+                                    matched: true,
                                     elapsed_ms,
                                     polls,
-                                }) => {
-                                    let pattern_out = redacted_wait_for
-                                        .clone()
-                                        .unwrap_or_else(|| pattern.clone());
-                                    wait_for_data = Some(RobotWaitForData {
-                                        pane_id,
-                                        pattern: pattern_out,
-                                        matched: true,
-                                        elapsed_ms,
-                                        polls,
-                                        is_regex: wait_for_regex,
-                                    });
-                                }
-                                Ok(frankenterm_core::wezterm::WaitResult::TimedOut {
+                                    is_regex: wait_for_regex,
+                                });
+                            }
+                            Ok(frankenterm_core::wezterm::WaitResult::TimedOut {
+                                elapsed_ms,
+                                polls,
+                                ..
+                            }) => {
+                                let pattern_out =
+                                    redacted_wait_for.clone().unwrap_or_else(|| pattern.clone());
+                                wait_for_data = Some(RobotWaitForData {
+                                    pane_id,
+                                    pattern: pattern_out,
+                                    matched: false,
                                     elapsed_ms,
                                     polls,
-                                    ..
-                                }) => {
-                                    let pattern_out = redacted_wait_for
-                                        .clone()
-                                        .unwrap_or_else(|| pattern.clone());
-                                    wait_for_data = Some(RobotWaitForData {
-                                        pane_id,
-                                        pattern: pattern_out,
-                                        matched: false,
-                                        elapsed_ms,
-                                        polls,
-                                        is_regex: wait_for_regex,
-                                    });
-                                    verification_error =
-                                        Some(format!("Timeout waiting for pattern '{pattern}'"));
-                                }
-                                Err(e) => {
-                                    verification_error = Some(format!("wait-for failed: {e}"));
-                                }
+                                    is_regex: wait_for_regex,
+                                });
+                                verification_error =
+                                    Some(format!("Timeout waiting for pattern '{pattern}'"));
+                            }
+                            Err(e) => {
+                                verification_error = Some(format!("wait-for failed: {e}"));
                             }
                         }
                     }
@@ -25231,22 +25295,21 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 .with_policy_rules(config.safety.rules.clone());
 
                 let summary = engine.redact_secrets(&text);
-                let mut input = frankenterm_core::policy::PolicyInput::new(
-                    frankenterm_core::policy::ActionKind::SendText,
+                let input = build_mux_send_policy_input(
+                    pane_id,
+                    Some(&pane_info),
+                    capabilities,
+                    &summary,
+                    &text,
                     frankenterm_core::policy::ActorKind::Human,
-                )
-                .with_surface(frankenterm_core::policy::PolicySurface::Mux)
-                .with_pane(pane_id)
-                .with_domain(domain.clone())
-                .with_capabilities(capabilities)
-                .with_text_summary(&summary)
-                .with_command_text(&text);
-
-                if let Some(title) = &pane_info.title {
-                    input = input.with_pane_title(title.clone());
-                }
-                if let Some(cwd) = &pane_info.cwd {
-                    input = input.with_pane_cwd(cwd.clone());
+                );
+                if let Some(pattern) = wait_for.as_ref() {
+                    if let Err(e) =
+                        frankenterm_core::wezterm::compile_wait_matcher(pattern, wait_for_regex)
+                    {
+                        eprintln!("Error: Invalid wait-for regex: {e}");
+                        std::process::exit(1);
+                    }
                 }
 
                 let plan = build_prepare_send_plan(
@@ -25780,22 +25843,29 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     .with_policy_rules(config.safety.rules.clone());
 
                     let summary = engine.redact_secrets(&text);
-                    let mut input = frankenterm_core::policy::PolicyInput::new(
-                        frankenterm_core::policy::ActionKind::SendText,
+                    let input = build_mux_send_policy_input(
+                        pane_id,
+                        Some(&pane_info),
+                        capabilities,
+                        &summary,
+                        &text,
                         frankenterm_core::policy::ActorKind::Human,
-                    )
-                    .with_surface(frankenterm_core::policy::PolicySurface::Mux)
-                    .with_pane(pane_id)
-                    .with_domain(domain.clone())
-                    .with_capabilities(capabilities)
-                    .with_text_summary(&summary)
-                    .with_command_text(&text);
-                    if let Some(title) = &pane_info.title {
-                        input = input.with_pane_title(title.clone());
-                    }
-                    if let Some(cwd) = &pane_info.cwd {
-                        input = input.with_pane_cwd(cwd.clone());
-                    }
+                    );
+                    let wait_matcher = match wait_for.as_ref() {
+                        Some(pattern) => {
+                            match frankenterm_core::wezterm::compile_wait_matcher(
+                                pattern,
+                                wait_for_regex,
+                            ) {
+                                Ok(matcher) => Some(matcher),
+                                Err(e) => {
+                                    eprintln!("Error: Invalid wait-for regex: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        None => None,
+                    };
 
                     let mut decision = engine.authorize(&input);
                     if decision.requires_approval() {
@@ -25902,50 +25972,32 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     let mut wait_summary: Option<String> = None;
 
                     if injection.is_allowed() {
-                        if let Some(pattern) = &wait_for {
-                            let matcher = if wait_for_regex {
-                                match fancy_regex::Regex::new(pattern) {
-                                    Ok(compiled) => Some(
-                                        frankenterm_core::wezterm::WaitMatcher::regex(compiled),
-                                    ),
-                                    Err(e) => {
-                                        eprintln!("Warning: Invalid wait-for regex: {e}");
-                                        None
-                                    }
-                                }
-                            } else {
-                                Some(frankenterm_core::wezterm::WaitMatcher::substring(pattern))
+                        if let (Some(_pattern), Some(matcher)) =
+                            (wait_for.as_ref(), wait_matcher.as_ref())
+                        {
+                            let options = frankenterm_core::wezterm::WaitOptions {
+                                tail_lines: 200,
+                                escapes: false,
+                                ..frankenterm_core::wezterm::WaitOptions::default()
                             };
-
-                            if let Some(matcher) = matcher {
-                                let options = frankenterm_core::wezterm::WaitOptions {
-                                    tail_lines: 200,
-                                    escapes: false,
-                                    ..frankenterm_core::wezterm::WaitOptions::default()
-                                };
-                                let source = frankenterm_core::wezterm::WeztermHandleSource::new(
-                                    Arc::clone(&wezterm),
-                                );
-                                let waiter = frankenterm_core::wezterm::PaneWaiter::new(&source)
-                                    .with_options(options);
-                                let timeout = std::time::Duration::from_secs(timeout_secs);
-                                match waiter.wait_for(pane_id, &matcher, timeout).await {
-                                    Ok(frankenterm_core::wezterm::WaitResult::Matched {
-                                        ..
-                                    }) => {
-                                        println!("Commit succeeded (wait-for matched).");
-                                        wait_summary = Some("wait_for=matched".to_string());
-                                    }
-                                    Ok(frankenterm_core::wezterm::WaitResult::TimedOut {
-                                        ..
-                                    }) => {
-                                        eprintln!("Commit succeeded but wait-for timed out.");
-                                        wait_summary = Some("wait_for=timed_out".to_string());
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Commit succeeded but wait-for failed: {e}");
-                                        wait_summary = Some(format!("wait_for=error:{e}"));
-                                    }
+                            let source = frankenterm_core::wezterm::WeztermHandleSource::new(
+                                Arc::clone(&wezterm),
+                            );
+                            let waiter = frankenterm_core::wezterm::PaneWaiter::new(&source)
+                                .with_options(options);
+                            let timeout = std::time::Duration::from_secs(timeout_secs);
+                            match waiter.wait_for(pane_id, matcher, timeout).await {
+                                Ok(frankenterm_core::wezterm::WaitResult::Matched { .. }) => {
+                                    println!("Commit succeeded (wait-for matched).");
+                                    wait_summary = Some("wait_for=matched".to_string());
+                                }
+                                Ok(frankenterm_core::wezterm::WaitResult::TimedOut { .. }) => {
+                                    eprintln!("Commit succeeded but wait-for timed out.");
+                                    wait_summary = Some("wait_for=timed_out".to_string());
+                                }
+                                Err(e) => {
+                                    eprintln!("Commit succeeded but wait-for failed: {e}");
+                                    wait_summary = Some(format!("wait_for=error:{e}"));
                                 }
                             }
                         } else {
@@ -46054,6 +46106,77 @@ log_level = "debug"
     }
 
     #[test]
+    fn build_mux_send_policy_input_includes_pane_title_and_cwd() {
+        let pane_info = frankenterm_core::wezterm::PaneInfo {
+            pane_id: 7,
+            tab_id: 1,
+            window_id: 2,
+            domain_id: None,
+            domain_name: Some("ssh:prod".to_string()),
+            workspace: Some("default".to_string()),
+            size: None,
+            rows: Some(24),
+            cols: Some(80),
+            title: Some("nvim main.rs".to_string()),
+            cwd: Some("/srv/app".to_string()),
+            tty_name: None,
+            cursor_x: None,
+            cursor_y: None,
+            cursor_visibility: None,
+            left_col: None,
+            top_row: None,
+            is_active: true,
+            is_zoomed: false,
+            extra: HashMap::new(),
+        };
+
+        let input = build_mux_send_policy_input(
+            7,
+            Some(&pane_info),
+            frankenterm_core::policy::PaneCapabilities::prompt(),
+            "echo hi",
+            "echo hi",
+            frankenterm_core::policy::ActorKind::Robot,
+        );
+
+        assert_eq!(input.domain.as_deref(), Some("ssh:prod"));
+        assert_eq!(input.pane_title.as_deref(), Some("nvim main.rs"));
+        assert_eq!(input.pane_cwd.as_deref(), Some("/srv/app"));
+    }
+
+    #[cfg(feature = "distributed")]
+    #[test]
+    fn classify_distributed_task_result_preserves_success() {
+        let join_result: std::result::Result<std::result::Result<(), &str>, &str> = Ok(Ok(()));
+        assert_eq!(
+            classify_distributed_task_result(&join_result),
+            DistributedTaskOutcome::Success
+        );
+    }
+
+    #[cfg(feature = "distributed")]
+    #[test]
+    fn classify_distributed_task_result_maps_task_failures() {
+        let join_result: std::result::Result<std::result::Result<(), &str>, &str> =
+            Ok(Err("seed failure"));
+        assert_eq!(
+            classify_distributed_task_result(&join_result),
+            DistributedTaskOutcome::TaskFailed("seed failure".to_string())
+        );
+    }
+
+    #[cfg(feature = "distributed")]
+    #[test]
+    fn classify_distributed_task_result_maps_join_failures() {
+        let join_result: std::result::Result<std::result::Result<(), &str>, &str> =
+            Err("join cancelled");
+        assert_eq!(
+            classify_distributed_task_result(&join_result),
+            DistributedTaskOutcome::JoinFailed("join cancelled".to_string())
+        );
+    }
+
+    #[test]
     fn send_dry_run_report_without_wait_for_has_no_wait_action() {
         let config = frankenterm_core::config::Config::default();
         let command_ctx =
@@ -50224,7 +50347,9 @@ log_level = "debug"
 
         match cli.command.map(|b| *b) {
             Some(Commands::Distributed { command }) => match command {
-                DistributedCommands::Agent { connect, agent_id } => {
+                DistributedCommands::Agent {
+                    connect, agent_id, ..
+                } => {
                     assert_eq!(connect.as_deref(), Some("127.0.0.1:4141"));
                     assert_eq!(agent_id.as_deref(), Some("agent-alpha"));
                 }

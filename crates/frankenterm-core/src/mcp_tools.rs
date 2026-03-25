@@ -42,9 +42,9 @@ use super::{
     PaneCapabilities, PaneFilterConfig, PaneInfo, PaneReservation, PaneWaiter,
     PaneWorkflowLockManager, PatternEngine, PolicyDecision, PolicyEngine, PolicyGatedInjector,
     PolicyInput, SearchQueryDefaults, SearchQueryInput, StorageHandle, UnifiedSearchMode,
-    WaitMatcher, WaitOptions, WaitResult, WeztermError, WeztermHandleSource, Workflow,
-    WorkflowEngine, WorkflowExecutionResult, WorkflowRunner, WorkflowRunnerConfig,
-    approval_command, build_policy_engine, builtin_workflows, default_wezterm_handle,
+    WaitOptions, WaitResult, WeztermError, WeztermHandleSource, Workflow, WorkflowEngine,
+    WorkflowExecutionResult, WorkflowRunner, WorkflowRunnerConfig, approval_command,
+    build_policy_engine, builtin_workflows, default_wezterm_handle,
     effective_search_fusion_backend, effective_search_fusion_weights,
     effective_search_quality_timeout_ms, effective_search_rrf_k, elapsed_ms, envelope_to_content,
     map_cass_error, map_caut_error, map_mcp_error, mcp_build_mission_assignments,
@@ -986,21 +986,17 @@ impl ToolHandler for WaWaitForTool {
             }
         };
 
-        let matcher = if params.regex {
-            match fancy_regex::Regex::new(&params.pattern) {
-                Ok(compiled) => WaitMatcher::regex(compiled),
-                Err(err) => {
-                    let envelope = McpEnvelope::<()>::error(
-                        MCP_ERR_INVALID_ARGS,
-                        format!("Invalid regex pattern: {err}"),
-                        Some("Check the regex syntax".to_string()),
-                        elapsed_ms(start),
-                    );
-                    return envelope_to_content(envelope);
-                }
+        let matcher = match crate::wezterm::compile_wait_matcher(&params.pattern, params.regex) {
+            Ok(matcher) => matcher,
+            Err(err) => {
+                let envelope = McpEnvelope::<()>::error(
+                    MCP_ERR_INVALID_ARGS,
+                    format!("Invalid regex pattern: {err}"),
+                    Some("Check the regex syntax".to_string()),
+                    elapsed_ms(start),
+                );
+                return envelope_to_content(envelope);
             }
-        } else {
-            WaitMatcher::substring(&params.pattern)
         };
 
         let runtime = CompatRuntimeBuilder::current_thread()
@@ -1664,6 +1660,14 @@ impl ToolHandler for WaSendTool {
                 input = input.with_pane_cwd(cwd.clone());
             }
 
+            let wait_matcher = match params.wait_for.as_ref() {
+                Some(pattern) => Some(crate::wezterm::compile_wait_matcher(
+                    pattern,
+                    params.wait_for_regex,
+                )?),
+                None => None,
+            };
+
             if params.dry_run {
                 let decision = engine.authorize(&input);
                 let injection = injection_from_decision(
@@ -1719,56 +1723,44 @@ impl ToolHandler for WaSendTool {
             let mut wait_for_data = None;
             let mut verification_error = None;
             if injection.is_allowed() {
-                if let Some(pattern) = params.wait_for.as_ref() {
-                    let matcher = if params.wait_for_regex {
-                        match fancy_regex::Regex::new(pattern) {
-                            Ok(compiled) => Some(WaitMatcher::regex(compiled)),
-                            Err(e) => {
-                                verification_error = Some(format!("Invalid wait-for regex: {e}"));
-                                None
-                            }
-                        }
-                    } else {
-                        Some(WaitMatcher::substring(pattern))
+                if let (Some(pattern), Some(matcher)) =
+                    (params.wait_for.as_ref(), wait_matcher.as_ref())
+                {
+                    let options = WaitOptions {
+                        tail_lines: 200,
+                        escapes: false,
+                        ..WaitOptions::default()
                     };
-
-                    if let Some(matcher) = matcher {
-                        let options = WaitOptions {
-                            tail_lines: 200,
-                            escapes: false,
-                            ..WaitOptions::default()
-                        };
-                        let source = WeztermHandleSource::new(Arc::clone(&wezterm));
-                        let waiter = PaneWaiter::new(&source).with_options(options);
-                        let timeout = std::time::Duration::from_secs(params.timeout_secs);
-                        match waiter.wait_for(params.pane_id, &matcher, timeout).await {
-                            Ok(WaitResult::Matched { elapsed_ms, polls }) => {
-                                wait_for_data = Some(McpWaitForData {
-                                    pane_id: params.pane_id,
-                                    pattern: pattern.clone(),
-                                    matched: true,
-                                    elapsed_ms,
-                                    polls,
-                                    is_regex: params.wait_for_regex,
-                                });
-                            }
-                            Ok(WaitResult::TimedOut {
-                                elapsed_ms, polls, ..
-                            }) => {
-                                wait_for_data = Some(McpWaitForData {
-                                    pane_id: params.pane_id,
-                                    pattern: pattern.clone(),
-                                    matched: false,
-                                    elapsed_ms,
-                                    polls,
-                                    is_regex: params.wait_for_regex,
-                                });
-                                verification_error =
-                                    Some(format!("Timeout waiting for pattern '{pattern}'"));
-                            }
-                            Err(e) => {
-                                verification_error = Some(format!("wait-for failed: {e}"));
-                            }
+                    let source = WeztermHandleSource::new(Arc::clone(&wezterm));
+                    let waiter = PaneWaiter::new(&source).with_options(options);
+                    let timeout = std::time::Duration::from_secs(params.timeout_secs);
+                    match waiter.wait_for(params.pane_id, matcher, timeout).await {
+                        Ok(WaitResult::Matched { elapsed_ms, polls }) => {
+                            wait_for_data = Some(McpWaitForData {
+                                pane_id: params.pane_id,
+                                pattern: pattern.clone(),
+                                matched: true,
+                                elapsed_ms,
+                                polls,
+                                is_regex: params.wait_for_regex,
+                            });
+                        }
+                        Ok(WaitResult::TimedOut {
+                            elapsed_ms, polls, ..
+                        }) => {
+                            wait_for_data = Some(McpWaitForData {
+                                pane_id: params.pane_id,
+                                pattern: pattern.clone(),
+                                matched: false,
+                                elapsed_ms,
+                                polls,
+                                is_regex: params.wait_for_regex,
+                            });
+                            verification_error =
+                                Some(format!("Timeout waiting for pattern '{pattern}'"));
+                        }
+                        Err(e) => {
+                            verification_error = Some(format!("wait-for failed: {e}"));
                         }
                     }
                 }
