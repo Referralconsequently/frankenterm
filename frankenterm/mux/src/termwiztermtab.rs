@@ -113,7 +113,7 @@ impl TermWizTerminalPane {
             term_config.unwrap_or_else(|| Arc::new(config::TermConfig::new())),
             "WezTerm",
             config::wezterm_version(),
-            Box::new(Vec::new()), // FIXME: connect to something?
+            Box::new(Vec::new()), // Sink writer; TermWiz applets use render_rx for output
         ));
 
         Self {

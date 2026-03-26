@@ -334,7 +334,7 @@ impl TmuxDomainState {
                     }
                 } else {
                     mux.new_empty_window(
-                        None, /* TODO: pass session here */
+                        Some("tmux".to_string()),
                         None, /* position */
                     )
                 };

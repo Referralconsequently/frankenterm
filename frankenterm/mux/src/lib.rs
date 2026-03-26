@@ -1527,8 +1527,6 @@ impl Mux {
             pane.set_config(config);
         }
 
-        // FIXME: clipboard?
-
         let mut window = self
             .get_window_mut(window_id)
             .ok_or_else(|| anyhow!("no such window!?"))?;
