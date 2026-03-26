@@ -814,8 +814,7 @@ impl TerminalState {
         log::trace!("transmit {:?}", transmit);
         let (id, no) = match (transmit.image_id, transmit.image_number) {
             (Some(_), Some(_)) => {
-                // TODO: send an EINVAL error back here
-                anyhow::bail!("cannot use both i= and I= in the same request");
+                anyhow::bail!("EINVAL: cannot use both i= and I= in the same request");
             }
             (None, None) => {
                 // Assume image id 0

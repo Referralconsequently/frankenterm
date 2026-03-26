@@ -578,9 +578,10 @@ fn connect_ssh_session(
         }
 
         fn waker(&self) -> TerminalWaker {
-            // TODO: TerminalWaker assumes that we're a SystemTerminal but that
-            // isn't the case here.
-            panic!("TerminalShim::waker called!?");
+            // TerminalWaker requires a Unix pipe (UnixStream) which only
+            // SystemTerminal has. SSH shims use their own I/O path and should
+            // never need waking via the Terminal trait.
+            panic!("TerminalShim::waker called — SSH shim does not support Terminal waking");
         }
     }
 

@@ -453,9 +453,10 @@ impl termwiz::terminal::Terminal for TermWizTerminal {
     }
 
     fn waker(&self) -> TerminalWaker {
-        // TODO: TerminalWaker assumes that we're a SystemTerminal but that
-        // isn't the case here.
-        panic!("TermWizTerminal::waker called!?");
+        // TerminalWaker requires a Unix pipe (UnixStream) which only
+        // SystemTerminal has. TermWiz applets use crossbeam channels for
+        // input and a render pipe for output — waking is not needed.
+        panic!("TermWizTerminal::waker called — TermWiz applet does not support Terminal waking");
     }
 }
 
