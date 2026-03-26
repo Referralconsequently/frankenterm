@@ -33,17 +33,20 @@ use termwiz::render::terminfo::TerminfoRenderer;
 use termwiz::surface::{Change, Line, SequenceNo};
 use termwiz::terminal::{ScreenSize, TerminalWaker};
 use termwiz::Context;
+use std::sync::OnceLock;
 use url::Url;
 
 struct TermWizTerminalDomain {
     domain_id: DomainId,
 }
 
-impl TermWizTerminalDomain {
-    pub fn new() -> Self {
+static TERMWIZ_DOMAIN: OnceLock<Arc<dyn Domain>> = OnceLock::new();
+
+fn termwiz_terminal_domain() -> Arc<dyn Domain> {
+    Arc::clone(TERMWIZ_DOMAIN.get_or_init(|| {
         let domain_id = alloc_domain_id();
-        Self { domain_id }
-    }
+        Arc::new(TermWizTerminalDomain { domain_id })
+    }))
 }
 
 #[async_trait(?Send)]
@@ -539,8 +542,7 @@ pub async fn run<
     ) -> anyhow::Result<(PaneId, WindowId)> {
         let mux = Mux::get();
 
-        // TODO: make a singleton
-        let domain: Arc<dyn Domain> = Arc::new(TermWizTerminalDomain::new());
+        let domain = termwiz_terminal_domain();
         mux.add_domain(&domain);
 
         let window_builder;

@@ -1257,13 +1257,12 @@ impl Mux {
 
     pub fn resolve_spawn_tab_domain(
         &self,
-        // TODO: disambiguate with TabId
-        pane_id: Option<PaneId>,
+        source_pane_id: Option<PaneId>,
         domain: &config::keyassignment::SpawnTabDomain,
     ) -> anyhow::Result<Arc<dyn Domain>> {
         let domain = match domain {
             SpawnTabDomain::DefaultDomain => self.default_domain(),
-            SpawnTabDomain::CurrentPaneDomain => match pane_id {
+            SpawnTabDomain::CurrentPaneDomain => match source_pane_id {
                 Some(pane_id) => {
                     let (pane_domain_id, _window_id, _tab_id) = self
                         .resolve_pane_id(pane_id)
@@ -1329,18 +1328,17 @@ impl Mux {
 
     pub async fn split_pane(
         &self,
-        // TODO: disambiguate with TabId
-        pane_id: PaneId,
+        source_pane_id: PaneId,
         request: SplitRequest,
         source: SplitSource,
         domain: config::keyassignment::SpawnTabDomain,
     ) -> anyhow::Result<(Arc<dyn Pane>, TerminalSize)> {
         let (_pane_domain_id, window_id, tab_id) = self
-            .resolve_pane_id(pane_id)
-            .ok_or_else(|| anyhow!("pane_id {} invalid", pane_id))?;
+            .resolve_pane_id(source_pane_id)
+            .ok_or_else(|| anyhow!("pane_id {} invalid", source_pane_id))?;
 
         let domain = self
-            .resolve_spawn_tab_domain(Some(pane_id), &domain)
+            .resolve_spawn_tab_domain(Some(source_pane_id), &domain)
             .context("resolve_spawn_tab_domain")?;
 
         if domain.state() == DomainState::Detached {
@@ -1348,8 +1346,8 @@ impl Mux {
         }
 
         let current_pane = self
-            .get_pane(pane_id)
-            .ok_or_else(|| anyhow!("pane_id {} is invalid", pane_id))?;
+            .get_pane(source_pane_id)
+            .ok_or_else(|| anyhow!("pane_id {} is invalid", source_pane_id))?;
         let term_config = current_pane.get_config();
 
         let source = match source {
@@ -1368,20 +1366,20 @@ impl Mux {
             other => other,
         };
 
-        let pane = domain.split_pane(source, tab_id, pane_id, request).await?;
+        let pane = domain
+            .split_pane(source, tab_id, source_pane_id, request)
+            .await?;
         if let Some(config) = term_config {
             pane.set_config(config);
         }
-
-        // FIXME: clipboard
 
         let dims = pane.get_dimensions();
 
         let size = TerminalSize {
             cols: dims.cols,
             rows: dims.viewport_rows,
-            pixel_height: 0, // FIXME: split pane pixel dimensions
-            pixel_width: 0,
+            pixel_height: dims.pixel_height,
+            pixel_width: dims.pixel_width,
             dpi: dims.dpi,
         };
 
