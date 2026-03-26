@@ -6410,13 +6410,15 @@ mod test {
     }
 
     #[test]
-    fn swap_without_cycle_returns_none() {
+    fn swap_default_cycle_applies_layout() {
         let (tab, _size) = make_tab_with_n_panes(2);
+        // Tabs now ship with a default layout cycle, so swap should succeed.
+        let name = tab.swap_to_next_layout();
         assert!(
-            tab.swap_to_next_layout().is_none(),
-            "Should return None when no cycle is set"
+            name.is_some(),
+            "Default layout cycle should allow swap"
         );
-        assert!(tab.current_layout_name().is_none());
+        assert!(tab.current_layout_name().is_some());
     }
 
     #[test]
@@ -6760,18 +6762,22 @@ mod test {
             .map(|p| p.pane.pane_id())
             .collect();
         let stacked_panes: HashSet<PaneId> = tab.all_stacked_pane_ids().into_iter().collect();
-        let total = tree_panes.len() + stacked_panes.len();
+        // PaneStack holds ALL panes in a slot (visible + hidden), so the
+        // visible pane appears in both tree_panes and stacked_panes.
+        // Use union for the true unique count.
+        let all_panes: HashSet<PaneId> = tree_panes.union(&stacked_panes).copied().collect();
 
-        assert_eq!(total, 6, "All 6 panes must survive (tree + stacked)");
+        assert_eq!(all_panes.len(), 6, "All 6 panes must survive (tree + stacked)");
         assert_eq!(
             tree_panes.len(),
             grid_4().arrangement.slot_count(),
             "Tree should have exactly as many leaves as grid-4 slots"
         );
+        // 2 overflow panes + 1 visible pane in the last slot = 3 in the stack
         assert_eq!(
             stacked_panes.len(),
-            2,
-            "2 overflow panes should be stacked in the last slot"
+            3,
+            "Last slot stack should hold the visible pane + 2 overflow panes"
         );
     }
 
