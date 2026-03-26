@@ -24,11 +24,16 @@ use termwiz::surface::{SequenceNo, SEQ_ZERO};
 use url::Url;
 use wezterm_term::{KeyCode, KeyModifiers, Line, StableRowIndex};
 
-const MAX_POLL_INTERVAL: Duration = Duration::from_secs(30);
-const BASE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+fn max_poll_interval() -> Duration {
+    Duration::from_millis(configuration().render_max_poll_interval_ms)
+}
+
+fn base_poll_interval() -> Duration {
+    Duration::from_millis(configuration().render_base_poll_interval_ms)
+}
 
 fn initial_last_poll(now: Instant) -> Instant {
-    now.checked_sub(BASE_POLL_INTERVAL).unwrap_or(now)
+    now.checked_sub(base_poll_interval()).unwrap_or(now)
 }
 
 fn should_apply_unilateral_delta(current_seqno: SequenceNo, delta_seqno: SequenceNo) -> bool {
@@ -111,7 +116,7 @@ impl RenderableInner {
             last_poll: initial_last_poll(now),
             dead: false,
             poll_in_progress: AtomicBool::new(false),
-            poll_interval: BASE_POLL_INTERVAL,
+            poll_interval: base_poll_interval(),
             cursor_position: StableCursorPosition::default(),
             dimensions,
             tiered_scrollback_status: None,
@@ -310,7 +315,7 @@ impl RenderableInner {
 
     pub fn update_last_send(&mut self) {
         self.last_send_time = Instant::now();
-        self.poll_interval = BASE_POLL_INTERVAL;
+        self.poll_interval = base_poll_interval();
     }
 
     pub fn apply_changes_to_surface(
@@ -324,7 +329,7 @@ impl RenderableInner {
             self.remote_pane_id
         );
         let now = Instant::now();
-        self.poll_interval = BASE_POLL_INTERVAL;
+        self.poll_interval = base_poll_interval();
         self.last_recv_time = now;
 
         if !should_apply_unilateral_delta(self.seqno, delta.seqno) {
@@ -618,7 +623,7 @@ impl RenderableInner {
         }
 
         let interval = self.poll_interval;
-        let interval = (interval + interval).min(MAX_POLL_INTERVAL);
+        let interval = (interval + interval).min(max_poll_interval());
         self.poll_interval = interval;
 
         self.last_poll = Instant::now();
@@ -890,7 +895,7 @@ impl RenderableState {
 
 #[cfg(test)]
 mod tests {
-    use super::{initial_last_poll, should_apply_unilateral_delta, BASE_POLL_INTERVAL};
+    use super::{initial_last_poll, should_apply_unilateral_delta, base_poll_interval};
     use std::time::Instant;
     use termwiz::surface::SequenceNo;
 
@@ -899,7 +904,7 @@ mod tests {
         let now = Instant::now();
         let initial = initial_last_poll(now);
 
-        assert!(now.duration_since(initial) >= BASE_POLL_INTERVAL);
+        assert!(now.duration_since(initial) >= base_poll_interval());
     }
 
     #[test]

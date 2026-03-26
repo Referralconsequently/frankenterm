@@ -5,7 +5,7 @@ use crate::localpane::LocalPane;
 use crate::pane::{Pane, PaneId, alloc_pane_id};
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
-use config::{Shell, SshBackend, SshDomain};
+use config::{Shell, SshBackend, SshDomain, configuration};
 use filedescriptor::{AsRawSocketDescriptor, FileDescriptor, POLLIN, poll, pollfd, socketpair};
 use frankenterm_ssh::{
     ConfigMap, HostVerificationFailed, Session, SessionEvent, SshChildProcess, SshPty,
@@ -558,7 +558,7 @@ fn connect_ssh_session(
                     revents: 0,
                 }];
 
-                if let Ok(1) = poll(&mut pfd, Some(Duration::from_millis(200))) {
+                if let Ok(1) = poll(&mut pfd, Some(Duration::from_millis(configuration().ssh_terminal_poll_timeout_ms))) {
                     let mut buf = [0u8; 64];
                     let n = self.stdin.read(&mut buf)?;
                     let input_queue = &mut self.input_queue;

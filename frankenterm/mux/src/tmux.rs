@@ -8,6 +8,7 @@ use crate::tmux_commands::{
 use crate::window::WindowId;
 use crate::{Mux, MuxWindowBuilder};
 use async_trait::async_trait;
+use config::configuration;
 use filedescriptor::FileDescriptor;
 use frankenterm_term::TerminalSize;
 use parking_lot::{Condvar, Mutex};
@@ -17,25 +18,27 @@ use std::io::Write;
 use std::sync::Arc;
 use termwiz::tmux_cc::*;
 
-/// Maximum backlog payload size per pane (1 MiB). Payloads exceeding
+/// Returns the maximum backlog payload size per pane. Payloads exceeding
 /// this are truncated to the tail bytes so the most recent output is
-/// preserved.
-const MAX_BACKLOG_BYTES_PER_PANE: usize = 1_048_576;
+/// preserved. Read from config; defaults to 1 MiB.
+fn max_backlog_bytes_per_pane() -> usize {
+    configuration().mux_tmux_max_backlog_bytes_per_pane
+}
 
 /// Warning threshold for tmux command queue depth. Exceeding this
 /// indicates protocol churn or a stalled consumer.
 const CMD_QUEUE_WARNING_DEPTH: usize = 10_000;
 
 fn cap_backlog_payload(payload: &[u8]) -> Vec<u8> {
-    if payload.len() <= MAX_BACKLOG_BYTES_PER_PANE {
+    if payload.len() <= max_backlog_bytes_per_pane() {
         payload.to_vec()
     } else {
         log::warn!(
             "tmux backlog payload ({} bytes) exceeds {} limit; keeping tail",
             payload.len(),
-            MAX_BACKLOG_BYTES_PER_PANE,
+            max_backlog_bytes_per_pane(),
         );
-        payload[payload.len() - MAX_BACKLOG_BYTES_PER_PANE..].to_vec()
+        payload[payload.len() - max_backlog_bytes_per_pane()..].to_vec()
     }
 }
 
@@ -495,20 +498,20 @@ mod tests {
 
     #[test]
     fn backlog_payload_cap_keeps_tail_when_payload_exceeds_limit() {
-        let large_len = MAX_BACKLOG_BYTES_PER_PANE + 512;
+        let large_len = max_backlog_bytes_per_pane() + 512;
         let large: Vec<u8> = (0..large_len).map(|i| (i % 256) as u8).collect();
         let capped = cap_backlog_payload(&large);
-        assert_eq!(MAX_BACKLOG_BYTES_PER_PANE, capped.len());
+        assert_eq!(max_backlog_bytes_per_pane(), capped.len());
         // The capped output should be the tail of the original
         assert_eq!(
-            &large[large_len - MAX_BACKLOG_BYTES_PER_PANE..],
+            &large[large_len - max_backlog_bytes_per_pane()..],
             &capped[..]
         );
     }
 
     #[test]
     fn backlog_payload_cap_at_exact_limit_is_unchanged() {
-        let exact = vec![42u8; MAX_BACKLOG_BYTES_PER_PANE];
+        let exact = vec![42u8; max_backlog_bytes_per_pane()];
         let capped = cap_backlog_payload(&exact);
         assert_eq!(exact.len(), capped.len());
         assert_eq!(exact, capped);

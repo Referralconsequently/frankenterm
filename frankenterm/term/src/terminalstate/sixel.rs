@@ -75,7 +75,7 @@ impl TerminalState {
                 }
 
                 SixelData::DefineColorMapRGB { color_number, rgb } => {
-                    if color_map.len() >= super::MAX_COLOR_MAP_ENTRIES
+                    if color_map.len() >= self.config.max_color_map_entries()
                         && !color_map.contains_key(color_number)
                     {
                         // Evict an arbitrary entry to stay within bounds
@@ -107,7 +107,7 @@ impl TerminalState {
                         1.,
                     );
                     let [r, g, b, _] = c.to_rgba8();
-                    if color_map.len() >= super::MAX_COLOR_MAP_ENTRIES
+                    if color_map.len() >= self.config.max_color_map_entries()
                         && !color_map.contains_key(color_number)
                     {
                         if let Some(&key) = color_map.keys().next() {

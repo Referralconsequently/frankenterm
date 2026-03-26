@@ -386,6 +386,32 @@ pub trait TerminalConfiguration: Downcast + std::fmt::Debug + Send + Sync {
         320 * 1024 * 1024
     }
 
+    /// Maximum number of user variables (iTerm2 SetUserVar).
+    /// Prevents unbounded growth. Default: 512.
+    fn max_user_vars(&self) -> usize {
+        512
+    }
+
+    /// Maximum depth of the unicode version stack.
+    /// Prevents unbounded growth from unbalanced Push operations.
+    /// Default: 64.
+    fn max_unicode_version_stack_depth(&self) -> usize {
+        64
+    }
+
+    /// Maximum length (bytes) for the accumulating OSC title string.
+    /// Prevents unbounded growth from malformed escape sequences.
+    /// Default: 8192.
+    fn max_accumulating_title_len(&self) -> usize {
+        8192
+    }
+
+    /// Maximum entries in the sixel color register map.
+    /// Default: 4096.
+    fn max_color_map_entries(&self) -> usize {
+        4096
+    }
+
     /// The default unicode version to assume.
     /// This affects how the width of certain sequences is interpreted.
     /// At the time of writing, we default to 9 even though the current

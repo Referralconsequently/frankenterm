@@ -1,5 +1,6 @@
 use crate::termwiztermtab;
 use anyhow::{anyhow, bail, Context as _};
+use config::configuration;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use finl_unicode::grapheme_clusters::Graphemes;
 use frankenterm_term::TerminalSize;
@@ -68,8 +69,9 @@ enum CloseStatus {
 
 impl ConnectionUIImpl {
     fn run(&mut self) -> anyhow::Result<CloseStatus> {
+        let poll_timeout = Duration::from_millis(configuration().connui_poll_timeout_ms);
         loop {
-            match self.rx.recv_timeout(Duration::from_millis(200)) {
+            match self.rx.recv_timeout(poll_timeout) {
                 Ok(UIRequest::Close) => return Ok(CloseStatus::Explicit),
                 Ok(UIRequest::Output(changes)) => self.term.render(&changes)?,
                 Ok(UIRequest::Input {
@@ -208,8 +210,9 @@ struct HeadlessImpl {
 
 impl HeadlessImpl {
     fn run(&mut self) -> anyhow::Result<()> {
+        let poll_timeout = Duration::from_millis(configuration().connui_poll_timeout_ms);
         loop {
-            match self.rx.recv_timeout(Duration::from_millis(200)) {
+            match self.rx.recv_timeout(poll_timeout) {
                 Ok(UIRequest::Close) => break,
                 Ok(UIRequest::Output(changes)) => {
                     log::trace!("Output: {:?}", changes);

@@ -178,8 +178,13 @@ pub struct Mux {
     agent: Option<AgentProxy>,
 }
 
-const BUFSIZE: usize = 1024 * 1024;
-const MAX_HELD_SYNCHRONIZED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+fn mux_socket_buffer_size() -> usize {
+    configuration().mux_socket_buffer_size
+}
+
+fn max_held_synchronized_output_bytes() -> usize {
+    configuration().mux_max_synchronized_output_bytes
+}
 
 /// This function applies parsed actions to the pane and notifies any
 /// mux subscribers about the output event
@@ -255,7 +260,7 @@ fn parse_buffered_data(pane: Weak<dyn Pane>, dead: &Arc<AtomicBool>, mut rx: Fil
                     }
                 });
                 action_size += size;
-                if hold && action_size >= MAX_HELD_SYNCHRONIZED_OUTPUT_BYTES {
+                if hold && action_size >= max_held_synchronized_output_bytes() {
                     // A buggy app can enter synchronized-output mode and never
                     // send the reset sequence. Bound buffered memory in that case.
                     log::warn!(
@@ -341,10 +346,10 @@ fn set_socket_buffer(fd: &mut FileDescriptor, option: i32, size: usize) -> anyho
 
 fn allocate_socketpair() -> anyhow::Result<(FileDescriptor, FileDescriptor)> {
     let (mut tx, mut rx) = socketpair().context("socketpair")?;
-    set_socket_buffer(&mut tx, SO_SNDBUF, BUFSIZE)
+    set_socket_buffer(&mut tx, SO_SNDBUF, mux_socket_buffer_size())
         .context("SO_SNDBUF")
         .ok();
-    set_socket_buffer(&mut rx, SO_RCVBUF, BUFSIZE)
+    set_socket_buffer(&mut rx, SO_RCVBUF, mux_socket_buffer_size())
         .context("SO_RCVBUF")
         .ok();
     Ok((tx, rx))
@@ -359,7 +364,7 @@ fn read_from_pane_pty(
     banner: Option<String>,
     mut reader: Box<dyn std::io::Read>,
 ) {
-    let mut buf = vec![0; BUFSIZE];
+    let mut buf = vec![0; mux_socket_buffer_size()];
 
     // This is used to signal that an error occurred either in this thread,
     // or in the main mux thread.  If `true`, this thread will terminate.

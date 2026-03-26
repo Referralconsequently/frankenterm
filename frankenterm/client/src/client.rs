@@ -1062,10 +1062,13 @@ impl Client {
         let client_id = ClientId::new();
 
         thread::spawn(move || {
-            const BASE_INTERVAL: Duration = Duration::from_secs(1);
-            const MAX_INTERVAL: Duration = Duration::from_secs(10);
+            let cfg = configuration();
+            let base_interval =
+                Duration::from_millis(cfg.client_reconnect_base_interval_ms);
+            let max_interval =
+                Duration::from_millis(cfg.client_reconnect_max_interval_ms);
 
-            let mut backoff = BASE_INTERVAL;
+            let mut backoff = base_interval;
             loop {
                 if let Err(e) = client_thread(&mut reconnectable, local_domain_id, &mut receiver) {
                     if !reconnectable.reconnectable() || local_domain_id.is_none() {
@@ -1101,7 +1104,7 @@ impl Client {
                         let no_auto_start = true; // Don't auto-start on a reconnect
                         match reconnectable.connect(initial, &mut ui, no_auto_start) {
                             Ok(_) => {
-                                backoff = BASE_INTERVAL;
+                                backoff = base_interval;
                                 log::error!("Reconnected!");
                                 promise::spawn::spawn_into_main_thread(async move {
                                     ClientDomain::reattach(local_domain_id, ui).await.ok();
@@ -1110,7 +1113,7 @@ impl Client {
                                 break;
                             }
                             Err(err) => {
-                                backoff = (backoff + backoff).min(MAX_INTERVAL);
+                                backoff = (backoff + backoff).min(max_interval);
                                 ui.output_str(&format!(
                                     "problem reconnecting: {}; will reconnect in {:?}\n",
                                     err, backoff

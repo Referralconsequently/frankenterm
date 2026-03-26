@@ -1094,19 +1094,16 @@ fn collect_pane_resize_work(
     }
 }
 
-const RESIZE_FANOUT_PARALLEL_THRESHOLD: usize = 8;
-const RESIZE_FANOUT_MIN_BATCH_SIZE: usize = 4;
-const RESIZE_FANOUT_MAX_WORKERS: usize = 8;
-
 fn compute_resize_fanout_workers(work_len: usize, available_parallelism: usize) -> usize {
-    if work_len < RESIZE_FANOUT_PARALLEL_THRESHOLD {
+    let cfg = configuration();
+    if work_len < cfg.resize_fanout_parallel_threshold {
         return 1;
     }
 
     let mut workers = work_len
         .min(available_parallelism.max(1))
-        .min(RESIZE_FANOUT_MAX_WORKERS);
-    while workers > 1 && work_len.div_ceil(workers) < RESIZE_FANOUT_MIN_BATCH_SIZE {
+        .min(cfg.resize_fanout_max_workers);
+    while workers > 1 && work_len.div_ceil(workers) < cfg.resize_fanout_min_batch_size {
         workers -= 1;
     }
     workers.max(1)
@@ -1186,8 +1183,13 @@ fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
     }
 }
 
-const MIN_FLOATING_PANE_WIDTH: usize = 5;
-const MIN_FLOATING_PANE_HEIGHT: usize = 3;
+fn min_floating_pane_width() -> usize {
+    configuration().min_floating_pane_width
+}
+
+fn min_floating_pane_height() -> usize {
+    configuration().min_floating_pane_height
+}
 
 impl Tab {
     pub fn new(size: &TerminalSize) -> Self {
@@ -1733,8 +1735,8 @@ impl TabInner {
     fn clamp_floating_rect(&self, rect: FloatingPaneRect) -> FloatingPaneRect {
         let max_width = self.size.cols.max(1);
         let max_height = self.size.rows.max(1);
-        let min_width = MIN_FLOATING_PANE_WIDTH.min(max_width);
-        let min_height = MIN_FLOATING_PANE_HEIGHT.min(max_height);
+        let min_width = min_floating_pane_width().min(max_width);
+        let min_height = min_floating_pane_height().min(max_height);
 
         let width = rect.width.max(min_width).min(max_width);
         let height = rect.height.max(min_height).min(max_height);
@@ -4168,8 +4170,8 @@ mod test {
         assert!(floating.is_focused);
         assert_eq!(75, floating.left);
         assert_eq!(21, floating.top);
-        assert_eq!(MIN_FLOATING_PANE_WIDTH, floating.width);
-        assert_eq!(MIN_FLOATING_PANE_HEIGHT, floating.height);
+        assert_eq!(min_floating_pane_width(), floating.width);
+        assert_eq!(min_floating_pane_height(), floating.height);
         assert_eq!(Some(2), tab.count_panes());
         assert_eq!(99, tab.get_active_pane().expect("floating focus").pane_id());
     }
@@ -4911,7 +4913,7 @@ mod test {
     #[test]
     fn resize_fanout_worker_plan_caps_worker_count() {
         assert_eq!(
-            RESIZE_FANOUT_MAX_WORKERS,
+            configuration().resize_fanout_max_workers,
             compute_resize_fanout_workers(256, 64)
         );
     }

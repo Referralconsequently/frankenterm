@@ -405,25 +405,6 @@ struct UnicodeVersionStackEntry {
     label: Option<String>,
 }
 
-/// Maximum number of user variables that can be stored.
-/// Prevents unbounded growth from iTerm2 SetUserVar escape sequences.
-const MAX_USER_VARS: usize = 512;
-
-/// Maximum depth of the unicode version stack.
-/// Prevents unbounded growth from unbalanced Push operations.
-const MAX_UNICODE_VERSION_STACK_DEPTH: usize = 64;
-
-/// Maximum length (in bytes) for the accumulating OSC title string.
-/// Prevents unbounded growth from malicious or malformed escape sequences
-/// that start a tmux title (TmuxTitle escape) without sending the
-/// String Terminator (ST). 8 KiB is generous for any real title.
-const MAX_ACCUMULATING_TITLE_LEN: usize = 8192;
-
-/// Maximum entries in the sixel color register map.
-/// The VT340 had 256 color registers; we allow more but cap to prevent
-/// unbounded accumulation over long-running sessions.
-const MAX_COLOR_MAP_ENTRIES: usize = 4096;
-
 fn default_color_map() -> HashMap<u16, RgbColor> {
     let mut color_map = HashMap::new();
     // Match colors to the VT340 color table:

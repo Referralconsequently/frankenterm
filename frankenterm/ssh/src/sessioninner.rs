@@ -29,8 +29,10 @@ use std::time::{Duration, Instant};
 /// backpressure to the SSH channel.
 const MAX_DESCRIPTOR_BUF_SIZE: usize = 4 * 1024 * 1024;
 /// Initial poll delay when the session loop is active.
+/// See also: Config.ssh_initial_poll_delay_ms (config crate).
 const INITIAL_POLL_DELAY: Duration = Duration::from_millis(100);
 /// Upper bound for poll backoff to avoid multi-minute/hour stalls.
+/// See also: Config.ssh_max_poll_delay_ms (config crate).
 const MAX_POLL_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]

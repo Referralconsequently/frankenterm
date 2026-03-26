@@ -366,6 +366,29 @@ pub struct Config {
     // TerminalConfiguration trait (kitty_image_budget_bytes()). The default is
     // 320 MiB, set in KittyImageState::default(). Full config-file wiring for
     // this vendored parameter is tracked by bead ft-ou001.
+
+    /// Maximum number of user variables (iTerm2 SetUserVar) per terminal.
+    /// Prevents unbounded memory growth. Default: 512.
+    #[dynamic(default = "default_max_user_vars")]
+    pub max_user_vars: usize,
+
+    /// Maximum depth of the unicode version stack.
+    /// Prevents unbounded growth from unbalanced Push operations.
+    /// Default: 64.
+    #[dynamic(default = "default_max_unicode_version_stack_depth")]
+    pub max_unicode_version_stack_depth: usize,
+
+    /// Maximum length (bytes) for the accumulating OSC title string.
+    /// Prevents unbounded growth from malformed escape sequences.
+    /// Default: 8192.
+    #[dynamic(default = "default_max_accumulating_title_len")]
+    pub max_accumulating_title_len: usize,
+
+    /// Maximum entries in the sixel color register map.
+    /// Default: 4096.
+    #[dynamic(default = "default_max_color_map_entries")]
+    pub max_color_map_entries: usize,
+
     /// Whether the terminal should respond to requests to read the
     /// title string.
     /// Disabled by default for security concerns with shells that might
@@ -518,6 +541,80 @@ pub struct Config {
     /// observing "screen tearing" with un-synchronized output
     #[dynamic(default = "default_mux_output_parser_coalesce_delay_ms")]
     pub mux_output_parser_coalesce_delay_ms: u64,
+
+    /// Size of the mux socket read/write buffer, in bytes.
+    /// Also used as the initial read buffer for PTY output.
+    /// Default: 1MB (1048576).
+    #[dynamic(default = "default_mux_socket_buffer_size")]
+    pub mux_socket_buffer_size: usize,
+
+    /// Maximum bytes of output to hold during synchronized rendering mode
+    /// before force-flushing. Prevents unbounded memory growth from buggy
+    /// apps that enter synchronized-output mode and never reset it.
+    /// Default: 8MB (8388608).
+    #[dynamic(default = "default_mux_max_synchronized_output_bytes")]
+    pub mux_max_synchronized_output_bytes: usize,
+
+    /// Maximum backlog payload size per tmux pane, in bytes. Payloads
+    /// exceeding this are truncated to the tail bytes so the most recent
+    /// output is preserved. Default: 1MB (1048576).
+    #[dynamic(default = "default_mux_tmux_max_backlog_bytes_per_pane")]
+    pub mux_tmux_max_backlog_bytes_per_pane: usize,
+
+    /// Number of panes in a tab above which resize operations are
+    /// parallelized. Default: 8.
+    #[dynamic(default = "default_resize_fanout_parallel_threshold")]
+    pub resize_fanout_parallel_threshold: usize,
+
+    /// Minimum number of panes per resize batch when parallelizing.
+    /// Default: 4.
+    #[dynamic(default = "default_resize_fanout_min_batch_size")]
+    pub resize_fanout_min_batch_size: usize,
+
+    /// Maximum number of worker threads for parallel resize.
+    /// Default: 8.
+    #[dynamic(default = "default_resize_fanout_max_workers")]
+    pub resize_fanout_max_workers: usize,
+
+    /// Minimum width in cells for floating panes. Default: 5.
+    #[dynamic(default = "default_min_floating_pane_width")]
+    pub min_floating_pane_width: usize,
+
+    /// Minimum height in cells for floating panes. Default: 3.
+    #[dynamic(default = "default_min_floating_pane_height")]
+    pub min_floating_pane_height: usize,
+
+    /// Initial SSH poll delay in milliseconds. Default: 100.
+    #[dynamic(default = "default_ssh_initial_poll_delay_ms")]
+    pub ssh_initial_poll_delay_ms: u64,
+
+    /// Maximum SSH poll delay in milliseconds. Default: 2000.
+    #[dynamic(default = "default_ssh_max_poll_delay_ms")]
+    pub ssh_max_poll_delay_ms: u64,
+
+    /// Base interval for client reconnect backoff in milliseconds. Default: 1000.
+    #[dynamic(default = "default_client_reconnect_base_interval_ms")]
+    pub client_reconnect_base_interval_ms: u64,
+
+    /// Maximum interval for client reconnect backoff in milliseconds. Default: 10000.
+    #[dynamic(default = "default_client_reconnect_max_interval_ms")]
+    pub client_reconnect_max_interval_ms: u64,
+
+    /// Base poll interval for pane rendering in milliseconds. Default: 20.
+    #[dynamic(default = "default_render_base_poll_interval_ms")]
+    pub render_base_poll_interval_ms: u64,
+
+    /// Maximum poll interval for pane rendering in milliseconds. Default: 30000.
+    #[dynamic(default = "default_render_max_poll_interval_ms")]
+    pub render_max_poll_interval_ms: u64,
+
+    /// Connection UI poll timeout in milliseconds. Default: 200.
+    #[dynamic(default = "default_connui_poll_timeout_ms")]
+    pub connui_poll_timeout_ms: u64,
+
+    /// SSH terminal shim input poll timeout in milliseconds. Default: 200.
+    #[dynamic(default = "default_ssh_terminal_poll_timeout_ms")]
+    pub ssh_terminal_poll_timeout_ms: u64,
 
     #[dynamic(default = "default_mux_env_remove")]
     pub mux_env_remove: Vec<String>,
@@ -1855,6 +1952,86 @@ fn default_mux_output_parser_coalesce_delay_ms() -> u64 {
 
 fn default_mux_output_parser_buffer_size() -> usize {
     128 * 1024
+}
+
+fn default_mux_socket_buffer_size() -> usize {
+    1024 * 1024
+}
+
+fn default_mux_max_synchronized_output_bytes() -> usize {
+    8 * 1024 * 1024
+}
+
+fn default_mux_tmux_max_backlog_bytes_per_pane() -> usize {
+    1_048_576
+}
+
+fn default_ssh_initial_poll_delay_ms() -> u64 {
+    100
+}
+
+fn default_ssh_max_poll_delay_ms() -> u64 {
+    2000
+}
+
+fn default_client_reconnect_base_interval_ms() -> u64 {
+    1000
+}
+
+fn default_client_reconnect_max_interval_ms() -> u64 {
+    10000
+}
+
+fn default_render_base_poll_interval_ms() -> u64 {
+    20
+}
+
+fn default_render_max_poll_interval_ms() -> u64 {
+    30000
+}
+
+fn default_connui_poll_timeout_ms() -> u64 {
+    200
+}
+
+fn default_ssh_terminal_poll_timeout_ms() -> u64 {
+    200
+}
+
+fn default_resize_fanout_parallel_threshold() -> usize {
+    8
+}
+
+fn default_resize_fanout_min_batch_size() -> usize {
+    4
+}
+
+fn default_resize_fanout_max_workers() -> usize {
+    8
+}
+
+fn default_min_floating_pane_width() -> usize {
+    5
+}
+
+fn default_min_floating_pane_height() -> usize {
+    3
+}
+
+fn default_max_user_vars() -> usize {
+    512
+}
+
+fn default_max_unicode_version_stack_depth() -> usize {
+    64
+}
+
+fn default_max_accumulating_title_len() -> usize {
+    8192
+}
+
+fn default_max_color_map_entries() -> usize {
+    4096
 }
 
 fn default_ratelimit_line_prefetches_per_second() -> u32 {

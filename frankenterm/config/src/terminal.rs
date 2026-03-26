@@ -169,6 +169,22 @@ impl frankenterm_term::TerminalConfiguration for TermConfig {
             hint: config.bidi_direction,
         }
     }
+
+    fn max_user_vars(&self) -> usize {
+        self.configuration().max_user_vars
+    }
+
+    fn max_unicode_version_stack_depth(&self) -> usize {
+        self.configuration().max_unicode_version_stack_depth
+    }
+
+    fn max_accumulating_title_len(&self) -> usize {
+        self.configuration().max_accumulating_title_len
+    }
+
+    fn max_color_map_entries(&self) -> usize {
+        self.configuration().max_color_map_entries
+    }
 }
 
 #[cfg(test)]
@@ -258,5 +274,77 @@ mod tests {
         assert!(tier.enabled);
         assert_eq!(tier.hot_lines, 1200);
         assert_eq!(tier.warm_max_bytes, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn term_config_maps_terminal_state_limits() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            Value::String("max_user_vars".into()),
+            Value::U64(1024),
+        );
+        overrides.insert(
+            Value::String("max_unicode_version_stack_depth".into()),
+            Value::U64(128),
+        );
+        overrides.insert(
+            Value::String("max_accumulating_title_len".into()),
+            Value::U64(16384),
+        );
+        overrides.insert(
+            Value::String("max_color_map_entries".into()),
+            Value::U64(8192),
+        );
+
+        let handle = crate::overridden_config(&Value::Object(overrides.into()))
+            .expect("override parsing to succeed");
+        let term_config = TermConfig::with_config(handle);
+
+        assert_eq!(term_config.max_user_vars(), 1024);
+        assert_eq!(term_config.max_unicode_version_stack_depth(), 128);
+        assert_eq!(term_config.max_accumulating_title_len(), 16384);
+        assert_eq!(term_config.max_color_map_entries(), 8192);
+    }
+
+    #[test]
+    fn term_config_defaults_match_original_constants() {
+        let handle = ConfigHandle::default_config();
+        let term_config = TermConfig::with_config(handle);
+
+        assert_eq!(term_config.max_user_vars(), 512);
+        assert_eq!(term_config.max_unicode_version_stack_depth(), 64);
+        assert_eq!(term_config.max_accumulating_title_len(), 8192);
+        assert_eq!(term_config.max_color_map_entries(), 4096);
+    }
+
+    #[test]
+    fn mux_config_defaults_match_original_constants() {
+        let handle = ConfigHandle::default_config();
+        assert_eq!(handle.mux_socket_buffer_size, 1024 * 1024);
+        assert_eq!(handle.mux_max_synchronized_output_bytes, 8 * 1024 * 1024);
+        assert_eq!(handle.mux_tmux_max_backlog_bytes_per_pane, 1_048_576);
+    }
+
+    #[test]
+    fn resize_fanout_defaults_match_original_constants() {
+        let handle = ConfigHandle::default_config();
+        assert_eq!(handle.resize_fanout_parallel_threshold, 8);
+        assert_eq!(handle.resize_fanout_min_batch_size, 4);
+        assert_eq!(handle.resize_fanout_max_workers, 8);
+        assert_eq!(handle.min_floating_pane_width, 5);
+        assert_eq!(handle.min_floating_pane_height, 3);
+    }
+
+    #[test]
+    fn timeout_defaults_match_original_constants() {
+        let handle = ConfigHandle::default_config();
+        assert_eq!(handle.ssh_initial_poll_delay_ms, 100);
+        assert_eq!(handle.ssh_max_poll_delay_ms, 2000);
+        assert_eq!(handle.client_reconnect_base_interval_ms, 1000);
+        assert_eq!(handle.client_reconnect_max_interval_ms, 10000);
+        assert_eq!(handle.render_base_poll_interval_ms, 20);
+        assert_eq!(handle.render_max_poll_interval_ms, 30000);
+        assert_eq!(handle.connui_poll_timeout_ms, 200);
+        assert_eq!(handle.ssh_terminal_poll_timeout_ms, 200);
     }
 }

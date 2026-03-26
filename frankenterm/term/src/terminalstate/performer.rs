@@ -365,15 +365,16 @@ impl<'a> Performer<'a> {
     /// Draw a character to the screen
     fn print(&mut self, c: char) {
         // We buffer up the chars to increase the chances of correctly grouping graphemes into cells
+        let max_title_len = self.config.max_accumulating_title_len();
         if let Some(title) = self.accumulating_title.as_mut() {
-            if title.len() < super::MAX_ACCUMULATING_TITLE_LEN {
+            if title.len() < max_title_len {
                 title.push(c);
             } else {
                 // Title exceeded cap — discard accumulation to prevent unbounded growth
                 // from malicious or malformed escape sequences.
                 log::warn!(
                     "accumulating_title exceeded {} byte cap, discarding",
-                    super::MAX_ACCUMULATING_TITLE_LEN
+                    max_title_len
                 );
                 self.accumulating_title.take();
             }
@@ -839,7 +840,7 @@ impl<'a> Performer<'a> {
                 ITermProprietary::SetUserVar { name, value } => {
                     // Cap user_vars to prevent unbounded growth from
                     // long-running sessions emitting many SetUserVar sequences.
-                    if self.user_vars.len() >= super::MAX_USER_VARS
+                    if self.user_vars.len() >= self.config.max_user_vars()
                         && !self.user_vars.contains_key(&*name)
                     {
                         // Evict an arbitrary entry to make room
@@ -858,11 +859,11 @@ impl<'a> Performer<'a> {
                 ITermProprietary::UnicodeVersion(ITermUnicodeVersionOp::Push(label)) => {
                     // Cap stack depth to prevent unbounded growth from
                     // unbalanced Push operations in long-running sessions.
-                    if self.unicode_version_stack.len() >= super::MAX_UNICODE_VERSION_STACK_DEPTH {
+                    if self.unicode_version_stack.len() >= self.config.max_unicode_version_stack_depth() {
                         log::warn!(
                             "unicode version stack depth limit ({}) reached, \
                              dropping oldest entry",
-                            super::MAX_UNICODE_VERSION_STACK_DEPTH
+                            self.config.max_unicode_version_stack_depth()
                         );
                         self.unicode_version_stack.remove(0);
                     }
