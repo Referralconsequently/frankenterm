@@ -783,21 +783,31 @@ pub async fn emit_event<'lua>(
     let tbl: mlua::Value = lua.named_registry_value(&decorated_name)?;
     let result = match tbl {
         mlua::Value::Table(tbl) => {
+            let mut emit_result = Ok(true);
             for func in tbl.sequence_values::<mlua::Function>() {
-                let func = func?;
-                match func.call_async(args.clone()).await? {
-                    mlua::Value::Boolean(b) if !b => {
+                let func = match func {
+                    Ok(f) => f,
+                    Err(e) => {
+                        emit_result = Err(e);
+                        break;
+                    }
+                };
+                match func.call_async(args.clone()).await {
+                    Ok(mlua::Value::Boolean(b)) if !b => {
                         // Default action prevented
-                        return lua
-                            .set_named_registry_value(IS_EVENT, was_emitting)
-                            .and(Ok(false));
+                        emit_result = Ok(false);
+                        break;
+                    }
+                    Err(e) => {
+                        emit_result = Err(e);
+                        break;
                     }
                     _ => {
                         // Continue with other handlers
                     }
                 }
             }
-            Ok(true)
+            emit_result
         }
         _ => Ok(true),
     };
