@@ -9,7 +9,7 @@ use codec::{
     GetPaneRenderableDimensions, GetPaneRenderableDimensionsResponse, GetTlsCredsResponse,
     InputSerial, KillPane, ListPanes, ListPanesResponse, LivenessResponse, MovePaneToNewTab,
     MovePaneToNewTabResponse, NotifyAlert, Pdu, Ping, Pong, RenameWorkspace, Resize,
-    SearchScrollbackRequest, SearchScrollbackResponse, SelectStackPane, SendKeyDown,
+    SearchScrollbackRequest, SearchScrollbackResponse, SelectStackPane, SendKeyDown, SendKeyUp,
     SendMouseEvent, SendPaste, SetClientId, SetFocusedPane, SetLayoutCycle, SetPalette,
     SetPaneZoomed, SetWindowWorkspace, SpawnResponse, SpawnV2, SplitPane, SwapToLayout,
     TabTitleChanged, UnitResponse, UpdatePaneConstraints, WindowTitleChanged, WriteToPane,
@@ -716,6 +716,22 @@ impl SessionHandler {
                                     serial: 0,
                                 })?;
                             }
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    );
+                })
+                .detach();
+            }
+            Pdu::SendKeyUp(SendKeyUp { pane_id, event }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            let pane = mux
+                                .get_pane(pane_id)
+                                .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
+                            pane.key_up(event.key, event.modifiers)?;
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,

@@ -605,6 +605,7 @@ pdu! {
     CycleStack: 70,
     SelectStackPane: 71,
     UpdatePaneConstraints: 72,
+    SendKeyUp: 73,
 }
 
 impl Pdu {
@@ -616,6 +617,7 @@ impl Pdu {
             self,
             Self::WriteToPane(_)
                 | Self::SendKeyDown(_)
+                | Self::SendKeyUp(_)
                 | Self::SendMouseEvent(_)
                 | Self::SendPaste(_)
                 | Self::Resize(_)
@@ -824,6 +826,12 @@ pub struct SendKeyDown {
     pub pane_id: TabId,
     pub event: termwiz::input::KeyEvent,
     pub input_serial: InputSerial,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SendKeyUp {
+    pub pane_id: TabId,
+    pub event: termwiz::input::KeyEvent,
 }
 
 /// InputSerial is used to sequence input requests with output events.

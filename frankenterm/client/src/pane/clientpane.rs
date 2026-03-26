@@ -486,8 +486,22 @@ impl Pane for ClientPane {
         Ok(())
     }
 
-    fn key_up(&self, _key: KeyCode, _mods: KeyModifiers) -> anyhow::Result<()> {
-        // TODO: decide how to handle key_up for mux client
+    fn key_up(&self, key: KeyCode, mods: KeyModifiers) -> anyhow::Result<()> {
+        let client = Arc::clone(&self.client);
+        let remote_pane_id = self.remote_pane_id;
+        promise::spawn::spawn(async move {
+            client
+                .client
+                .key_up(SendKeyUp {
+                    pane_id: remote_pane_id,
+                    event: KeyEvent {
+                        key,
+                        modifiers: mods,
+                    },
+                })
+                .await
+        })
+        .detach();
         Ok(())
     }
 
