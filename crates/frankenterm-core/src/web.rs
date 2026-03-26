@@ -67,6 +67,48 @@ pub fn resolve_port(tuning: Option<&crate::tuning_config::WebTuning>) -> u16 {
     tuning.map(|t| t.default_port).unwrap_or(DEFAULT_PORT)
 }
 
+/// Resolved web runtime limits derived from tuning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebRuntimeLimits {
+    pub max_list_limit: usize,
+    pub default_list_limit: usize,
+    pub max_request_body_bytes: usize,
+    pub stream_default_max_hz: u64,
+    pub stream_max_max_hz: u64,
+    pub stream_keepalive_secs: u64,
+    pub stream_scan_limit: usize,
+    pub stream_scan_max_pages: usize,
+}
+
+/// Resolve web runtime limits from TuningConfig, falling back to compile-time defaults.
+#[must_use]
+pub fn resolve_runtime_limits(
+    tuning: Option<&crate::tuning_config::WebTuning>,
+) -> WebRuntimeLimits {
+    match tuning {
+        Some(tuning) => WebRuntimeLimits {
+            max_list_limit: tuning.max_list_limit,
+            default_list_limit: tuning.default_list_limit,
+            max_request_body_bytes: tuning.max_request_body_bytes,
+            stream_default_max_hz: u64::from(tuning.stream_default_max_hz),
+            stream_max_max_hz: u64::from(tuning.stream_max_max_hz),
+            stream_keepalive_secs: tuning.stream_keepalive_secs,
+            stream_scan_limit: tuning.stream_scan_limit,
+            stream_scan_max_pages: tuning.stream_scan_max_pages,
+        },
+        None => WebRuntimeLimits {
+            max_list_limit: MAX_LIMIT,
+            default_list_limit: DEFAULT_LIMIT,
+            max_request_body_bytes: MAX_REQUEST_BODY_BYTES,
+            stream_default_max_hz: STREAM_DEFAULT_MAX_HZ,
+            stream_max_max_hz: STREAM_MAX_MAX_HZ,
+            stream_keepalive_secs: STREAM_KEEPALIVE_SECS,
+            stream_scan_limit: STREAM_SCAN_LIMIT,
+            stream_scan_max_pages: STREAM_SCAN_MAX_PAGES,
+        },
+    }
+}
+
 // Web API limits — canonical values in TuningConfig::WebTuning.
 // To override: set [tuning.web] in ft.toml.
 const MAX_LIMIT: usize = crate::tuning_config::WebTuning::DEFAULT_MAX_LIST_LIMIT;

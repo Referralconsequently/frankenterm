@@ -39558,6 +39558,57 @@ fn distributed_security_check(config: &frankenterm_core::config::Config) -> Diag
     }
 }
 
+fn collect_tuning_override_entries(
+    path: &str,
+    current: &serde_json::Value,
+    defaults: &serde_json::Value,
+    entries: &mut Vec<String>,
+) {
+    match (current, defaults) {
+        (serde_json::Value::Object(current_map), serde_json::Value::Object(default_map)) => {
+            let keys = current_map
+                .keys()
+                .chain(default_map.keys())
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for key in keys {
+                let current_value = current_map.get(&key).unwrap_or(&serde_json::Value::Null);
+                let default_value = default_map.get(&key).unwrap_or(&serde_json::Value::Null);
+                let next_path = if path.is_empty() {
+                    format!("tuning.{key}")
+                } else {
+                    format!("{path}.{key}")
+                };
+                collect_tuning_override_entries(&next_path, current_value, default_value, entries);
+            }
+        }
+        _ if current != defaults => {
+            let rendered = serde_json::to_string(current)
+                .unwrap_or_else(|_| "\"<unserializable>\"".to_string());
+            entries.push(format!("{path}={rendered}"));
+        }
+        _ => {}
+    }
+}
+
+fn tuning_diagnostic_check(config: &frankenterm_core::config::Config) -> DiagnosticCheck {
+    let current = serde_json::to_value(&config.tuning).unwrap_or(serde_json::Value::Null);
+    let defaults = serde_json::to_value(frankenterm_core::tuning_config::TuningConfig::default())
+        .unwrap_or(serde_json::Value::Null);
+
+    let mut entries = Vec::new();
+    collect_tuning_override_entries("", &current, &defaults, &mut entries);
+
+    if entries.is_empty() {
+        DiagnosticCheck::ok_with_detail("tuning", "defaults")
+    } else {
+        DiagnosticCheck::ok_with_detail(
+            "tuning",
+            format!("{} override(s): {}", entries.len(), entries.join(", ")),
+        )
+    }
+}
+
 /// Resolve the wezterm binary, respecting `FT_WEZTERM_CLI` env var.
 fn wezterm_binary() -> String {
     std::env::var("FT_WEZTERM_CLI").unwrap_or_else(|_| "wezterm".to_string())
@@ -39773,6 +39824,7 @@ fn run_diagnostics(
         format!("log_level={}", config.general.log_level)
     };
     checks.push(DiagnosticCheck::ok_with_detail("config", config_source));
+    checks.push(tuning_diagnostic_check(config));
     checks.push(distributed_security_check(config));
 
     // Surface policy-layer health in the same doctor output path used for
@@ -53289,6 +53341,14 @@ log_level = "debug"
             );
             assert_eq!(policy_check.unwrap().status, DiagnosticStatus::Ok);
 
+            let tuning_check = checks.iter().find(|c| c.name == "tuning");
+            assert!(
+                tuning_check.is_some(),
+                "expected tuning diagnostics in doctor output"
+            );
+            assert_eq!(tuning_check.unwrap().status, DiagnosticStatus::Ok);
+            assert_eq!(tuning_check.unwrap().detail.as_deref(), Some("defaults"));
+
             // Verify JSON shape
             let json_checks: Vec<serde_json::Value> =
                 checks.iter().map(|c| c.to_json_value()).collect();
@@ -53316,6 +53376,49 @@ log_level = "debug"
             );
 
             // Cleanup
+            let _ = std::fs::remove_dir_all(&temp);
+        });
+    }
+
+    #[test]
+    fn doctor_fixture_reports_tuning_overrides_in_check_detail() {
+        run_async_test(async {
+            let temp = unique_temp_dir("doctor_tuning_overrides");
+            let layout = make_test_layout(&temp);
+            std::fs::create_dir_all(&layout.logs_dir).unwrap();
+
+            let storage = StorageHandle::new(&layout.db_path.to_string_lossy())
+                .await
+                .unwrap();
+            let _ = storage.shutdown().await;
+
+            let mut config = frankenterm_core::config::Config::default();
+            config.tuning.web.default_host = "0.0.0.0".to_string();
+            config.tuning.web.default_port = 9911;
+            config.tuning.workflows.max_steps = 12;
+
+            let checks = run_diagnostics(&[], &config, &layout);
+            let tuning_check = checks
+                .iter()
+                .find(|c| c.name == "tuning")
+                .expect("expected tuning diagnostic");
+
+            assert_eq!(tuning_check.status, DiagnosticStatus::Ok);
+            let detail = tuning_check.detail.as_deref().unwrap_or("");
+            assert!(detail.contains("3 override(s)"), "detail={detail}");
+            assert!(
+                detail.contains("tuning.web.default_host=\"0.0.0.0\""),
+                "detail={detail}"
+            );
+            assert!(
+                detail.contains("tuning.web.default_port=9911"),
+                "detail={detail}"
+            );
+            assert!(
+                detail.contains("tuning.workflows.max_steps=12"),
+                "detail={detail}"
+            );
+
             let _ = std::fs::remove_dir_all(&temp);
         });
     }

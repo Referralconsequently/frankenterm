@@ -39,6 +39,29 @@ const IPC_ACCEPT_POLL_INTERVAL: Duration =
 #[cfg(unix)]
 const IPC_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// Resolved IPC runtime limits derived from tuning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpcRuntimeLimits {
+    pub max_message_size: usize,
+    pub accept_poll_interval_ms: u64,
+}
+
+/// Resolve IPC runtime limits from tuning, falling back to compile-time defaults.
+#[must_use]
+pub fn resolve_limits(tuning: Option<&crate::tuning_config::IpcTuning>) -> IpcRuntimeLimits {
+    match tuning {
+        Some(tuning) => IpcRuntimeLimits {
+            max_message_size: tuning.max_message_size,
+            accept_poll_interval_ms: tuning.accept_poll_interval_ms,
+        },
+        None => IpcRuntimeLimits {
+            max_message_size: MAX_MESSAGE_SIZE,
+            accept_poll_interval_ms:
+                crate::tuning_config::IpcTuning::DEFAULT_ACCEPT_POLL_INTERVAL_MS,
+        },
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

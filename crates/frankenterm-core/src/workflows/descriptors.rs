@@ -46,6 +46,20 @@ impl Default for DescriptorLimits {
     }
 }
 
+impl DescriptorLimits {
+    /// Build descriptor-validation limits from the live tuning config.
+    #[must_use]
+    pub fn from_tuning(tuning: &crate::tuning_config::TuningConfig) -> Self {
+        Self {
+            max_steps: tuning.workflows.max_steps,
+            max_wait_timeout_ms: tuning.workflows.max_wait_timeout_ms,
+            max_sleep_ms: tuning.workflows.max_sleep_ms,
+            max_text_len: tuning.workflows.max_text_len,
+            max_match_len: tuning.workflows.max_match_len,
+        }
+    }
+}
+
 /// Trigger definition for descriptor workflows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -1037,6 +1037,14 @@ impl Screen {
         }
     }
 
+    fn blank_line_borrowing_bidi(&self, seqno: SequenceNo) -> Line {
+        let mut line = Line::new(seqno);
+        if let Some((enabled, hint)) = self.lines.back().map(Line::bidi_info) {
+            line.set_bidi_info(enabled, hint, seqno);
+        }
+        line
+    }
+
     fn wrap_single_logical_line_for_resize(
         line: Line,
         physical_cols: usize,
@@ -1818,8 +1826,7 @@ impl Screen {
         // lines than the viewport size, or we resized taller,
         // pad us back out to the viewport size
         while self.lines.len() < physical_rows {
-            // FIXME: borrow bidi mode from line
-            self.lines.push_back(Line::new(seqno));
+            self.lines.push_back(self.blank_line_borrowing_bidi(seqno));
         }
 
         let new_cursor_y;
@@ -1862,8 +1869,7 @@ impl Screen {
                 physical_rows.saturating_sub(new_cursor_y as usize);
             let actual_num_rows_after_cursor = self.lines.len().saturating_sub(cursor_y);
             for _ in actual_num_rows_after_cursor..required_num_rows_after_cursor {
-                // FIXME: borrow bidi mode from line
-                self.lines.push_back(Line::new(seqno));
+                self.lines.push_back(self.blank_line_borrowing_bidi(seqno));
             }
         } else {
             // Compute the new cursor location; this is logically the inverse
@@ -2910,6 +2916,13 @@ mod tests {
         }
     }
 
+    fn rtl_bidi_mode() -> BidiMode {
+        BidiMode {
+            enabled: true,
+            hint: ParagraphDirectionHint::RightToLeft,
+        }
+    }
+
     fn test_screen_with_config(
         rows: usize,
         cols: usize,
@@ -2922,6 +2935,43 @@ mod tests {
 
     fn test_screen(rows: usize, cols: usize, dpi: u32) -> Screen {
         test_screen_with_config(rows, cols, dpi, TestTermConfig::default())
+    }
+
+    #[test]
+    fn resize_padding_borrows_bidi_mode_from_existing_lines() {
+        let config: Arc<dyn TerminalConfiguration> = Arc::new(TestTermConfig::default());
+        let mut screen = Screen::new(test_size(2, 4, 96), &config, true, 0, rtl_bidi_mode());
+
+        screen.resize(test_size(4, 4, 96), test_cursor(0, 1, 1), 2, false);
+
+        for line in &screen.lines {
+            assert_eq!(line.bidi_info(), (true, ParagraphDirectionHint::RightToLeft));
+        }
+    }
+
+    #[test]
+    fn conpty_resize_padding_borrows_bidi_mode_from_existing_lines() {
+        let rtl_mode = rtl_bidi_mode();
+        let mut screen = {
+            let config: Arc<dyn TerminalConfiguration> = Arc::new(TestTermConfig::default());
+            Screen::new(test_size(2, 4, 96), &config, true, 0, rtl_mode)
+        };
+        let region: Range<VisibleRowIndex> = 0..(screen.physical_rows as VisibleRowIndex);
+
+        for seq in 1..=3 {
+            screen.scroll_up(&region, 1, seq, CellAttributes::blank(), rtl_mode);
+        }
+
+        let len_before = screen.lines.len();
+        screen.resize(test_size(4, 4, 96), test_cursor(0, 1, 10), 11, true);
+
+        assert!(
+            screen.lines.len() > len_before,
+            "conpty resize should append rows after the cursor"
+        );
+        for line in screen.lines.iter().skip(len_before) {
+            assert_eq!(line.bidi_info(), (true, ParagraphDirectionHint::RightToLeft));
+        }
     }
 
     #[test]

@@ -24,6 +24,30 @@ pub const MAX_SENDER_ID_LEN: usize =
 /// Default idle window before a sender is considered stale.
 pub const DEFAULT_AGENT_STALE_AFTER_MS: i64 = 5 * 60 * 1000;
 
+/// Resolved wire-protocol limits derived from tuning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireProtocolLimits {
+    pub max_message_size: usize,
+    pub max_sender_id_len: usize,
+}
+
+/// Resolve wire-protocol limits from tuning, falling back to compile-time defaults.
+#[must_use]
+pub fn resolve_limits(
+    tuning: Option<&crate::tuning_config::WireProtocolTuning>,
+) -> WireProtocolLimits {
+    match tuning {
+        Some(tuning) => WireProtocolLimits {
+            max_message_size: tuning.max_message_size,
+            max_sender_id_len: tuning.max_sender_id_len,
+        },
+        None => WireProtocolLimits {
+            max_message_size: MAX_MESSAGE_SIZE,
+            max_sender_id_len: MAX_SENDER_ID_LEN,
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core wire messages
 // ---------------------------------------------------------------------------
