@@ -243,7 +243,7 @@ jq -n \
             "benchmark compile contract"
         ],
         limitations: [
-            "Central e2e registry wiring in scripts/e2e_test.sh is intentionally excluded from this slice because that file is actively reserved by another agent."
+            "Requires healthy rch remote execution; the harness fails closed if rch cannot offload cargo work."
         ],
         target_dir: $target_dir
     }' > "${SUMMARY_FILE}"
