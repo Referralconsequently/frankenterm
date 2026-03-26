@@ -13,6 +13,7 @@ use crate::image::{ImageDataType, TextureCoordinate};
 use crate::render::RenderTty;
 use crate::surface::{Change, CursorShape, CursorVisibility, LineAttribute, Position};
 use crate::Result;
+use finl_unicode::grapheme_clusters::Graphemes;
 use std::io::Write;
 use terminfo::{capability as cap, Capability as TermInfoCapability};
 
@@ -20,6 +21,7 @@ pub struct TerminfoRenderer {
     caps: Capabilities,
     current_attr: CellAttributes,
     pending_attr: Option<CellAttributes>,
+    cursor_position: Option<(usize, usize)>,
     /* TODO: we should record cursor position, shape and color here
      * so that we can optimize updating them on screen. */
 }
@@ -30,6 +32,7 @@ impl TerminfoRenderer {
             caps,
             current_attr: CellAttributes::default(),
             pending_attr: None,
+            cursor_position: Some((0, 0)),
         }
     }
 
@@ -310,6 +313,7 @@ impl TerminfoRenderer {
         if x == 0 && y == 0 {
             if let Some(attr) = self.get_capability::<cap::CursorHome>() {
                 attr.expand().to(out.by_ref())?;
+                self.cursor_position = Some((0, 0));
                 return Ok(());
             }
         }
@@ -330,7 +334,75 @@ impl TerminfoRenderer {
                 })
             )?;
         }
+        self.cursor_position = Some((x as usize, y as usize));
         Ok(())
+    }
+
+    fn write_spaces<W: Write>(&self, count: usize, out: &mut W) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let mut buf = Vec::with_capacity(count);
+        buf.resize(count, b' ');
+        out.write_all(buf.as_slice())?;
+        Ok(())
+    }
+
+    fn update_cursor_position(&mut self, x: &Position, y: &Position, cols: usize, rows: usize) {
+        let Some((cursor_x, cursor_y)) = self.cursor_position else {
+            return;
+        };
+
+        let screen_cols = cols.max(1);
+        let screen_rows = rows.max(1);
+
+        let next_x = match x {
+            Position::Relative(dx) => (cursor_x as isize + dx).rem_euclid(screen_cols as isize),
+            Position::Absolute(value) => (value % screen_cols) as isize,
+            Position::EndRelative(value) => ((screen_cols - value) % screen_cols) as isize,
+        };
+
+        let next_y = match y {
+            Position::Relative(dy) => (cursor_y as isize + dy).rem_euclid(screen_rows as isize),
+            Position::Absolute(value) => (value % screen_rows) as isize,
+            Position::EndRelative(value) => ((screen_rows - value) % screen_rows) as isize,
+        };
+
+        self.cursor_position = Some((next_x as usize, next_y as usize));
+    }
+
+    fn update_cursor_position_for_text(&mut self, text: &str, cols: usize) {
+        let Some((mut cursor_x, mut cursor_y)) = self.cursor_position else {
+            return;
+        };
+
+        let screen_cols = cols.max(1);
+
+        for grapheme in Graphemes::new(text) {
+            if cursor_x == screen_cols {
+                cursor_y = cursor_y.saturating_add(1);
+                cursor_x = 0;
+            }
+
+            match grapheme {
+                "\n" => {
+                    cursor_y = cursor_y.saturating_add(1);
+                }
+                "\r" => {
+                    cursor_x = 0;
+                }
+                "\r\n" => {
+                    cursor_y = cursor_y.saturating_add(1);
+                    cursor_x = 0;
+                }
+                _ => {
+                    cursor_x =
+                        cursor_x.saturating_add(crate::cell::unicode_column_width(grapheme, None));
+                }
+            }
+        }
+
+        self.cursor_position = Some((cursor_x, cursor_y));
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -380,10 +452,10 @@ impl TerminfoRenderer {
 
                         let (cols, rows) = out.get_size_in_cells()?;
                         let num_spaces = cols * rows;
-                        let mut buf = Vec::with_capacity(num_spaces);
-                        buf.resize(num_spaces, b' ');
-                        out.write_all(buf.as_slice())?;
+                        self.write_spaces(num_spaces, out)?;
+                        self.move_cursor_absolute(0, 0, out)?;
                     }
+                    self.cursor_position = Some((0, 0));
                 }
                 Change::ClearToEndOfLine(color) => {
                     // ClearScreen implicitly resets all to default
@@ -394,10 +466,22 @@ impl TerminfoRenderer {
                     }
                     self.pending_attr = None;
 
-                    // FIXME: this doesn't behave correctly for terminals without bce.
-                    // If we knew the current cursor position, we would be able to
-                    // emit the correctly colored background for that case.
-                    if let Some(clr) = self.get_capability::<cap::ClrEol>() {
+                    if color != &ColorAttribute::Default && !self.caps.bce() {
+                        if let Some((cursor_x, _cursor_y)) = self.cursor_position {
+                            let (cols, _rows) = out.get_size_in_cells()?;
+                            self.write_spaces(cols.saturating_sub(cursor_x), out)?;
+                            out.by_ref().write_all(b"\r")?;
+                            self.cursor_right(cursor_x as u32, out)?;
+                        } else if let Some(clr) = self.get_capability::<cap::ClrEol>() {
+                            clr.expand().to(out.by_ref())?;
+                        } else {
+                            write!(
+                                out,
+                                "{}",
+                                CSI::Edit(Edit::EraseInLine(EraseInLine::EraseToEndOfLine))
+                            )?;
+                        }
+                    } else if let Some(clr) = self.get_capability::<cap::ClrEol>() {
                         clr.expand().to(out.by_ref())?;
                     } else {
                         write!(
@@ -416,10 +500,30 @@ impl TerminfoRenderer {
                     }
                     self.pending_attr = None;
 
-                    // FIXME: this doesn't behave correctly for terminals without bce.
-                    // If we knew the current cursor position, we would be able to
-                    // emit the correctly colored background for that case.
-                    if let Some(clr) = self.get_capability::<cap::ClrEos>() {
+                    if color != &ColorAttribute::Default && !self.caps.bce() {
+                        if let Some((cursor_x, cursor_y)) = self.cursor_position {
+                            let (cols, rows) = out.get_size_in_cells()?;
+                            let rows_below = rows.saturating_sub(cursor_y.saturating_add(1));
+                            self.write_spaces(cols.saturating_sub(cursor_x), out)?;
+                            for _ in 0..rows_below {
+                                out.by_ref().write_all(b"\r\n")?;
+                                self.write_spaces(cols, out)?;
+                            }
+                            self.cursor_up(rows_below as u32, out)?;
+                            out.by_ref().write_all(b"\r")?;
+                            self.cursor_right(cursor_x as u32, out)?;
+                        } else if let Some(clr) = self.get_capability::<cap::ClrEos>() {
+                            clr.expand().to(out.by_ref())?;
+                        } else {
+                            write!(
+                                out,
+                                "{}",
+                                CSI::Edit(Edit::EraseInDisplay(
+                                    EraseInDisplay::EraseToEndOfDisplay
+                                ))
+                            )?;
+                        }
+                    } else if let Some(clr) = self.get_capability::<cap::ClrEos>() {
                         clr.expand().to(out.by_ref())?;
                     } else {
                         write!(
@@ -471,6 +575,8 @@ impl TerminfoRenderer {
                 Change::Text(text) => {
                     self.flush_pending_attr(out)?;
                     out.by_ref().write_all(text.as_bytes())?;
+                    let (cols, _rows) = out.get_size_in_cells()?;
+                    self.update_cursor_position_for_text(text, cols);
                 }
 
                 Change::CursorPosition { x, y } => {
@@ -541,6 +647,9 @@ impl TerminfoRenderer {
                             )?;
                         }
                     }
+
+                    let (cols, rows) = out.get_size_in_cells()?;
+                    self.update_cursor_position(x, y, cols, rows);
                 }
 
                 Change::CursorColor(_color) => {
@@ -636,6 +745,7 @@ impl TerminfoRenderer {
                         }
                         self.cursor_up(image.height as u32, out)?;
                     }
+                    self.cursor_position = None;
                 }
                 Change::ScrollRegionUp {
                     first_row,
@@ -666,6 +776,7 @@ impl TerminfoRenderer {
                             }
                         }
                     }
+                    self.cursor_position = None;
                 }
                 Change::ScrollRegionDown {
                     first_row,
@@ -696,6 +807,7 @@ impl TerminfoRenderer {
                             }
                         }
                     }
+                    self.cursor_position = None;
                 }
 
                 Change::Title(text) => {
@@ -732,7 +844,7 @@ mod test {
     use crate::caps::ProbeHints;
     use crate::color::{AnsiColor, ColorAttribute};
     use crate::escape::parser::Parser;
-    use crate::escape::{Action, Esc, EscCode};
+    use crate::escape::{Action, ControlCode, Esc, EscCode};
     use crate::input::InputEvent;
     use crate::terminal::unix::{Purge, SetAttributeWhen, UnixTty};
     use crate::terminal::{cast, ScreenSize, Terminal, TerminalWaker};
@@ -1093,7 +1205,115 @@ mod test {
                 Action::Print(' '),
                 Action::Print(' '),
                 Action::Print(' '),
+                Action::CSI(CSI::Cursor(Cursor::Position {
+                    line: OneBased::new(1),
+                    col: OneBased::new(1)
+                })),
             ]
+        );
+
+        assert_eq!(
+            out.renderer.current_attr,
+            CellAttributes::default()
+                .set_background(AnsiColor::Maroon)
+                .clone()
+        );
+    }
+
+    #[test]
+    fn clear_to_end_of_line_no_bce() {
+        let mut out = FakeTerm::new_with_size(no_terminfo_all_enabled(), 4, 3);
+        out.render(&[
+            Change::CursorPosition {
+                x: Position::Absolute(1),
+                y: Position::Absolute(1),
+            },
+            Change::ClearToEndOfLine(AnsiColor::Maroon.into()),
+        ])
+        .unwrap();
+
+        let result = out.parse();
+        assert_eq!(
+            result,
+            vec![
+                Action::CSI(CSI::Cursor(Cursor::Position {
+                    line: OneBased::new(2),
+                    col: OneBased::new(2)
+                })),
+                Action::CSI(CSI::Sgr(Sgr::Background(AnsiColor::Maroon.into()))),
+                Action::Print(' '),
+                Action::Print(' '),
+                Action::Print(' '),
+                Action::Control(ControlCode::CarriageReturn),
+                Action::CSI(CSI::Cursor(Cursor::Right(1))),
+            ]
+        );
+
+        assert_eq!(
+            out.renderer.current_attr,
+            CellAttributes::default()
+                .set_background(AnsiColor::Maroon)
+                .clone()
+        );
+    }
+
+    #[test]
+    fn clear_to_end_of_screen_no_bce() {
+        let mut out = FakeTerm::new_with_size(no_terminfo_all_enabled(), 4, 3);
+        out.render(&[
+            Change::CursorPosition {
+                x: Position::Absolute(1),
+                y: Position::Absolute(1),
+            },
+            Change::ClearToEndOfScreen(AnsiColor::Maroon.into()),
+        ])
+        .unwrap();
+
+        let result = out.parse();
+        assert_eq!(
+            result.first(),
+            Some(&Action::CSI(CSI::Cursor(Cursor::Position {
+                line: OneBased::new(2),
+                col: OneBased::new(2)
+            })))
+        );
+        assert_eq!(
+            result.get(1),
+            Some(&Action::CSI(CSI::Sgr(Sgr::Background(
+                AnsiColor::Maroon.into()
+            ))))
+        );
+        assert_eq!(
+            result.last(),
+            Some(&Action::CSI(CSI::Cursor(Cursor::Right(1))))
+        );
+        assert_eq!(
+            result
+                .iter()
+                .filter(|action| matches!(action, Action::Print(' ')))
+                .count(),
+            7
+        );
+        assert_eq!(
+            result
+                .iter()
+                .filter(|action| matches!(action, Action::Control(ControlCode::CarriageReturn)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            result
+                .iter()
+                .filter(|action| matches!(action, Action::Control(ControlCode::LineFeed)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            result
+                .iter()
+                .filter(|action| matches!(action, Action::CSI(CSI::Cursor(Cursor::Up(1)))))
+                .count(),
+            1
         );
 
         assert_eq!(
