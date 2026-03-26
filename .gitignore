@@ -171,3 +171,23 @@ tmp_re_test/
 .opencode.json.*
 .windsurf.mcp.json.*
 .claude/settings.local.json
+
+# Beads recovery directories
+.beads/.br_recovery/
+
+# Clippy analysis output (all variants)
+clippy_*.json
+clippy_*.txt
+*_clippy.json
+
+# Check/build analysis output
+check_out.json
+
+# UBS scan output (JSON)
+ubs_*.json
+
+# Ephemeral env file at repo root
+/env
+
+# Agent-generated scratch Rust files at repo root
+/dump_sender.rs
