@@ -8,12 +8,13 @@ use crate::surface::{
 };
 use crate::Result;
 use fnv::FnvHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::BuildHasherDefault;
 use std::sync::{OnceLock, RwLock};
 
 /// fnv is a more appropriate hasher for the WidgetIds we use in this module.
 type FnvHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FnvHasher>>;
+type FnvHashSet<T> = HashSet<T, BuildHasherDefault<FnvHasher>>;
 
 pub mod layout;
 
@@ -74,6 +75,12 @@ pub struct RenderTelemetry {
     pub frame_upload_regions: usize,
     /// Total dirty cells selected for upload in the active render mode.
     pub frame_upload_cells: usize,
+    /// Number of widget render-state entries retained after the most recent GC sweep.
+    pub widget_state_entries_count: usize,
+    /// Number of GC sweeps performed during the most recent render pass.
+    pub widget_gc_cycles: usize,
+    /// Number of unreachable widget entries reclaimed during the most recent GC sweep.
+    pub widget_gc_freed: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,6 +277,44 @@ impl Graph {
             .map(|v| v.as_slice())
             .unwrap_or_else(|| &[])
     }
+
+    fn reachable_widgets(&self) -> FnvHashSet<WidgetId> {
+        let mut reachable = FnvHashSet::default();
+        let Some(root) = self.root else {
+            return reachable;
+        };
+
+        let mut pending = vec![root];
+        while let Some(widget) = pending.pop() {
+            if !reachable.insert(widget) {
+                continue;
+            }
+
+            if let Some(children) = self.children.get(&widget) {
+                pending.extend(children.iter().copied());
+            }
+        }
+
+        reachable
+    }
+
+    fn retain_reachable(&mut self, reachable: &FnvHashSet<WidgetId>) {
+        if self.root.is_some_and(|root| !reachable.contains(&root)) {
+            self.root = None;
+        }
+
+        self.children.retain(|widget, children| {
+            if !reachable.contains(widget) {
+                return false;
+            }
+
+            children.retain(|child| reachable.contains(child));
+            true
+        });
+
+        self.parent
+            .retain(|widget, parent| reachable.contains(widget) && reachable.contains(parent));
+    }
 }
 
 /// Manages the widgets on the display
@@ -309,7 +354,10 @@ impl<'widget> Ui<'widget> {
     }
 
     pub fn set_root<W: Widget + 'widget>(&mut self, w: W) -> WidgetId {
-        self.add(None, w)
+        let id = self.add(None, w);
+        self.graph.root = Some(id);
+        self.focused = Some(id);
+        id
     }
 
     pub fn add_child<W: Widget + 'widget>(&mut self, parent: WidgetId, w: W) -> WidgetId {
@@ -367,11 +415,16 @@ impl<'widget> Ui<'widget> {
             _ => return None,
         };
 
-        let depth = 0;
-        let mut best = (depth, root);
-        self.hovered_recursive(root, depth, coords.x, coords.y, &mut best);
+        let mut best = None;
+        self.hovered_recursive(
+            root,
+            0,
+            coords,
+            &ScreenRelativeCoords::default(),
+            &mut best,
+        );
 
-        Some(best.1)
+        best.map(|(_, id)| id)
     }
 
     /// Recursive helper for hovered_widget().  The `best` tuple holds the
@@ -381,19 +434,25 @@ impl<'widget> Ui<'widget> {
         &self,
         widget: WidgetId,
         depth: usize,
-        x: usize,
-        y: usize,
-        best: &mut (usize, WidgetId),
+        coords: &ScreenRelativeCoords,
+        origin: &ScreenRelativeCoords,
+        best: &mut Option<(usize, WidgetId)>,
     ) {
         let render = &self.render[&widget];
+        let widget_origin = origin.offset_by(&render.coordinates);
 
         // only consider the dimensions if this node is at the same or a deeper
         // depth.  If so, then we check to see if the coords are within the bounds.
-        if depth >= best.0 && x >= render.coordinates.x && y >= render.coordinates.y {
+        if coords.x >= widget_origin.x && coords.y >= widget_origin.y {
             let (width, height) = render.surface.dimensions();
 
-            if (x - render.coordinates.x < width) && (y - render.coordinates.y < height) {
-                *best = (depth, widget);
+            if (coords.x - widget_origin.x < width) && (coords.y - widget_origin.y < height) {
+                let should_replace = best
+                    .as_ref()
+                    .is_none_or(|(best_depth, _)| depth >= *best_depth);
+                if should_replace {
+                    *best = Some((depth, widget));
+                }
             }
         }
 
@@ -401,8 +460,8 @@ impl<'widget> Ui<'widget> {
             self.hovered_recursive(
                 *child,
                 depth + 1,
-                x + render.coordinates.x,
-                y + render.coordinates.y,
+                coords,
+                &widget_origin,
                 best,
             );
         }
@@ -445,6 +504,20 @@ impl<'widget> Ui<'widget> {
     /// Assign keyboard focus to the specified widget.
     pub fn set_focus(&mut self, id: WidgetId) {
         self.focused = Some(id);
+    }
+
+    fn garbage_collect_unreachable_widgets(&mut self) -> usize {
+        let reachable = self.graph.reachable_widgets();
+        let entries_before = self.render.len();
+
+        self.graph.retain_reachable(&reachable);
+        self.render.retain(|widget, _| reachable.contains(widget));
+
+        if self.focused.is_some_and(|focused| !reachable.contains(&focused)) {
+            self.focused = self.graph.root;
+        }
+
+        entries_before.saturating_sub(self.render.len())
     }
 
     fn accumulate_dirty_rects(rects: &[DirtyRect]) -> (usize, usize) {
@@ -592,8 +665,8 @@ impl<'widget> Ui<'widget> {
         mode: DirtyRegionMode,
     ) -> Result<(bool, Vec<DirtyRect>)> {
         let mut frame_dirty_regions = Vec::new();
+        let mut telemetry = RenderTelemetry::default();
         if let Some(root) = self.graph.root {
-            let mut telemetry = RenderTelemetry::default();
             let (width, height) = screen.dimensions();
             // Render from scratch into a fresh screen buffer
             let mut alt_screen = Surface::new(width, height);
@@ -632,11 +705,13 @@ impl<'widget> Ui<'widget> {
             let diff = screen.diff_screens(&alt_screen);
             screen.add_changes(diff);
             let upload_snapshot = RenderUploadSnapshot::from_telemetry(telemetry, mode);
-            self.last_render_telemetry = telemetry;
             self.last_render_upload_snapshot = Some(upload_snapshot);
             update_global_render_upload_snapshot(upload_snapshot);
         }
-        // TODO: garbage collect unreachable WidgetId's from self.state
+        telemetry.widget_gc_cycles = 1;
+        telemetry.widget_gc_freed = self.garbage_collect_unreachable_widgets();
+        telemetry.widget_state_entries_count = self.render.len();
+        self.last_render_telemetry = telemetry;
 
         if let Some(id) = self.focused {
             let cursor = &self.render[&id].cursor;
@@ -752,6 +827,8 @@ impl<'widget> Ui<'widget> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::input::{Modifiers, MouseButtons, MouseEvent};
+    use std::sync::{Arc, Mutex};
 
     struct CursorHider {}
 
@@ -785,6 +862,56 @@ mod test {
                 Change::Text("X".to_string()),
             ]);
         }
+    }
+
+    #[derive(Clone)]
+    struct MouseRecorder {
+        name: &'static str,
+        constraints: layout::Constraints,
+        log: Arc<Mutex<Vec<(&'static str, u16, u16)>>>,
+    }
+
+    impl MouseRecorder {
+        fn new(
+            name: &'static str,
+            constraints: layout::Constraints,
+            log: Arc<Mutex<Vec<(&'static str, u16, u16)>>>,
+        ) -> Self {
+            Self {
+                name,
+                constraints,
+                log,
+            }
+        }
+    }
+
+    impl Widget for MouseRecorder {
+        fn render(&mut self, _args: &mut RenderArgs) {}
+
+        fn get_size_constraints(&self) -> layout::Constraints {
+            self.constraints
+        }
+
+        fn process_event(&mut self, event: &WidgetEvent, _args: &mut UpdateArgs) -> bool {
+            if let WidgetEvent::Input(InputEvent::Mouse(mouse)) = event {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push((self.name, mouse.x, mouse.y));
+                return true;
+            }
+            false
+        }
+    }
+
+    fn fixed_constraints(
+        width: u16,
+        height: u16,
+        child_orientation: layout::ChildOrientation,
+    ) -> layout::Constraints {
+        let mut constraints = layout::Constraints::with_fixed_width_height(width, height);
+        constraints.child_orientation = child_orientation;
+        constraints
     }
 
     struct ChurnPainter {
@@ -1013,6 +1140,123 @@ mod test {
         );
         assert!(global.frame_regions >= 1);
         assert!(global.frame_cells >= 1);
+    }
+
+    #[test]
+    fn nested_hover_delivers_mouse_to_deepest_child() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut ui = Ui::new();
+
+        let root = ui.set_root(MouseRecorder::new(
+            "root",
+            fixed_constraints(12, 1, layout::ChildOrientation::Horizontal),
+            Arc::clone(&log),
+        ));
+        ui.add_child(
+            root,
+            MouseRecorder::new(
+                "spacer",
+                fixed_constraints(5, 1, layout::ChildOrientation::Horizontal),
+                Arc::clone(&log),
+            ),
+        );
+        let container = ui.add_child(
+            root,
+            MouseRecorder::new(
+                "container",
+                fixed_constraints(3, 1, layout::ChildOrientation::Horizontal),
+                Arc::clone(&log),
+            ),
+        );
+        ui.add_child(
+            container,
+            MouseRecorder::new(
+                "leaf",
+                fixed_constraints(1, 1, layout::ChildOrientation::Horizontal),
+                Arc::clone(&log),
+            ),
+        );
+
+        let mut surface = Surface::new(12, 1);
+        assert!(ui.render_to_screen(&mut surface).unwrap());
+        assert!(!ui.render_to_screen(&mut surface).unwrap());
+
+        ui.queue_event(WidgetEvent::Input(InputEvent::Mouse(MouseEvent {
+            x: 5,
+            y: 0,
+            mouse_buttons: MouseButtons::LEFT,
+            modifiers: Modifiers::NONE,
+        })));
+        ui.process_event_queue().unwrap();
+
+        assert_eq!(*log.lock().unwrap(), vec![("leaf", 0, 0)]);
+    }
+
+    #[test]
+    fn hover_outside_root_is_ignored() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut ui = Ui::new();
+
+        ui.set_root(MouseRecorder::new(
+            "root",
+            fixed_constraints(2, 1, layout::ChildOrientation::Horizontal),
+            Arc::clone(&log),
+        ));
+
+        let mut surface = Surface::new(4, 1);
+        ui.render_to_screen(&mut surface).unwrap();
+        ui.render_to_screen(&mut surface).unwrap();
+
+        ui.queue_event(WidgetEvent::Input(InputEvent::Mouse(MouseEvent {
+            x: 3,
+            y: 0,
+            mouse_buttons: MouseButtons::LEFT,
+            modifiers: Modifiers::NONE,
+        })));
+        ui.process_event_queue().unwrap();
+
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_root_updates_focus_immediately() {
+        let mut ui = Ui::new();
+        let old_root = ui.set_root(PaintCell);
+        ui.set_focus(old_root);
+
+        let new_root = ui.set_root(PaintCell);
+
+        assert_eq!(ui.focused, Some(new_root));
+    }
+
+    #[test]
+    fn render_garbage_collects_unreachable_widget_ids() {
+        let mut ui = Ui::new();
+        let old_root = ui.set_root(PaintCell);
+        let old_child = ui.add_child(old_root, PaintCell);
+        let root = ui.set_root(PaintCell);
+        let reachable_child = ui.add_child(root, PaintCell);
+        ui.set_focus(old_root);
+
+        assert!(ui.render.contains_key(&old_root));
+        assert!(ui.render.contains_key(&old_child));
+
+        let mut surface = Surface::new(4, 4);
+        ui.render_to_screen(&mut surface).unwrap();
+
+        assert!(ui.render.contains_key(&root));
+        assert!(ui.render.contains_key(&reachable_child));
+        assert!(!ui.render.contains_key(&old_root));
+        assert!(!ui.render.contains_key(&old_child));
+        assert!(!ui.graph.children.contains_key(&old_root));
+        assert!(!ui.graph.children.contains_key(&old_child));
+        assert!(!ui.graph.parent.contains_key(&old_child));
+        assert_eq!(ui.focused, Some(root));
+
+        let telemetry = ui.last_render_telemetry();
+        assert_eq!(telemetry.widget_state_entries_count, 2);
+        assert_eq!(telemetry.widget_gc_cycles, 1);
+        assert_eq!(telemetry.widget_gc_freed, 2);
     }
 }
 fn update_global_render_upload_snapshot(snapshot: RenderUploadSnapshot) {
