@@ -1518,6 +1518,28 @@ mod tests {
     }
 
     #[test]
+    fn aggregator_ingest_envelope_rejects_gap_notice_with_non_increasing_bounds() {
+        let mut agg = Aggregator::new(10);
+        let envelope = WireEnvelope::new(
+            1,
+            "agent-valid",
+            WirePayload::Gap(GapNotice {
+                pane_id: 7,
+                seq_before: 8,
+                seq_after: 8,
+                reason: "invalid-gap".to_string(),
+                detected_at_ms: 123,
+            }),
+        );
+        let err = agg
+            .ingest_envelope(envelope)
+            .expect_err("decoded envelope path must enforce GapNotice invariants");
+        assert!(matches!(err, WireProtocolError::InvalidJson(_)));
+        assert_eq!(agg.total_rejected(), 1);
+        assert_eq!(agg.total_accepted(), 0);
+    }
+
+    #[test]
     fn aggregator_end_to_end_with_streamer() {
         let mut streamer = AgentStreamer::new("remote-agent");
         let mut agg = Aggregator::new(10);

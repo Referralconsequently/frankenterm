@@ -756,6 +756,106 @@ fn distributed_streaming_e2e_rejects_invalid_sender_and_recovers_with_valid_send
 }
 
 #[test]
+fn distributed_streaming_e2e_rejects_invalid_gap_bounds_and_recovers_with_valid_gap() {
+    run_async_test(async {
+        use frankenterm_core::wire_protocol::{GapNotice, WireProtocolError};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = temp_dir
+            .path()
+            .join("distributed_streaming_invalid_gap_bounds.db");
+        let mut bridge = DistributedBridge::new(db_path.to_str().expect("db path"))
+            .await
+            .expect("bridge");
+
+        let invalid_err = bridge
+            .ingest_envelope(WireEnvelope::new(
+                1,
+                "agent-gap-invalid",
+                WirePayload::Gap(GapNotice {
+                    pane_id: 33,
+                    seq_before: 4,
+                    seq_after: 4,
+                    reason: "bad-gap".to_string(),
+                    detected_at_ms: now_ms(),
+                }),
+            ))
+            .await
+            .expect_err("invalid gap bounds should fail");
+        let wire_err = invalid_err
+            .downcast_ref::<WireProtocolError>()
+            .expect("expected WireProtocolError");
+        assert!(matches!(wire_err, WireProtocolError::InvalidJson(_)));
+        assert_eq!(bridge.aggregator.total_rejected(), 1);
+        assert_eq!(bridge.aggregator.total_accepted(), 0);
+        assert!(
+            bridge.storage.get_panes().await.expect("panes").is_empty(),
+            "invalid gap input must not create pane metadata"
+        );
+        assert!(
+            bridge.storage.get_gaps().await.expect("gaps").is_empty(),
+            "invalid gap input must not persist gap records"
+        );
+
+        bridge
+            .ingest_envelope(WireEnvelope::new(
+                2,
+                "agent-gap-invalid",
+                WirePayload::PaneMeta(pane_meta(33)),
+            ))
+            .await
+            .expect("valid sender meta");
+        bridge
+            .ingest_envelope(WireEnvelope::new(
+                3,
+                "agent-gap-invalid",
+                WirePayload::Gap(GapNotice {
+                    pane_id: 33,
+                    seq_before: 0,
+                    seq_after: 2,
+                    reason: "upstream_reconnect".to_string(),
+                    detected_at_ms: now_ms(),
+                }),
+            ))
+            .await
+            .expect("valid gap");
+        bridge
+            .ingest_envelope(WireEnvelope::new(
+                4,
+                "agent-gap-invalid",
+                WirePayload::PaneDelta(pane_delta(33, 2, "VALID_GAP_RECOVERY_MARKER")),
+            ))
+            .await
+            .expect("delta after valid gap");
+
+        let panes = bridge.storage.get_panes().await.expect("panes");
+        let gaps = bridge.storage.get_gaps().await.expect("gaps");
+        let hits = bridge
+            .storage
+            .search("VALID_GAP_RECOVERY_MARKER")
+            .await
+            .expect("search");
+
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].pane_id, 33);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(gaps.len(), 1, "only the valid explicit gap should persist");
+        assert_eq!(gaps[0].pane_id, 33);
+        assert_eq!(gaps[0].seq_before, 0);
+        assert_eq!(gaps[0].seq_after, 2);
+        assert!(
+            gaps[0]
+                .reason
+                .contains("distributed_gap:upstream_reconnect:0:2"),
+            "recovery path should preserve the valid explicit gap reason and bounds"
+        );
+        assert_eq!(bridge.aggregator.total_rejected(), 1);
+        assert_eq!(bridge.aggregator.total_accepted(), 3);
+        assert_eq!(bridge.diagnostics.pane_seq_gap_repairs, 0);
+    });
+}
+
+#[test]
 fn distributed_streaming_e2e_enforces_agent_capacity_without_cross_sender_persist() {
     run_async_test(async {
         use frankenterm_core::wire_protocol::WireProtocolError;
