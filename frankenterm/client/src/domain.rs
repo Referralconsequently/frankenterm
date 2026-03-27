@@ -255,6 +255,15 @@ pub struct ClientDomain {
     label: String,
     inner: Mutex<Option<Arc<ClientInner>>>,
     local_domain_id: DomainId,
+    mux_subscriber_id: usize,
+}
+
+impl Drop for ClientDomain {
+    fn drop(&mut self) {
+        if let Some(mux) = Mux::try_get() {
+            mux.unsubscribe(self.mux_subscriber_id);
+        }
+    }
 }
 
 async fn update_remote_workspace(
@@ -399,12 +408,14 @@ impl ClientDomain {
     pub fn new(config: ClientDomainConfig) -> Self {
         let local_domain_id = alloc_domain_id();
         let label = config.label();
-        Mux::get().subscribe(move |notif| mux_notify_client_domain(local_domain_id, notif));
+        let mux_subscriber_id =
+            Mux::get().subscribe(move |notif| mux_notify_client_domain(local_domain_id, notif));
         Self {
             config,
             label,
             inner: Mutex::new(None),
             local_domain_id,
+            mux_subscriber_id,
         }
     }
 
