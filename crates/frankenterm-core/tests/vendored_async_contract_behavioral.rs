@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 #[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
 use codec::{CODEC_VERSION, GetCodecVersionResponse, Pdu, UnitResponse};
 #[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
-use frankenterm_core::runtime_compat::unix::{AsyncReadExt, AsyncWriteExt};
+use frankenterm_core::runtime_compat::unix::AsyncWriteExt;
 use frankenterm_core::runtime_compat::{
     self, CompatRuntime, Mutex, RuntimeBuilder, RwLock, Semaphore, TryAcquireError,
 };
@@ -896,7 +896,9 @@ fn b23b_explicit_cx_public_list_panes_timeout_contract() {
 
             loop {
                 let mut temp = vec![0u8; 4096];
-                let read = stream.read(&mut temp).await.expect("read request bytes");
+                let read = runtime_compat::io::read(&mut stream, &mut temp)
+                    .await
+                    .expect("read request bytes");
                 if read == 0 {
                     break;
                 }
@@ -991,7 +993,9 @@ fn b23c_explicit_cx_public_send_paste_write_timeout_contract() {
 
             loop {
                 let mut temp = vec![0u8; 4096];
-                let read = stream.read(&mut temp).await.expect("read request bytes");
+                let read = runtime_compat::io::read(&mut stream, &mut temp)
+                    .await
+                    .expect("read request bytes");
                 if read == 0 {
                     break;
                 }
