@@ -802,7 +802,7 @@ fn validate_config(config: &IndexingConfig) -> Result<()> {
 }
 
 fn documents_total_size(docs: &[IndexedDocument]) -> u64 {
-    docs.iter().map(|doc| doc.size_bytes).sum()
+    docs.iter().map(|doc| doc.size_bytes).fold(0u64, u64::saturating_add)
 }
 
 fn estimate_document_size(doc: &IndexedDocument) -> u64 {

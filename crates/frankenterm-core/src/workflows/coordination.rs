@@ -190,10 +190,14 @@ impl PaneWorkflowLockManager {
         workflow_name: &str,
         execution_id: &str,
     ) -> GroupLockResult {
+        // Sort pane_ids for consistent lock ordering across concurrent callers
+        let mut sorted_ids = pane_ids.to_vec();
+        sorted_ids.sort_unstable();
+
         let mut acquired = Vec::new();
         let mut conflicts = Vec::new();
 
-        for &pane_id in pane_ids {
+        for &pane_id in &sorted_ids {
             match self.try_acquire(pane_id, workflow_name, execution_id) {
                 LockAcquisitionResult::Acquired => {
                     acquired.push(pane_id);
