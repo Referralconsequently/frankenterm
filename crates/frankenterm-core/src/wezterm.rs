@@ -1424,6 +1424,7 @@ impl WeztermClient {
     #[cfg(all(feature = "vendored", unix))]
     fn mux_error_is_circuit_breaker_trigger(err: &crate::vendored::MuxPoolError) -> bool {
         match err {
+            crate::vendored::MuxPoolError::Pool(crate::pool::PoolError::Cancelled) => false,
             crate::vendored::MuxPoolError::Pool(_) => true,
             crate::vendored::MuxPoolError::Mux(mux) => {
                 !matches!(mux, crate::vendored::DirectMuxError::RemoteError(_))
@@ -2762,6 +2763,13 @@ mod tests {
     fn is_not_retryable_non_wezterm_error() {
         let err = crate::Error::Runtime("generic error".to_string());
         assert!(!is_retryable_error(&err));
+    }
+
+    #[cfg(all(feature = "vendored", unix))]
+    #[test]
+    fn mux_pool_cancelled_does_not_trigger_circuit_breaker() {
+        let err = crate::vendored::MuxPoolError::Pool(crate::pool::PoolError::Cancelled);
+        assert!(!WeztermClient::mux_error_is_circuit_breaker_trigger(&err));
     }
 
     // =====================================================================

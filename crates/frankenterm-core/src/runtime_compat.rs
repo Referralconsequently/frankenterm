@@ -336,12 +336,18 @@ impl std::error::Error for TryAcquireError {}
 
 #[cfg(feature = "asupersync-runtime")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcquireError;
+pub enum AcquireError {
+    Closed,
+    Cancelled,
+}
 
 #[cfg(feature = "asupersync-runtime")]
 impl std::fmt::Display for AcquireError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "semaphore acquire failed")
+        match self {
+            Self::Closed => write!(f, "semaphore closed"),
+            Self::Cancelled => write!(f, "semaphore acquire cancelled"),
+        }
     }
 }
 
@@ -356,6 +362,20 @@ pub struct Semaphore {
 
 #[cfg(feature = "asupersync-runtime")]
 impl Semaphore {
+    fn map_acquire_error(err: asupersync::sync::AcquireError) -> AcquireError {
+        match err {
+            asupersync::sync::AcquireError::Closed => AcquireError::Closed,
+            asupersync::sync::AcquireError::Cancelled => AcquireError::Cancelled,
+            asupersync::sync::AcquireError::PolledAfterCompletion => {
+                debug_assert!(
+                    false,
+                    "semaphore acquire future polled after completion in runtime_compat"
+                );
+                AcquireError::Cancelled
+            }
+        }
+    }
+
     #[must_use]
     pub fn new(permits: usize) -> Self {
         Self {
@@ -391,11 +411,18 @@ impl Semaphore {
 
     pub async fn acquire(&self) -> Result<SemaphorePermit<'_>, AcquireError> {
         let cx = crate::cx::for_request();
+        self.acquire_with_cx(&cx).await
+    }
+
+    pub async fn acquire_with_cx(
+        &self,
+        cx: &crate::cx::Cx,
+    ) -> Result<SemaphorePermit<'_>, AcquireError> {
         self.inner
-            .acquire(&cx, 1)
+            .acquire(cx, 1)
             .await
             .map(|inner| SemaphorePermit { inner })
-            .map_err(|_| AcquireError)
+            .map_err(Self::map_acquire_error)
     }
 
     pub fn try_acquire_owned(self: Arc<Self>) -> Result<OwnedSemaphorePermit, TryAcquireError> {
@@ -416,10 +443,17 @@ impl Semaphore {
 
     pub async fn acquire_owned(self: Arc<Self>) -> Result<OwnedSemaphorePermit, AcquireError> {
         let cx = crate::cx::for_request();
-        asupersync::sync::OwnedSemaphorePermit::acquire(self.inner.clone(), &cx, 1)
+        self.acquire_owned_with_cx(&cx).await
+    }
+
+    pub async fn acquire_owned_with_cx(
+        self: Arc<Self>,
+        cx: &crate::cx::Cx,
+    ) -> Result<OwnedSemaphorePermit, AcquireError> {
+        asupersync::sync::OwnedSemaphorePermit::acquire(self.inner.clone(), cx, 1)
             .await
             .map(|inner| OwnedSemaphorePermit { inner })
-            .map_err(|_| AcquireError)
+            .map_err(Self::map_acquire_error)
     }
 }
 

@@ -68,7 +68,11 @@ fn arb_pool_stats() -> impl Strategy<Value = PoolStats> {
 }
 
 fn arb_pool_error() -> impl Strategy<Value = PoolError> {
-    prop_oneof![Just(PoolError::AcquireTimeout), Just(PoolError::Closed),]
+    prop_oneof![
+        Just(PoolError::AcquireTimeout),
+        Just(PoolError::Closed),
+        Just(PoolError::Cancelled),
+    ]
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -644,12 +648,15 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
-    /// The two error variants are distinct.
+    /// The error variants remain distinct.
     #[test]
     fn prop_error_variants_distinct(_dummy in 0..1_u8) {
         let timeout = PoolError::AcquireTimeout;
         let closed = PoolError::Closed;
+        let cancelled = PoolError::Cancelled;
         prop_assert_ne!(timeout, closed);
+        prop_assert_ne!(timeout, cancelled);
+        prop_assert_ne!(closed, cancelled);
     }
 
     /// Error Debug is non-empty.
@@ -671,6 +678,13 @@ proptest! {
     fn prop_closed_display_mentions_closed(_dummy in 0..1_u8) {
         let s = PoolError::Closed.to_string().to_lowercase();
         prop_assert!(s.contains("closed"), "should mention closed: {}", s);
+    }
+
+    /// Cancelled Display contains "cancelled" (case-insensitive).
+    #[test]
+    fn prop_cancelled_display_mentions_cancelled(_dummy in 0..1_u8) {
+        let s = PoolError::Cancelled.to_string().to_lowercase();
+        prop_assert!(s.contains("cancelled"), "should mention cancelled: {}", s);
     }
 }
 

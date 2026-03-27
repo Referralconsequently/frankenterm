@@ -77,6 +77,8 @@ pub enum PoolError {
     AcquireTimeout,
     /// Pool has been shut down.
     Closed,
+    /// The caller's explicit capability context was cancelled.
+    Cancelled,
 }
 
 impl std::fmt::Display for PoolError {
@@ -84,6 +86,7 @@ impl std::fmt::Display for PoolError {
         match self {
             Self::AcquireTimeout => write!(f, "connection pool acquire timeout"),
             Self::Closed => write!(f, "connection pool is closed"),
+            Self::Cancelled => write!(f, "connection pool acquire cancelled"),
         }
     }
 }
@@ -106,6 +109,11 @@ pub struct Pool<C> {
 }
 
 impl<C: Send + 'static> Pool<C> {
+    #[cfg(feature = "asupersync-runtime")]
+    fn checkpoint_explicit_cx(cx: &Cx) -> Result<(), PoolError> {
+        cx.checkpoint().map_err(|_| PoolError::Cancelled)
+    }
+
     /// Create a new pool with the given configuration.
     #[must_use]
     pub fn new(config: PoolConfig) -> Self {
@@ -144,7 +152,7 @@ impl<C: Send + 'static> Pool<C> {
     /// thread `Cx` explicitly.
     #[cfg(feature = "asupersync-runtime")]
     pub async fn try_acquire_with_cx(&self, cx: &Cx) -> Result<PoolAcquireResult<C>, PoolError> {
-        cx::with_cx(cx, |_| ());
+        Self::checkpoint_explicit_cx(cx)?;
         self.try_acquire_inner().await
     }
 
@@ -190,18 +198,22 @@ impl<C: Send + 'static> Pool<C> {
     /// call graphs to carry `Cx` explicitly.
     #[cfg(feature = "asupersync-runtime")]
     pub async fn acquire_with_cx(&self, cx: &Cx) -> Result<PoolAcquireResult<C>, PoolError> {
-        let acquire_result = cx::with_cx_async(cx, |_| async {
-            crate::runtime_compat::timeout(
-                self.config.acquire_timeout,
-                self.semaphore.clone().acquire_owned(),
-            )
-            .await
-        })
+        Self::checkpoint_explicit_cx(cx)?;
+
+        let acquire_result = crate::runtime_compat::timeout(
+            self.config.acquire_timeout,
+            self.semaphore.clone().acquire_owned_with_cx(cx),
+        )
         .await;
 
         let permit = match acquire_result {
             Ok(Ok(permit)) => permit,
-            Ok(Err(_closed)) => return Err(PoolError::Closed),
+            Ok(Err(crate::runtime_compat::AcquireError::Closed)) => {
+                return Err(PoolError::Closed);
+            }
+            Ok(Err(crate::runtime_compat::AcquireError::Cancelled)) => {
+                return Err(PoolError::Cancelled);
+            }
             Err(_timeout_err) => {
                 self.stats_timeouts.fetch_add(1, Ordering::Relaxed);
                 return Err(PoolError::AcquireTimeout);
@@ -675,6 +687,10 @@ mod tests {
             "connection pool acquire timeout"
         );
         assert_eq!(PoolError::Closed.to_string(), "connection pool is closed");
+        assert_eq!(
+            PoolError::Cancelled.to_string(),
+            "connection pool acquire cancelled"
+        );
     }
 
     #[test]
@@ -739,6 +755,13 @@ mod tests {
         let err = PoolError::Closed;
         let dbg = format!("{err:?}");
         assert!(dbg.contains("Closed"));
+    }
+
+    #[test]
+    fn pool_error_cancelled_debug_format() {
+        let err = PoolError::Cancelled;
+        let dbg = format!("{err:?}");
+        assert!(dbg.contains("Cancelled"));
     }
 
     #[test]
@@ -1559,6 +1582,108 @@ mod tests {
             drop(held);
             let result = pool.acquire().await;
             assert!(result.is_ok());
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn pool_try_acquire_with_precancelled_cx_returns_cancelled_without_taking_idle() {
+        run_async_test(async {
+            let pool: Pool<String> = Pool::new(test_config(1));
+            pool.put("idle".to_string()).await;
+
+            let budget = crate::cx::Budget::new().with_poll_quota(0);
+            let cx = Cx::for_testing_with_budget(budget);
+            cx.cancel_with(
+                crate::outcome::CancelKind::User,
+                Some("pre-cancelled try acquire"),
+            );
+
+            let err = pool
+                .try_acquire_with_cx(&cx)
+                .await
+                .expect_err("pre-cancelled try_acquire_with_cx should fail");
+            assert_eq!(err, PoolError::Cancelled);
+
+            let stats = pool.stats().await;
+            assert_eq!(
+                stats.idle_count, 1,
+                "cancelled try_acquire should not pop idle state"
+            );
+            assert_eq!(stats.total_acquired, 0);
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn pool_acquire_with_precancelled_cx_returns_cancelled_without_timeout() {
+        run_async_test(async {
+            let pool: Pool<String> = Pool::new(test_config(1));
+
+            let budget = crate::cx::Budget::new().with_poll_quota(0);
+            let cx = Cx::for_testing_with_budget(budget);
+            cx.cancel_with(
+                crate::outcome::CancelKind::User,
+                Some("pre-cancelled acquire"),
+            );
+
+            let err = pool
+                .acquire_with_cx(&cx)
+                .await
+                .expect_err("pre-cancelled acquire_with_cx should fail");
+            assert_eq!(err, PoolError::Cancelled);
+
+            let stats = pool.stats().await;
+            assert_eq!(
+                stats.total_timeouts, 0,
+                "cancelled acquire must not count as timeout"
+            );
+            assert_eq!(stats.total_acquired, 0);
+            assert_eq!(stats.active_count, 0);
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn pool_acquire_with_cx_cancelled_while_waiting_returns_cancelled() {
+        run_async_test(async {
+            let pool = Arc::new(Pool::<String>::new(test_config(1)));
+            let held = pool.acquire().await.expect("hold only slot");
+
+            let wait_cx = crate::cx::for_testing();
+            let task_cx = wait_cx.clone();
+            let waiter_pool = pool.clone();
+            let waiter = crate::runtime_compat::task::spawn(async move {
+                waiter_pool.acquire_with_cx(&task_cx).await
+            });
+
+            crate::runtime_compat::sleep(Duration::from_millis(10)).await;
+            wait_cx.cancel_with(
+                crate::outcome::CancelKind::User,
+                Some("cancel while waiting for permit"),
+            );
+
+            let err = waiter
+                .await
+                .expect("waiter task should join")
+                .expect_err("cancelled wait should fail");
+            assert_eq!(err, PoolError::Cancelled);
+
+            let stats = pool.stats().await;
+            assert_eq!(
+                stats.total_timeouts, 0,
+                "cancelled wait must not increment timeout"
+            );
+            assert_eq!(
+                stats.total_acquired, 1,
+                "cancelled waiter must not consume a permit"
+            );
+            assert_eq!(
+                stats.active_count, 1,
+                "held permit should remain the only active one"
+            );
+
+            drop(held);
         });
     }
 
