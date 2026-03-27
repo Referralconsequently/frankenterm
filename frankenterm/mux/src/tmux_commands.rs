@@ -1,11 +1,11 @@
 use crate::domain::{DomainId, WriterWrapper};
 use crate::localpane::LocalPane;
-use crate::pane::{alloc_pane_id, PaneId};
+use crate::pane::{PaneId, alloc_pane_id};
 use crate::tab::{SplitDirection, SplitRequest, SplitSize, Tab, TabId};
 use crate::tmux::{AttachState, TmuxDomain, TmuxDomainState, TmuxRemotePane, TmuxTab};
 use crate::tmux_pty::{TmuxChild, TmuxPty};
 use crate::{Mux, MuxNotification, Pane};
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use frankenterm_term::TerminalSize;
 use parking_lot::{Condvar, Mutex};
 use portable_pty::{MasterPty, PtySize};
@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Write};
 use std::io::Write as _;
 use std::sync::Arc;
-use termwiz::escape::csi::{Cursor, CSI};
+use termwiz::escape::csi::{CSI, Cursor};
 use termwiz::escape::{Action, OneBased};
 use termwiz::tmux_cc::*;
 
@@ -1281,6 +1281,11 @@ impl TmuxCommand for AttachDone {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::Domain;
+    use promise::spawn::ScopedExecutor;
+    use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
+
+    static MUX_TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     fn make_remote_pane(local_pane_id: PaneId, pane_id: TmuxPaneId) -> Arc<Mutex<TmuxRemotePane>> {
         let (_read, write) = filedescriptor::socketpair().expect("socketpair");
@@ -1298,6 +1303,47 @@ mod tests {
             pane_left: 0,
             pane_top: 0,
         }))
+    }
+
+    struct ScopedMux {
+        prior: Option<Arc<Mux>>,
+        _executor: ScopedExecutor,
+        _guard: StdMutexGuard<'static, ()>,
+    }
+
+    impl ScopedMux {
+        fn install(mux: Arc<Mux>) -> Self {
+            let guard = MUX_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+            let executor = ScopedExecutor::new();
+            let prior = Mux::try_get();
+            Mux::set_mux(&mux);
+            Self {
+                prior,
+                _executor: executor,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScopedMux {
+        fn drop(&mut self) {
+            if let Some(prior) = self.prior.take() {
+                Mux::set_mux(&prior);
+            } else {
+                Mux::shutdown();
+            }
+        }
+    }
+
+    fn install_tmux_domain() -> (ScopedMux, Arc<TmuxDomain>) {
+        let mux = Arc::new(Mux::new(None));
+        let guard = ScopedMux::install(Arc::clone(&mux));
+
+        let tmux_domain = Arc::new(TmuxDomain::new(0));
+        let domain: Arc<dyn Domain> = tmux_domain.clone();
+        mux.add_domain(&domain);
+
+        (guard, tmux_domain)
     }
 
     #[test]
@@ -1440,6 +1486,82 @@ mod tests {
     fn attach_done_get_command() {
         let cmd = AttachDone;
         assert_eq!(cmd.get_command(0), "list-session\n");
+    }
+
+    #[test]
+    fn session_changed_queues_list_commands_and_subscribes() {
+        let (_mux_guard, tmux_domain) = install_tmux_domain();
+        let domain_id = tmux_domain.domain_id();
+
+        tmux_domain
+            .inner
+            .advance(Box::new(vec![Event::SessionChanged {
+                session: 7,
+                name: "main".to_string(),
+            }]));
+
+        assert_eq!(*tmux_domain.inner.tmux_session.lock(), Some(7));
+        assert!(tmux_domain.inner.notification_sub_id.lock().is_some());
+
+        let queue = tmux_domain.inner.cmd_queue.lock();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(
+            queue.front().unwrap().get_command(domain_id),
+            "list-commands\n"
+        );
+    }
+
+    #[test]
+    fn list_commands_result_queues_window_listing_for_session() -> anyhow::Result<()> {
+        let (_mux_guard, tmux_domain) = install_tmux_domain();
+        let domain_id = tmux_domain.domain_id();
+        *tmux_domain.inner.tmux_session.lock() = Some(9);
+
+        let cmd = ListCommands;
+        let result = Guarded {
+            error: false,
+            timestamp: 0,
+            number: 0,
+            flags: 0,
+            output: "list-windows list-windows".to_string(),
+        };
+
+        cmd.process_result(domain_id, &result)?;
+
+        assert!(
+            tmux_domain
+                .inner
+                .support_commands
+                .lock()
+                .contains_key("list-windows")
+        );
+
+        let queue = tmux_domain.inner.cmd_queue.lock();
+        assert_eq!(queue.len(), 1);
+
+        let queued = queue.front().unwrap().get_command(domain_id);
+        assert!(queued.starts_with("list-windows -F "));
+        assert!(queued.ends_with(" -t $9\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn attach_done_process_result_marks_attach_state_done() -> anyhow::Result<()> {
+        let (_mux_guard, tmux_domain) = install_tmux_domain();
+        let domain_id = tmux_domain.domain_id();
+        let cmd = AttachDone;
+        let result = Guarded {
+            error: false,
+            timestamp: 0,
+            number: 0,
+            flags: 0,
+            output: String::new(),
+        };
+
+        assert_eq!(*tmux_domain.inner.attach_state.lock(), AttachState::Init);
+        cmd.process_result(domain_id, &result)?;
+        assert_eq!(*tmux_domain.inner.attach_state.lock(), AttachState::Done);
+        Ok(())
     }
 
     #[test]

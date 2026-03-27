@@ -9,7 +9,7 @@ use crate::{Domain, Mux, MuxNotification};
 use anyhow::Error;
 use async_trait::async_trait;
 use config::keyassignment::ScrollbackEraseMode;
-use config::{configuration, ExitBehavior, ExitBehaviorMessaging};
+use config::{ExitBehavior, ExitBehaviorMessaging, configuration};
 use fancy_regex::Regex;
 use frankenterm_dynamic::Value;
 use frankenterm_term::color::ColorPalette;
@@ -26,10 +26,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::{Result as IoResult, Write};
 use std::ops::Range;
-use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
-use termwiz::escape::csi::{Sgr, CSI};
+use termwiz::escape::csi::{CSI, Sgr};
 use termwiz::escape::{Action, DeviceControlMode};
 use termwiz::input::KeyboardEncoding;
 use termwiz::surface::{Line, SequenceNo};
@@ -1052,9 +1052,10 @@ impl frankenterm_term::DeviceControlHandler for LocalPaneDCSHandler {
 
                     self.tmux_domain.replace(tmux_domain);
 
-                // TODO: do we need to proactively list available tabs here?
-                // if so we should arrange to call domain.attach() and make
-                // it do the right thing.
+                    // Initial tmux enumeration is driven by control-mode events:
+                    // SessionChanged -> ListCommands -> ListAllWindows ->
+                    // ListAllPanes -> AttachDone. Keep attach() as a no-op
+                    // unless that bootstrap flow changes.
                 } else if configuration().log_unknown_escape_sequences {
                     log::warn!("unknown DeviceControlMode::Enter {:?}", mode,);
                 }

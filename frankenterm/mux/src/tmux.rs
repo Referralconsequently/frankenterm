@@ -1,5 +1,5 @@
 use crate::activity::Activity;
-use crate::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
+use crate::domain::{Domain, DomainId, DomainState, SplitSource, alloc_domain_id};
 use crate::pane::{Pane, PaneId};
 use crate::tab::{SplitRequest, Tab, TabId};
 use crate::tmux_commands::{
@@ -333,10 +333,7 @@ impl TmuxDomainState {
                         notified: false,
                     }
                 } else {
-                    mux.new_empty_window(
-                        Some("tmux".to_string()),
-                        None, /* position */
-                    )
+                    mux.new_empty_window(Some("tmux".to_string()), None /* position */)
                 };
 
             log::info!("Tmux create window id {}", window_builder.window_id);
@@ -469,6 +466,8 @@ impl Domain for TmuxDomain {
     }
 
     async fn attach(&self, _window_id: Option<crate::WindowId>) -> anyhow::Result<()> {
+        // Control-mode startup is bootstrapped by SessionChanged events rather
+        // than an explicit attach command.
         Ok(())
     }
 
