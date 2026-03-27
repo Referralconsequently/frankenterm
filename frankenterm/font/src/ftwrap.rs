@@ -341,9 +341,9 @@ impl Face {
 
                 let mut mm = std::ptr::null_mut();
 
-                ft_result(FT_Get_MM_Var(self.face, &mut mm), ())
-                    .context("FT_Get_MM_Var")
-                    .unwrap();
+                if ft_result(FT_Get_MM_Var(self.face, &mut mm), ()).is_err() {
+                    return (weight as u16, width as u16);
+                }
                 {
                     let mm = &*mm;
 
@@ -527,7 +527,7 @@ impl Face {
                         }
                     }
                 }
-                let best = best.unwrap();
+                let best = best.expect("sizes is non-empty so best is always set");
                 self.select_size(best.idx)?;
                 // Compute the cell metrics at this size.
                 // This stuff is a bit weird; for GohuFont.otb, cell_metrics()
