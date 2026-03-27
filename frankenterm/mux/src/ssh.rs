@@ -262,7 +262,7 @@ impl RemoteSshDomain {
 
     fn build_command(
         &self,
-        pane_id: PaneId,
+        _pane_id: PaneId,
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
     ) -> anyhow::Result<(Option<String>, HashMap<String, String>)> {
@@ -274,16 +274,15 @@ impl RemoteSshDomain {
             }
             None => config.build_prog(None, self.dom.default_prog.as_ref(), None)?,
         };
-        let mut env: HashMap<String, String> = cmd
+        let env: HashMap<String, String> = cmd
             .iter_extra_env_as_str()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        // FIXME: this isn't useful without a way to talk to the remote mux.
-        // One option is to forward the mux via unix domain, another is to
-        // embed the mux protocol in an escape sequence and just use the
-        // existing terminal connection
-        env.insert("WEZTERM_REMOTE_PANE".to_string(), pane_id.to_string());
+        // Do not advertise a pane-targeting env var to the remote side until
+        // there is an actual remote mux transport that can consume it. The
+        // old WEZTERM_REMOTE_PANE hint was dead code and could produce noisy
+        // AcceptEnv warnings on stricter sshd configurations.
 
         fn build_env_command(
             dir: Option<String>,
@@ -558,7 +557,12 @@ fn connect_ssh_session(
                     revents: 0,
                 }];
 
-                if let Ok(1) = poll(&mut pfd, Some(Duration::from_millis(configuration().ssh_terminal_poll_timeout_ms))) {
+                if let Ok(1) = poll(
+                    &mut pfd,
+                    Some(Duration::from_millis(
+                        configuration().ssh_terminal_poll_timeout_ms,
+                    )),
+                ) {
                     let mut buf = [0u8; 64];
                     let n = self.stdin.read(&mut buf)?;
                     let input_queue = &mut self.input_queue;
@@ -1207,6 +1211,13 @@ mod tests {
             .unwrap_or_else(|| panic!("missing env var {}", key))
     }
 
+    fn assert_no_remote_pane_env(env: &HashMap<String, String>) {
+        assert!(
+            !env.contains_key("WEZTERM_REMOTE_PANE"),
+            "remote SSH commands should not advertise a pane env until remote mux forwarding exists"
+        );
+    }
+
     #[test]
     fn ssh_domain_to_ssh_config_maps_domain_overrides() -> anyhow::Result<()> {
         let _guard = TestConfigGuard::new();
@@ -1310,7 +1321,7 @@ mod tests {
 
         assert_eq!(command_line.as_deref(), Some(expected.as_str()));
         assert_eq!(env_value(&env, "CUSTOM"), "VALUE");
-        assert_eq!(env_value(&env, "WEZTERM_REMOTE_PANE"), "4242");
+        assert_no_remote_pane_env(&env);
         Ok(())
     }
 
@@ -1336,14 +1347,14 @@ mod tests {
         let command_line = command_line.expect("posix shell should wrap command");
         assert!(command_line.starts_with("cd '/tmp/override dir';env "));
         assert!(command_line.contains("CUSTOM=VALUE"));
-        assert!(command_line.contains("WEZTERM_REMOTE_PANE=77"));
+        assert!(!command_line.contains("WEZTERM_REMOTE_PANE="));
         assert!(command_line.contains(&expected_tail));
         assert!(
             !command_line.contains("/tmp/original-dir"),
             "command_dir should override builder cwd"
         );
         assert_eq!(env_value(&env, "CUSTOM"), "VALUE");
-        assert_eq!(env_value(&env, "WEZTERM_REMOTE_PANE"), "77");
+        assert_no_remote_pane_env(&env);
         Ok(())
     }
 
@@ -1367,7 +1378,7 @@ mod tests {
         let (command_line, env) = remote.build_command(9, None, None)?;
 
         assert_eq!(command_line.as_deref(), Some(expected.as_str()));
-        assert_eq!(env_value(&env, "WEZTERM_REMOTE_PANE"), "9");
+        assert_no_remote_pane_env(&env);
         Ok(())
     }
 
@@ -1380,7 +1391,7 @@ mod tests {
         let (command_line, env) = remote.build_command(11, None, None)?;
 
         assert!(command_line.is_none());
-        assert_eq!(env_value(&env, "WEZTERM_REMOTE_PANE"), "11");
+        assert_no_remote_pane_env(&env);
         assert_eq!(env_value(&env, "TERM_PROGRAM"), "WezTerm");
         Ok(())
     }
