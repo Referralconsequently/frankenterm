@@ -1994,7 +1994,7 @@ impl TerminalState {
                     break;
                 }
 
-                let ch = cell.str().chars().next().unwrap() as u32;
+                let ch = cell.str().chars().next().unwrap_or(' ') as u32;
                 // debug!("y={} col={} ch={:x} cell={:?}", y + y_origin, col, ch, cell);
 
                 checksum += u16::from(ch as u8);

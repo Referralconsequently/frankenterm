@@ -107,7 +107,7 @@ impl super::TermWindow {
             .y
             .sub(padding_top as isize)
             .sub(first_line_offset);
-        if y > 0 {
+        if y > 0 && self.render_metrics.cell_size.height > 0 {
             y_pixel_offset = y_pixel_offset.max(0) % self.render_metrics.cell_size.height;
         }
 
@@ -115,7 +115,7 @@ impl super::TermWindow {
             .coords
             .x
             .sub((padding_left + border.left.get() as f32) as isize);
-        if x > 0 {
+        if x > 0 && self.render_metrics.cell_size.width > 0 {
             x_pixel_offset = x_pixel_offset.max(0) % self.render_metrics.cell_size.width;
         }
 

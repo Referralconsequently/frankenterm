@@ -407,7 +407,7 @@ impl TabBarState {
             usize::max_value()
         } else {
             // We need to clamp the length to balance them out
-            available_cells / number_of_tabs
+            available_cells / number_of_tabs.max(1)
         }
         .min(config.tab_max_width);
 

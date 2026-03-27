@@ -62,12 +62,18 @@ impl ColorEase {
         let elapsed = start.elapsed().as_secs_f32();
 
         let intensity = if elapsed < self.in_duration {
-            Some(
-                self.in_function
-                    .evaluate_at_position(elapsed / self.in_duration),
-            )
+            let pos = if self.in_duration > 0.0 {
+                elapsed / self.in_duration
+            } else {
+                1.0
+            };
+            Some(self.in_function.evaluate_at_position(pos))
         } else {
-            let completion = (elapsed - self.in_duration) / self.out_duration;
+            let completion = if self.out_duration > 0.0 {
+                (elapsed - self.in_duration) / self.out_duration
+            } else {
+                1.0
+            };
             if completion >= 1.0 {
                 None
             } else {
@@ -83,7 +89,7 @@ impl ColorEase {
                 {
                     1
                 } else {
-                    config::configuration().animation_fps as u64
+                    (config::configuration().animation_fps as u64).max(1)
                 };
                 let next = match fps {
                     1 if elapsed < self.in_duration => {

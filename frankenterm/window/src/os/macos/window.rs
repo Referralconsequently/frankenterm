@@ -79,10 +79,11 @@ fn round_away_from_zerof(value: f64) -> f64 {
 }
 
 fn round_away_from_zero(value: f64) -> i16 {
-    if value > 0. {
-        value.max(1.).round() as i16
+    let clamped = value.clamp(i16::MIN as f64, i16::MAX as f64);
+    if clamped > 0. {
+        clamped.max(1.).round() as i16
     } else {
-        value.min(-1.).round() as i16
+        clamped.min(-1.).round() as i16
     }
 }
 

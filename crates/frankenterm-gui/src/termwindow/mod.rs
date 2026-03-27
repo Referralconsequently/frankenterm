@@ -3042,6 +3042,9 @@ impl TermWindow {
                 } else {
                     new_idx
                 };
+                if workspaces.is_empty() {
+                    return Ok(PerformAssignmentResult::Handled);
+                }
                 let new_idx = new_idx as usize % workspaces.len();
                 if let Some(w) = workspaces.get(new_idx) {
                     front_end().switch_workspace(w);
@@ -3498,9 +3501,10 @@ impl TermWindow {
                             rows: dims.viewport_rows,
                             dpi: self.terminal_size.dpi,
                             pixel_height: (self.terminal_size.pixel_height
-                                / self.terminal_size.rows)
+                                / self.terminal_size.rows.max(1))
                                 * dims.viewport_rows,
-                            pixel_width: (self.terminal_size.pixel_width / self.terminal_size.cols)
+                            pixel_width: (self.terminal_size.pixel_width
+                                / self.terminal_size.cols.max(1))
                                 * dims.cols,
                         })
                         .ok();
