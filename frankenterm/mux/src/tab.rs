@@ -934,7 +934,7 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
 
                         if x_adjust != 0 {
                             adjust_x_size(&mut *left, x_adjust, cell_dimensions);
-                            data.first.cols = new_cols.try_into().unwrap();
+                            data.first.cols = new_cols.max(0) as usize;
                             data.first.pixel_width =
                                 data.first.cols.saturating_mul(cell_dimensions.pixel_width);
 
@@ -1019,7 +1019,7 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
 
                         if y_adjust != 0 {
                             adjust_y_size(&mut *left, y_adjust, cell_dimensions);
-                            data.first.rows = new_rows.try_into().unwrap();
+                            data.first.rows = new_rows.max(0) as usize;
                             data.first.pixel_height =
                                 data.first.rows.saturating_mul(cell_dimensions.pixel_height);
 
