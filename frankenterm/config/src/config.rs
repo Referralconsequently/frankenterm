@@ -1131,7 +1131,7 @@ impl Default for Config {
             &frankenterm_dynamic::Value::Object(Default::default()),
             Default::default(),
         )
-        .unwrap()
+        .expect("Config default deserialization must succeed; check that all fields have defaults")
     }
 }
 
