@@ -68,7 +68,7 @@ pub fn ssh_connect_with_ui(
     cloned_ui.run_and_log_error(move || {
         let remote_address = ssh_config
             .get("hostname")
-            .expect("ssh config to always set hostname");
+            .ok_or_else(|| anyhow::anyhow!("ssh config missing required 'hostname' field"))?;
         ui.output_str(&format!("Connecting to {} using SSH\n", remote_address));
         let (session, events) = Session::connect(ssh_config.clone())?;
 

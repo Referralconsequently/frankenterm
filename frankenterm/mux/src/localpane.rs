@@ -1522,7 +1522,9 @@ impl LocalPane {
             leader.replace(CachedLeaderInfo::new(self.pty.lock().as_raw_fd()));
         }
 
-        (*leader).clone().unwrap()
+        (*leader)
+            .clone()
+            .expect("CachedLeaderInfo must be initialized — all branches above call replace()")
     }
 
     fn divine_current_working_dir(&self, policy: CachePolicy) -> Option<Url> {
