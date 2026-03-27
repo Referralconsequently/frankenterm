@@ -2345,7 +2345,10 @@ impl Screen {
         let to_move = lines_removed.min(num_rows);
         let (to_remove, to_add) = {
             for _ in 0..to_move {
-                let mut line = self.lines.remove(remove_idx).unwrap();
+                let mut line = match self.lines.remove(remove_idx) {
+                    Some(line) => line,
+                    None => break,
+                };
                 if remove_idx == 0 && scrollback_ok {
                     self.record_scrollback_spill(&line, seqno);
                 }
