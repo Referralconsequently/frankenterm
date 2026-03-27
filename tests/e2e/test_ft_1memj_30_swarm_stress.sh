@@ -149,6 +149,37 @@ EOF
   chmod +x "${mock_bin}/rch"
 }
 
+write_depinfo_failure_rch() {
+  local mock_bin="$1"
+  mkdir -p "${mock_bin}"
+  cat > "${mock_bin}/rch" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmdline="$*"
+if [[ "${cmdline}" == *"workers probe --all"* ]]; then
+  printf '%s\n' '{"api_version":"1.0","data":[{"id":"mock-worker","host":"127.0.0.1","status":"ok"}]}'
+  exit 0
+fi
+
+if [[ "${1:-}" == "exec" ]]; then
+  cat <<'ERR'
+warning: `frankenterm-core` (lib) generated 1 warning
+error: could not parse/generate dep info at: /data/projects/frankenterm/target/mock-swarm-depinfo/debug/deps/frankenterm_core-16de6415c3b736e3.d
+
+Caused by:
+  No such file or directory (os error 2)
+[RCH] remote mock-worker failed (exit 101)
+ERR
+  exit 101
+fi
+
+echo "unexpected invocation: ${cmdline}" >&2
+exit 64
+EOF
+  chmod +x "${mock_bin}/rch"
+}
+
 scenario_successful_collection() {
   local scenario_dir="${ARTIFACT_DIR}/successful_collection"
   local mock_bin="${scenario_dir}/mock-bin"
@@ -207,6 +238,41 @@ scenario_fail_closed_on_local_fallback() {
   fi
 }
 
+scenario_dep_info_failure_classified() {
+  local scenario_dir="${ARTIFACT_DIR}/dep_info_failure_classified"
+  local mock_bin="${scenario_dir}/mock-bin"
+  local stdout_file="${scenario_dir}/stdout.log"
+  local log_path="${ROOT_DIR}/tests/e2e/logs/ft_1memj_30_swarm_stress_contract-depinfo.jsonl"
+
+  mkdir -p "${scenario_dir}"
+  rm -f "${log_path}"
+  write_depinfo_failure_rch "${mock_bin}"
+
+  emit_log "running" "dep_info_failure_classified" "mock_depinfo" "none" "none" "${stdout_file}" "scripts/e2e_swarm_stress.sh"
+  if env \
+    PATH="${mock_bin}:${PATH}" \
+    RCH_SKIP_SMOKE_PREFLIGHT=1 \
+    RUN_ID="contract-depinfo" \
+    TARGET_DIR_REL="target/mock-swarm-depinfo" \
+    "${ROOT_DIR}/scripts/e2e_swarm_stress.sh" >"${stdout_file}" 2>&1; then
+    emit_log "failed" "dep_info_failure_classified" "mock_depinfo" "unexpected_success" "depinfo_not_classified" "${stdout_file}" "script should fail on mocked dep-info error"
+    return 1
+  fi
+
+  if [[ ! -f "${log_path}" ]]; then
+    emit_log "failed" "dep_info_failure_classified" "log_assert" "missing_log" "log_not_found" "${stdout_file}" "expected dep-info failure log"
+    return 1
+  fi
+
+  if ! jq -s -e '
+    ([.[] | select(.record_type == "swarm_metric")] | length) == 0 and
+    any(.[]; .record_type == "suite_event" and .decision_path == "suite_rch_exec" and .outcome == "failed" and .reason_code == "cargo_dep_info_missing" and .error_code == "cargo_dep_info_missing" and (.details | contains("dep-info failure at /data/projects/frankenterm/target/mock-swarm-depinfo/debug/deps/frankenterm_core-16de6415c3b736e3.d")))
+  ' "${log_path}" >/dev/null; then
+    emit_log "failed" "dep_info_failure_classified" "jq_assert" "depinfo_reason_missing" "log_validation_failed" "${log_path}" "expected explicit dep-info classification"
+    return 1
+  fi
+}
+
 require_cmd() {
   local cmd="$1"
   if ! command -v "${cmd}" >/dev/null 2>&1; then
@@ -230,6 +296,12 @@ main() {
     record_result "fail_closed_on_local_fallback" "true" "offload_guard_enforced" "none" "local fallback rejected"
   else
     record_result "fail_closed_on_local_fallback" "false" "offload_guard_missing" "fallback_not_rejected" "local fallback was not rejected"
+  fi
+
+  if scenario_dep_info_failure_classified; then
+    record_result "dep_info_failure_classified" "true" "depinfo_reason_classified" "none" "dep-info failure received explicit reason/error codes"
+  else
+    record_result "dep_info_failure_classified" "false" "depinfo_reason_missing" "depinfo_not_classified" "dep-info failure classification contract failed"
   fi
 
   echo "Results: pass=${PASS} fail=${FAIL} total=${TOTAL}"

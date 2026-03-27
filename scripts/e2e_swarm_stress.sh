@@ -13,8 +13,11 @@ ARTIFACT_DIR="${ARTIFACT_DIR_BASE}/${RUN_ID}"
 
 mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}"
 
-source "${ROOT_DIR}/tests/e2e/lib_rch_guards.sh"
+# Cold remote compilation of the full swarm suite needs a wider guard than the
+# generic 15-minute E2E default, while still allowing operator override.
+RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-2400}"
 RCH_SKIP_SMOKE_PREFLIGHT="${RCH_SKIP_SMOKE_PREFLIGHT:-1}"
+source "${ROOT_DIR}/tests/e2e/lib_rch_guards.sh"
 rch_init "${LOG_DIR}" "${RUN_ID}" "1memj_30_swarm_stress" "${ROOT_DIR}"
 ensure_rch_ready
 
@@ -25,6 +28,7 @@ Usage: scripts/e2e_swarm_stress.sh
 Environment:
   TARGET_DIR_REL   Repo-relative cargo target dir for rch offload
   RUN_ID           Override generated run id
+  RCH_STEP_TIMEOUT_SECS  Override remote cargo step timeout (default: 2400)
 EOF
 }
 
@@ -162,14 +166,37 @@ decision_path_for_metric() {
   esac
 }
 
+classify_rch_failure() {
+  local stdout_file="$1"
+  local dep_info_path=""
+
+  dep_info_path="$(sed -n 's/^error: could not parse\/generate dep info at: //p' "${stdout_file}" | head -n 1)"
+
+  if [[ -n "${dep_info_path}" ]] && grep -Fq 'No such file or directory (os error 2)' "${stdout_file}"; then
+    printf '%s\t%s\t%s\n' \
+      "cargo_dep_info_missing" \
+      "cargo_dep_info_missing" \
+      "dep-info failure at ${dep_info_path}; remote workspace integrity likely diverged before cargo finalized dependency metadata"
+    return 0
+  fi
+
+  printf '%s\t%s\t%s\n' \
+    "cargo_test_failed" \
+    "cargo_command_failed" \
+    "swarm suite failed"
+}
+
 run_swarm_suite() {
   local stdout_file="${ARTIFACT_DIR}/swarm_suite.stdout.log"
   local metric_names_file="${ARTIFACT_DIR}/swarm_suite.metric_names.txt"
   local saw_metrics=0
   local remote_cmd=""
+  local failure_reason_code=""
+  local failure_error_code=""
+  local failure_details=""
 
   : > "${metric_names_file}"
-  remote_cmd="mkdir -p '${TARGET_DIR_REL}/debug/deps' '${TARGET_DIR_REL}/debug/.fingerprint' && cargo test -p frankenterm-core --test e2e_swarm_stress_core -- --nocapture"
+  remote_cmd="cargo test -p frankenterm-core --test e2e_swarm_stress_core -- --nocapture"
 
   emit_event \
     "running" \
@@ -182,14 +209,17 @@ run_swarm_suite() {
   if ! run_rch_cargo_logged \
     "${stdout_file}" \
     env CARGO_TARGET_DIR="${TARGET_DIR_REL}" \
-    bash -lc "${remote_cmd}"; then
+    cargo test -p frankenterm-core --test e2e_swarm_stress_core -- --nocapture; then
+    IFS=$'\t' read -r failure_reason_code failure_error_code failure_details < <(
+      classify_rch_failure "${stdout_file}"
+    )
     emit_event \
       "failed" \
       "suite_rch_exec" \
-      "cargo_test_failed" \
-      "cargo_command_failed" \
+      "${failure_reason_code}" \
+      "${failure_error_code}" \
       "$(basename "${stdout_file}")" \
-      "swarm suite failed"
+      "${failure_details}"
     return 1
   fi
 
