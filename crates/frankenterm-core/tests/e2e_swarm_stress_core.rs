@@ -9,6 +9,7 @@ use frankenterm_core::backpressure::{
 use frankenterm_core::scrollback_tiers::{
     ScrollbackConfig, ScrollbackTier, ScrollbackTierSnapshot, TieredScrollback,
 };
+use std::time::Instant;
 
 // =============================================================================
 // Helpers
@@ -49,6 +50,127 @@ fn stress_config() -> ScrollbackConfig {
     }
 }
 
+fn emit_swarm_metric(
+    test: &str,
+    pane_count: usize,
+    rss_mb: f64,
+    cpu_percent: Option<f64>,
+    frame_time_p50_ms: Option<f64>,
+    frame_time_p99_ms: Option<f64>,
+    events_dropped: u64,
+    backpressure_tier: Option<&str>,
+    duration_s: f64,
+    status: &str,
+    metric_source: &str,
+    notes: &str,
+) {
+    println!(
+        "FT_SWARM_METRIC {}",
+        serde_json::json!({
+            "metric_schema": "ft.swarm_stress.metric.v1",
+            "test": test,
+            "pane_count": pane_count,
+            "rss_mb": rss_mb,
+            "cpu_percent": cpu_percent,
+            "frame_time_p50_ms": frame_time_p50_ms,
+            "frame_time_p99_ms": frame_time_p99_ms,
+            "events_dropped": events_dropped,
+            "backpressure_tier": backpressure_tier,
+            "duration_s": duration_s,
+            "status": status,
+            "metric_source": metric_source,
+            "notes": notes
+        })
+    );
+}
+
+fn run_idle_hot_only_scenario(
+    pane_count: usize,
+    lines_per_pane: usize,
+    assert_budget_mb: usize,
+    metric_name: &str,
+) {
+    let started = Instant::now();
+    let mut total_bytes = 0usize;
+
+    for pane_id in 0..pane_count {
+        let mut sb = TieredScrollback::new(stress_config());
+        for line_no in 0..lines_per_pane {
+            sb.push_line(agent_line(pane_id, line_no));
+        }
+        let snap = sb.snapshot();
+        assert_eq!(snap.hot_lines, lines_per_pane);
+        assert_eq!(snap.warm_pages, 0);
+        total_bytes += snap.hot_lines * 150;
+    }
+
+    let total_mb = total_bytes / (1024 * 1024);
+    assert!(
+        total_mb < assert_budget_mb,
+        "{pane_count} panes idle hot should be < {assert_budget_mb} MB, got {total_mb}"
+    );
+
+    emit_swarm_metric(
+        metric_name,
+        pane_count,
+        total_bytes as f64 / (1024.0 * 1024.0),
+        None,
+        None,
+        None,
+        0,
+        Some("Green"),
+        started.elapsed().as_secs_f64(),
+        "pass",
+        "core_simulation",
+        "estimated scrollback memory under idle hot-only load; CPU/frame telemetry unavailable in cargo-test harness",
+    );
+}
+
+fn run_active_warm_tier_scenario(
+    pane_count: usize,
+    lines_per_pane: usize,
+    assert_budget_mb: usize,
+    metric_name: &str,
+    backpressure_tier: &str,
+) {
+    let started = Instant::now();
+    let mut total_warm_bytes = 0usize;
+    let mut total_hot_bytes = 0usize;
+
+    for pane_id in 0..pane_count {
+        let mut sb = TieredScrollback::new(stress_config());
+        for line_no in 0..lines_per_pane {
+            sb.push_line(agent_line(pane_id, line_no));
+        }
+        let snap = sb.snapshot();
+        assert!(snap.warm_pages > 0, "pane {pane_id} should have warm pages");
+        total_warm_bytes += snap.warm_bytes;
+        total_hot_bytes += snap.hot_lines * 150;
+    }
+
+    let total_bytes = total_warm_bytes + total_hot_bytes;
+    let total_mb = total_bytes / (1024 * 1024);
+    assert!(
+        total_mb < assert_budget_mb,
+        "{pane_count} panes with warm should be < {assert_budget_mb} MB, got {total_mb}"
+    );
+
+    emit_swarm_metric(
+        metric_name,
+        pane_count,
+        total_bytes as f64 / (1024.0 * 1024.0),
+        None,
+        None,
+        None,
+        0,
+        Some(backpressure_tier),
+        started.elapsed().as_secs_f64(),
+        "pass",
+        "core_simulation",
+        "estimated scrollback memory under sustained output; CPU/frame telemetry unavailable in cargo-test harness",
+    );
+}
+
 // =============================================================================
 // Module: multi-pane scrollback scale
 // =============================================================================
@@ -56,58 +178,37 @@ fn stress_config() -> ScrollbackConfig {
 mod multi_pane_scrollback {
     use super::*;
 
+    /// 50 panes, each with 500 hot lines, should stay well under the GUI idle
+    /// memory budget.
+    #[test]
+    fn scale_50_panes_idle_hot_only() {
+        run_idle_hot_only_scenario(50, 500, 50, "stress_50_panes_idle");
+    }
+
+    /// 100 panes, each with 500 hot lines, should stay well under the GUI idle
+    /// memory budget.
+    #[test]
+    fn scale_100_panes_idle_hot_only() {
+        run_idle_hot_only_scenario(100, 500, 50, "stress_100_panes_idle");
+    }
+
     /// 200 panes, each with 500 hot lines, should stay under 50 MB total.
     #[test]
     fn scale_200_panes_idle_hot_only() {
-        let pane_count = 200;
-        let lines_per_pane = 500; // within hot limit
-        let mut total_bytes = 0usize;
+        run_idle_hot_only_scenario(200, 500, 50, "stress_200_panes_idle");
+    }
 
-        for pane_id in 0..pane_count {
-            let mut sb = TieredScrollback::new(stress_config());
-            for line_no in 0..lines_per_pane {
-                sb.push_line(agent_line(pane_id, line_no));
-            }
-            let snap = sb.snapshot();
-            assert_eq!(snap.hot_lines, lines_per_pane);
-            assert_eq!(snap.warm_pages, 0);
-            // Estimate: each line ~120 bytes + String overhead (~24 bytes)
-            total_bytes += snap.hot_lines * 150;
-        }
-
-        // 200 * 500 * 150 = ~15 MB — must be under 50 MB
-        let total_mb = total_bytes / (1024 * 1024);
-        assert!(
-            total_mb < 50,
-            "200 panes idle hot should be < 50 MB, got {total_mb}"
-        );
+    /// 50 panes each producing 5000 lines triggers warm tier for all panes.
+    #[test]
+    fn scale_50_panes_with_warm_tier() {
+        run_active_warm_tier_scenario(50, 5000, 150, "stress_50_panes_active", "Yellow");
     }
 
     /// 200 panes each producing 5000 lines triggers warm tier for all panes.
     /// Total memory (hot + warm compressed) should stay under 400 MB.
     #[test]
     fn scale_200_panes_with_warm_tier() {
-        let pane_count = 200;
-        let lines_per_pane = 5000;
-        let mut total_warm_bytes = 0usize;
-        let mut total_hot_bytes = 0usize;
-
-        for pane_id in 0..pane_count {
-            let mut sb = TieredScrollback::new(stress_config());
-            for line_no in 0..lines_per_pane {
-                sb.push_line(agent_line(pane_id, line_no));
-            }
-            let snap = sb.snapshot();
-            assert!(snap.warm_pages > 0, "pane {pane_id} should have warm pages");
-            total_warm_bytes += snap.warm_bytes;
-            total_hot_bytes += snap.hot_lines * 150;
-        }
-
-        let total_mb = (total_warm_bytes + total_hot_bytes) / (1024 * 1024);
-        assert!(
-            total_mb < 400,
-            "200 panes with warm should be < 400 MB, got {total_mb}"
-        );
+        run_active_warm_tier_scenario(200, 5000, 400, "stress_200_panes_active", "Red");
     }
 
     /// 200 panes each producing 20000 noisy lines triggers warm→cold eviction.
@@ -190,7 +291,6 @@ mod multi_pane_scrollback {
 
 mod throughput {
     use super::*;
-    use std::time::Instant;
 
     /// Pushing 100K lines into a single pane completes in < 1 second.
     #[test]
@@ -209,6 +309,21 @@ mod throughput {
 
         let snap = sb.snapshot();
         assert_eq!(snap.total_lines_added, 100_000);
+
+        emit_swarm_metric(
+            "stress_single_pane_10mb",
+            1,
+            sb.estimated_memory_bytes() as f64 / (1024.0 * 1024.0),
+            None,
+            None,
+            None,
+            0,
+            Some("Green"),
+            elapsed.as_secs_f64(),
+            "pass",
+            "core_simulation",
+            "single-pane burst throughput against tiered scrollback; output size is approximately 10-12 MB",
+        );
     }
 
     /// Batch push_lines vs individual push_line performance.
@@ -699,7 +814,6 @@ mod config_edge_cases {
 
 mod lifecycle_churn {
     use super::*;
-    use std::time::Instant;
 
     /// Rapidly create and destroy 100 scrollback instances (simulating pane churn).
     /// No panics or leaks.
@@ -728,6 +842,21 @@ mod lifecycle_churn {
         assert!(
             elapsed.as_secs() < 5,
             "10 cycles * 100 panes create/destroy took {elapsed:?}"
+        );
+
+        emit_swarm_metric(
+            "stress_rapid_pane_create_destroy",
+            100,
+            0.0,
+            None,
+            None,
+            None,
+            0,
+            Some("Green"),
+            elapsed.as_secs_f64(),
+            "pass",
+            "core_simulation",
+            "pane lifecycle churn via repeated create/destroy cycles; resource metric is duration-focused",
         );
     }
 
@@ -895,6 +1024,7 @@ mod coordinator_stress {
     /// Coordinator handles 200-pane emergency eviction and clears all warm data.
     #[test]
     fn coordinator_emergency_at_200_panes() {
+        let started = Instant::now();
         let mut coord = FleetScrollbackCoordinator::new(
             CoordinatorConfig {
                 emergency_evict_all: true,
@@ -942,6 +1072,21 @@ mod coordinator_stress {
         assert!(
             total_mem_mb < 200,
             "After emergency eviction, fleet memory should be under 200 MB: {total_mem_mb} MB"
+        );
+
+        emit_swarm_metric(
+            "stress_200_panes_backpressure",
+            200,
+            total_mem_after as f64 / (1024.0 * 1024.0),
+            None,
+            None,
+            None,
+            0,
+            Some("Black"),
+            started.elapsed().as_secs_f64(),
+            "pass",
+            "core_simulation",
+            "post-eviction fleet memory after emergency backpressure handling; CPU/frame telemetry unavailable in cargo-test harness",
         );
     }
 
