@@ -112,7 +112,7 @@ impl ClusteredLine {
 
         for cell in iter {
             len += cell.width();
-            last_cell_width = NonZeroU8::new(1);
+            last_cell_width = NonZeroU8::new(cell.width() as u8);
 
             if cell.width() > 1 {
                 any_double = true;

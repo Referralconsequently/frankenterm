@@ -195,7 +195,7 @@ C(
         ],
         len: 23,
         last_cell_width: Some(
-            1,
+            2,
         ),
     },
 )

@@ -226,7 +226,7 @@ impl CellCluster {
                 presentation: cluster.presentation,
                 byte_to_cell_width,
                 byte_to_cell_idx,
-                first_cell_idx: first_cell_idx.unwrap(),
+                first_cell_idx: first_cell_idx.unwrap_or(0),
             });
         }
     }
