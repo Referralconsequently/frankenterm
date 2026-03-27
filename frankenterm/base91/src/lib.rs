@@ -207,7 +207,8 @@ impl<'a> std::io::Write for Base91Decoder<'a> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         if let Some(value) = self.value.take() {
-            let out: [u8; 1] = [(self.accumulator & 0xff) as u8 | (value << self.bits)];
+            let out: [u8; 1] =
+                [(self.accumulator & 0xff) as u8 | ((value as u64) << self.bits) as u8];
             self.writer.write_all(&out)?;
         }
         self.bits = 0;

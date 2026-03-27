@@ -52,16 +52,16 @@ pub fn range_subtract<T: Integer + Copy + Debug>(
             // Intersection overlaps with the LHS
             None
         } else {
-            // The LHS up to the intersection
-            Some(r1.start..r1.end.min(i_start))
+            // The remainder before the intersection
+            Some(r1.start..i_start)
         };
 
         let b = if i_end == r1.end {
             // Intersection overlaps with the RHS
             None
         } else {
-            // The intersection up to the RHS
-            Some(r1.end.min(i_end)..r1.end)
+            // The remainder after the intersection
+            Some(i_end..r1.end)
         };
 
         (a, b)
