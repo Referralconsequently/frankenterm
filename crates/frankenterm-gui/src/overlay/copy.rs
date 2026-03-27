@@ -431,8 +431,10 @@ impl CopyRenderable {
     }
 
     fn activate_match_number(&mut self, n: usize) {
+        let Some(result) = self.results.get(n).cloned() else {
+            return;
+        };
         self.result_pos.replace(n);
-        let result = self.results[n].clone();
         self.cursor.y = result.end_y;
         self.cursor.x = result.end_x.saturating_sub(1);
 

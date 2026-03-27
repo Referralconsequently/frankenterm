@@ -928,7 +928,9 @@ impl QuickSelectRenderable {
     }
 
     fn select_and_copy_match_number(&mut self, n: usize, paste: bool) {
-        let result = self.results[n].clone();
+        let Some(result) = self.results.get(n).cloned() else {
+            return;
+        };
 
         let pane_id = self.delegate.pane_id();
         let action = self.args.action.clone();
@@ -976,8 +978,10 @@ impl QuickSelectRenderable {
     }
 
     fn activate_match_number(&mut self, n: usize) {
-        self.result_pos.replace(n);
-        let result = self.results[n].clone();
-        self.set_viewport(Some(result.start_y));
+        if let Some(result) = self.results.get(n) {
+            self.result_pos.replace(n);
+            let start_y = result.start_y;
+            self.set_viewport(Some(start_y));
+        }
     }
 }
