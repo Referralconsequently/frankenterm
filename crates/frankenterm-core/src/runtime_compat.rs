@@ -366,13 +366,6 @@ impl Semaphore {
         match err {
             asupersync::sync::AcquireError::Closed => AcquireError::Closed,
             asupersync::sync::AcquireError::Cancelled => AcquireError::Cancelled,
-            asupersync::sync::AcquireError::PolledAfterCompletion => {
-                debug_assert!(
-                    false,
-                    "semaphore acquire future polled after completion in runtime_compat"
-                );
-                AcquireError::Cancelled
-            }
         }
     }
 
