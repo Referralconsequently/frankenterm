@@ -67,8 +67,8 @@ impl TerminalState {
         params: ImageAttachParams,
     ) -> anyhow::Result<PlacementInfo> {
         let seqno = self.seqno;
-        let physical_cols = self.screen().physical_cols;
-        let physical_rows = self.screen().physical_rows;
+        let physical_cols = self.screen().physical_cols.max(1);
+        let physical_rows = self.screen().physical_rows.max(1);
         let cell_pixel_width = self.pixel_width / physical_cols;
         let cell_pixel_height = self.pixel_height / physical_rows;
         let cell_padding_left = params

@@ -588,7 +588,7 @@ impl CopyRenderable {
             let prior = if *cur > 0 {
                 cur - 1
             } else {
-                self.results.len() - 1
+                self.results.len().saturating_sub(1)
             };
             self.activate_match_number(prior);
         }

@@ -2142,7 +2142,7 @@ impl Screen {
         let last = match self.stable_row_to_phys(range.end.saturating_sub(1)) {
             Some(last) => last,
             None => {
-                let last = self.lines.len() - 1;
+                let last = self.lines.len().saturating_sub(1);
                 return last.saturating_sub(range_len)..last + 1;
             }
         };

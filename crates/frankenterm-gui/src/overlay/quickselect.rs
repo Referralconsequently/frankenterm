@@ -359,7 +359,7 @@ impl Pane for QuickSelectOverlay {
                     let prior = if *cur > 0 {
                         cur - 1
                     } else {
-                        r.results.len() - 1
+                        r.results.len().saturating_sub(1)
                     };
                     r.activate_match_number(prior);
                 }
