@@ -1,5 +1,5 @@
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{
     Attribute, Error, Field, GenericArgument, Ident, Lit, Meta, NestedMeta, Path, PathArguments,
     Result, Type,
@@ -154,11 +154,11 @@ pub fn field_info(field: &Field) -> Result<FieldInfo<'_>> {
                             container_type = match last_seg.ident.to_string().as_str() {
                                 "Option" => ContainerType::Option,
                                 "Vec" => ContainerType::Vec,
-                                _ => panic!("unhandled type for {name}: {:#?}", field.ty),
+                                _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
                             };
                             t.path.segments.last().unwrap().ident.to_string()
                         }
-                        _ => panic!("unhandled type for {name}: {:#?}", field.ty),
+                        _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
                     }
                 }
                 PathArguments::AngleBracketed(args) if args.args.len() == 2 => {
@@ -167,17 +167,17 @@ pub fn field_info(field: &Field) -> Result<FieldInfo<'_>> {
                         GenericArgument::Type(Type::Path(t)) => {
                             container_type = match last_seg.ident.to_string().as_str() {
                                 "HashMap" => ContainerType::Map,
-                                _ => panic!("unhandled type for {name}: {:#?}", field.ty),
+                                _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
                             };
                             t.path.segments.last().unwrap().ident.to_string()
                         }
-                        _ => panic!("unhandled type for {name}: {:#?}", field.ty),
+                        _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
                     }
                 }
-                _ => panic!("unhandled type for {name}: {:#?}", field.ty),
+                _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
             }
         }
-        _ => panic!("unhandled type for {name}: {:#?}", field.ty),
+        _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
     };
 
     for attr in &field.attrs {
@@ -199,7 +199,7 @@ pub fn field_info(field: &Field) -> Result<FieldInfo<'_>> {
             other => {
                 return Err(Error::new_spanned(
                     other.clone(),
-                    format!("unsupported attribute {other:?}"),
+                    format!("unsupported attribute {}", other.to_token_stream()),
                 ))
             }
         };
