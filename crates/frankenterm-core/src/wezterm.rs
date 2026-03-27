@@ -534,6 +534,17 @@ pub enum MoveDirection {
 const DEFAULT_TIMEOUT_SECS: u64 = crate::tuning_config::WeztermTuning::DEFAULT_TIMEOUT_SECS;
 const DEFAULT_RETRY_ATTEMPTS: u32 = 3;
 const DEFAULT_RETRY_DELAY_MS: u64 = crate::tuning_config::WeztermTuning::DEFAULT_RETRY_DELAY_MS;
+
+/// Time-window for the CLI `list_panes` cache.
+///
+/// When `list_panes()` is served via the CLI subprocess path, the result is
+/// cached for this duration.  Multiple callers (discovery, snapshot engine,
+/// watchdog) that fire within the same window will receive a clone of the
+/// cached result instead of spawning another `wezterm cli list --format json`
+/// subprocess.  500 ms is safe because pane topology rarely changes faster
+/// than once per second.
+const LIST_PANES_CLI_CACHE_MS: u64 = 500;
+
 /// Environment variable to override the wezterm binary path.
 const WEZTERM_CLI_ENV: &str = "FT_WEZTERM_CLI";
 
@@ -577,6 +588,14 @@ pub struct WeztermClient {
     /// When present, operations try the pool first and fall back to CLI.
     #[cfg(all(feature = "vendored", unix))]
     mux_pool: Option<Arc<crate::vendored::MuxPool>>,
+    /// Time-windowed cache for CLI `list_panes` results.
+    ///
+    /// Multiple concurrent callers (discovery, snapshot engine, watchdog) hit
+    /// `list_panes()` independently.  In CLI-only mode each call spawns a
+    /// `wezterm cli list --format json` subprocess.  This cache coalesces those
+    /// calls within a [`LIST_PANES_CLI_CACHE_MS`] window so only one subprocess
+    /// is spawned per window.
+    list_panes_cache: Arc<Mutex<Option<(Instant, Vec<PaneInfo>)>>>,
 }
 
 impl Default for WeztermClient {
@@ -605,6 +624,7 @@ impl WeztermClient {
             ),
             #[cfg(all(feature = "vendored", unix))]
             mux_pool: None,
+            list_panes_cache: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -627,6 +647,7 @@ impl WeztermClient {
             ),
             #[cfg(all(feature = "vendored", unix))]
             mux_pool: None,
+            list_panes_cache: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -705,11 +726,39 @@ impl WeztermClient {
             }
         }
 
+        // CLI path: check the time-windowed cache before spawning a subprocess.
+        // Multiple callers (discovery, snapshot engine, watchdog) independently
+        // call list_panes() and each would spawn a separate `wezterm cli list`
+        // process.  This cache coalesces those calls within a short window.
+        let cache_window = Duration::from_millis(LIST_PANES_CLI_CACHE_MS);
+        {
+            let cache = match self.list_panes_cache.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some((ts, ref panes)) = *cache {
+                if ts.elapsed() < cache_window {
+                    tracing::trace!("list_panes: returning cached CLI result");
+                    return Ok(panes.clone());
+                }
+            }
+        }
+
         let output = self
             .run_cli_with_retry(&["cli", "list", "--format", "json"])
             .await?;
         let panes: Vec<PaneInfo> =
             serde_json::from_str(&output).map_err(|e| WeztermError::ParseError(e.to_string()))?;
+
+        // Update cache with the fresh result.
+        {
+            let mut cache = match self.list_panes_cache.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *cache = Some((Instant::now(), panes.clone()));
+        }
+
         Ok(panes)
     }
 
