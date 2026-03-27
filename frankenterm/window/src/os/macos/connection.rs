@@ -74,7 +74,11 @@ impl Connection {
     {
         let (mut prom, future) = new_window_op_promise();
         promise::spawn::spawn_into_main_thread(async move {
-            if let Some(handle) = Connection::get().unwrap().window_by_id(window_id) {
+            let Some(conn) = Connection::get() else {
+                fail_window_op_for_destroyed_window(&mut prom, "macOS", window_id);
+                return;
+            };
+            if let Some(handle) = conn.window_by_id(window_id) {
                 let mut inner = handle.borrow_mut();
                 prom.result(f(&mut inner));
             } else {

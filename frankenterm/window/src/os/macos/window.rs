@@ -183,7 +183,8 @@ impl GlContextPair {
                 let _: () = msg_send![layer, setOpaque: NO];
             };
 
-            let conn = Connection::get().unwrap();
+            let conn = Connection::get()
+                .ok_or_else(|| anyhow::anyhow!("Connection not available during OpenGL setup"))?;
 
             let state = match conn.gl_connection.borrow().as_ref() {
                 None => crate::egl::GlState::create(None, layer as *const c_void),
@@ -713,7 +714,9 @@ impl WindowOps for Window {
     async fn enable_opengl(&self) -> anyhow::Result<Rc<glium::backend::Context>> {
         let window_id = self.id;
         promise::spawn::spawn(async move {
-            if let Some(handle) = Connection::get().unwrap().window_by_id(window_id) {
+            let conn = Connection::get()
+                .ok_or_else(|| anyhow::anyhow!("Connection not available"))?;
+            if let Some(handle) = conn.window_by_id(window_id) {
                 let mut inner = handle.borrow_mut();
                 inner.enable_opengl()
             } else {
@@ -2156,11 +2159,13 @@ impl WindowView {
 
     extern "C" fn view_did_change_effective_appearance(this: &mut Object, _sel: Sel) {
         if let Some(this) = Self::get_this(this) {
-            let appearance = Connection::get().unwrap().get_appearance();
-            this.inner
-                .borrow_mut()
-                .events
-                .dispatch(WindowEvent::AppearanceChanged(appearance));
+            if let Some(conn) = Connection::get() {
+                let appearance = conn.get_appearance();
+                this.inner
+                    .borrow_mut()
+                    .events
+                    .dispatch(WindowEvent::AppearanceChanged(appearance));
+            }
         }
     }
 
@@ -2311,9 +2316,10 @@ impl WindowView {
                 .events
                 .dispatch(WindowEvent::Destroyed);
             this.update_application_presentation(false);
-            let conn = Connection::get().unwrap();
-            let window_id = this.inner.borrow_mut().window_id;
-            conn.windows.borrow_mut().remove(&window_id);
+            if let Some(conn) = Connection::get() {
+                let window_id = this.inner.borrow_mut().window_id;
+                conn.windows.borrow_mut().remove(&window_id);
+            }
         }
     }
 

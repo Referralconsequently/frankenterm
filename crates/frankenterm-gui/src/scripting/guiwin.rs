@@ -95,7 +95,9 @@ impl UserData for GuiWin {
             },
         );
         methods.add_method("get_appearance", |_, _, _: ()| {
-            Ok(Connection::get().unwrap().get_appearance().to_string())
+            Ok(Connection::get()
+                .map(|c| c.get_appearance().to_string())
+                .unwrap_or_else(|| "Dark".to_string()))
         });
         methods.add_method("set_right_status", |_, this, status: String| {
             this.window.notify(TermWindowNotif::SetRightStatus(status));

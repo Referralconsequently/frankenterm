@@ -154,7 +154,9 @@ impl GuiFrontEnd {
                         promise::spawn::spawn_into_main_thread(async move {
                             if mux::activity::Activity::count() == 0 {
                                 log::trace!("Mux is now empty, terminate gui");
-                                Connection::get().unwrap().terminate_message_loop();
+                                if let Some(conn) = Connection::get() {
+                                    conn.terminate_message_loop();
+                                }
                             }
                         })
                         .detach();
@@ -292,7 +294,9 @@ impl GuiFrontEnd {
                         // If we get here, there are no windows that could have received
                         // the QuitApplication command, therefore it must be ok to quit
                         // immediately
-                        Connection::get().unwrap().terminate_message_loop();
+                        if let Some(conn) = Connection::get() {
+                            conn.terminate_message_loop();
+                        }
                     }
                     KeyAssignment::SpawnWindow => {
                         spawn_command(&SpawnCommand::default(), SpawnWhere::NewWindow);

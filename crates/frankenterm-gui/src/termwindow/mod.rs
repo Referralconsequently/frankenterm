@@ -689,7 +689,9 @@ impl TermWindow {
 
         let render_state = None;
 
-        let connection_name = Connection::get().unwrap().name();
+        let connection_name = Connection::get()
+            .map(|c| c.name())
+            .unwrap_or_else(|| "unknown".to_string());
 
         let myself = Self {
             created: Instant::now(),
@@ -1756,7 +1758,9 @@ impl TermWindow {
             self.config_overrides
         );
         self.key_table_state.clear_stack();
-        self.connection_name = Connection::get().unwrap().name();
+        self.connection_name = Connection::get()
+            .map(|c| c.name())
+            .unwrap_or_else(|| "unknown".to_string());
         let config = match config::overridden_config(&self.config_overrides) {
             Ok(config) => config,
             Err(err) => {
