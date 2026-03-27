@@ -66,6 +66,9 @@ fn encoded_length(value: u64) -> usize {
 }
 
 const COMPRESSED_MASK: u64 = 1 << 63;
+/// Maximum allowed PDU payload size (256 MB). Prevents allocation bombs from
+/// malformed or malicious length fields.
+const MAX_PDU_SIZE: usize = 256 * 1024 * 1024;
 
 fn encode_raw_as_vec(
     ident: u64,
@@ -257,6 +260,14 @@ async fn decode_raw_async<R: Unpin + AsyncRead + std::fmt::Debug>(
             (data_len, false) => data_len,
         };
 
+    if data_len > MAX_PDU_SIZE {
+        anyhow::bail!(
+            "decode_raw_async: PDU payload size {} exceeds maximum {} \
+            (serial={} ident={})",
+            data_len, MAX_PDU_SIZE, serial, ident
+        );
+    }
+
     if is_compressed {
         metrics::histogram!("pdu.decode.compressed.size").record(data_len as f64);
     } else {
@@ -304,6 +315,13 @@ fn decode_raw<R: std::io::Read>(mut r: R) -> anyhow::Result<Decoded> {
             }
             (data_len, false) => data_len,
         };
+
+    if data_len > MAX_PDU_SIZE {
+        anyhow::bail!(
+            "PDU payload size {} exceeds maximum {} (serial={} ident={})",
+            data_len, MAX_PDU_SIZE, serial, ident
+        );
+    }
 
     if is_compressed {
         metrics::histogram!("pdu.decode.compressed.size").record(data_len as f64);

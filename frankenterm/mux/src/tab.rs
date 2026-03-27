@@ -2092,6 +2092,7 @@ impl TabInner {
         self.pane = Some(result.tree);
         self.pane_stacks = result.stacks;
         self.active = result.active_index;
+        self.zoomed = None;
         self.collapsed_panes.clear();
 
         // Apply sizes to the new tree.
@@ -2122,8 +2123,11 @@ impl TabInner {
         }
 
         // Collect from stacks (non-visible panes that aren't already in the tree).
+        // Use std::mem::take for an atomic swap instead of drain(), which would
+        // leave pane_stacks empty if anything accesses it before reassignment.
         let tree_ids: HashSet<PaneId> = panes.iter().map(|p| p.pane_id()).collect();
-        for (_slot, stack) in self.pane_stacks.drain() {
+        let old_stacks = std::mem::take(&mut self.pane_stacks);
+        for (_slot, stack) in old_stacks {
             for p in stack.into_panes() {
                 if !tree_ids.contains(&p.pane_id()) {
                     panes.push(p);
@@ -2468,8 +2472,8 @@ impl TabInner {
             let size = TerminalSize {
                 rows,
                 cols,
-                pixel_width: cols * dims.pixel_width,
-                pixel_height: rows * dims.pixel_height,
+                pixel_width: cols.saturating_mul(dims.pixel_width),
+                pixel_height: rows.saturating_mul(dims.pixel_height),
                 dpi: dims.dpi,
             };
 
