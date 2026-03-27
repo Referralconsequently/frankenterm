@@ -518,6 +518,7 @@ SCENARIO_REGISTRY=(
     "ft_e34d9_10_4_2_network|Validate TCP/TLS/HTTP runtime-compat network contracts and degraded timeout behavior|false|cargo,jq,rch,python3|Protects runtime_compat net/io parity and degraded network timeout invariants"
     "ft_e34d9_10_8_2_cutover_runtime_guards|Validate cutover runtime regression guardrails (dependency/import ceilings + failure/recovery)|false|cargo,jq,rch,python3|Protects cutover against forbidden runtime dependency/import reintroduction"
     "ft_e34d9_10_6_2_concurrency_fault_matrix|Validate DPOR + concurrency failure injection matrix (race/deadlock/cancellation)|false|cargo,jq,rch|Protects concurrent operation correctness under systematic fault injection"
+    "ft_1memj_30_swarm_stress|Validate offload-only swarm stress metrics for 50/100/200 pane workloads|false|cargo,jq,rch|Protects 200-pane stress capacity evidence and offload-only swarm harness"
     "ft_1i2ge_4_2|Validate mission reservation and ownership enforcement contract|false|cargo,jq,rch|Protects assignment reservation/ownership enforcement surface"
     "ft_1i2ge_4_3|Validate mission approval-path integration (durability, idempotency, fallback)|false|cargo,jq,rch|Protects approval-required routing and post-approval continuation invariants"
     "ft_1i2ge_4_1|Validate mission policy preflight contract and denial feedback reason codes|false|cargo,jq,rch|Protects mission policy preflight plan/dispatch pipeline"
@@ -12053,6 +12054,47 @@ run_scenario_ft_e34d9_10_6_2_concurrency_fault_matrix() {
     return 0
 }
 
+run_scenario_ft_1memj_30_swarm_stress() {
+    local scenario_dir="$1"
+    local case_name="ft_1memj_30_swarm_stress"
+    local script_path="$PROJECT_ROOT/tests/e2e/test_ft_1memj_30_swarm_stress.sh"
+    local scenario_stdout="$scenario_dir/${case_name}.stdout.log"
+    local before_snapshot="$scenario_dir/${case_name}.logs.before.txt"
+    local after_snapshot="$scenario_dir/${case_name}.logs.after.txt"
+
+    ls -1 "$PROJECT_ROOT/tests/e2e/logs"/ft_1memj_30_swarm_stress_* 2>/dev/null | LC_ALL=C sort >"$before_snapshot" || true
+
+    log_info "[$case_name] Step 1: running swarm stress harness contract"
+    set +e
+    timeout "$TIMEOUT" bash "$script_path" >"$scenario_stdout" 2>&1
+    local rc=$?
+    set -e
+
+    if [[ "$rc" -eq 124 ]]; then
+        log_fail "[$case_name] harness timed out after ${TIMEOUT}s"
+        tail -n 120 "$scenario_stdout" >&2 || true
+        return 4
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+        log_fail "[$case_name] harness failed (exit=$rc)"
+        tail -n 120 "$scenario_stdout" >&2 || true
+        return "$rc"
+    fi
+
+    ls -1 "$PROJECT_ROOT/tests/e2e/logs"/ft_1memj_30_swarm_stress_* 2>/dev/null | LC_ALL=C sort >"$after_snapshot" || true
+    while IFS= read -r log_path; do
+        if [[ -z "$log_path" ]]; then
+            continue
+        fi
+        if [[ ! -f "$before_snapshot" ]] || ! grep -Fxq "$log_path" "$before_snapshot"; then
+            cp -f "$log_path" "$scenario_dir/" || true
+        fi
+    done < "$after_snapshot"
+
+    log_pass "[$case_name] swarm stress harness contract completed"
+    return 0
+}
+
 dispatch_scenario() {
     local name="$1"
     local scenario_dir="$2"
@@ -12255,6 +12297,9 @@ dispatch_scenario() {
             ;;
         ft_e34d9_10_6_2_concurrency_fault_matrix)
             run_scenario_ft_e34d9_10_6_2_concurrency_fault_matrix "$scenario_dir" || result=$?
+            ;;
+        ft_1memj_30_swarm_stress)
+            run_scenario_ft_1memj_30_swarm_stress "$scenario_dir" || result=$?
             ;;
         replay_capture_pipeline)
             run_scenario_replay_capture_pipeline "$scenario_dir" || result=$?
