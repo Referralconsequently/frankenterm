@@ -63,7 +63,7 @@ impl crate::TermWindow {
                 palette: &palette,
                 dims: &RenderableDimensions {
                     cols: self.dimensions.pixel_width
-                        / self.render_metrics.cell_size.width as usize,
+                        / (self.render_metrics.cell_size.width as usize).max(1),
                     physical_top: 0,
                     scrollback_rows: 0,
                     scrollback_top: 0,

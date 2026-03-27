@@ -254,6 +254,12 @@ impl SessionHandler {
         )
     }
 
+    /// Remove cached per-pane state when a pane is destroyed.
+    /// Prevents unbounded HashMap growth in long-lived sessions.
+    pub(crate) fn remove_per_pane(&mut self, pane_id: PaneId) {
+        self.per_pane.remove(&pane_id);
+    }
+
     pub fn schedule_pane_push(&mut self, pane_id: PaneId) {
         let sender = self.to_write_tx.clone();
         let per_pane = self.per_pane(pane_id);
@@ -504,6 +510,8 @@ impl SessionHandler {
             Pdu::KillPane(KillPane { pane_id }) => {
                 let sender = self.to_write_tx.clone();
                 let per_pane = self.per_pane(pane_id);
+                // Clean up cached per-pane state to avoid unbounded growth.
+                self.per_pane.remove(&pane_id);
                 spawn_into_main_thread(async move {
                     catch(
                         move || {

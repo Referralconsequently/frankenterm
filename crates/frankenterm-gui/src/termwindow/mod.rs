@@ -2016,7 +2016,7 @@ impl TermWindow {
         };
 
         let new_tab_bar = TabBarState::new(
-            self.dimensions.pixel_width / self.render_metrics.cell_size.width as usize,
+            self.dimensions.pixel_width / (self.render_metrics.cell_size.width as usize).max(1),
             if hovering_in_tab_bar {
                 Some(self.last_mouse_coords.0)
             } else {
@@ -2141,7 +2141,7 @@ impl TermWindow {
             let cursor = pos.pane.get_cursor_position();
             let top = pos.pane.get_dimensions().physical_top;
             let tab_bar_height = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
-                self.tab_bar_pixel_height().unwrap()
+                self.tab_bar_pixel_height().unwrap_or(0.0)
             } else {
                 0.0
             };

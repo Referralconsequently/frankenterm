@@ -58,13 +58,13 @@ impl TerminalState {
             match d {
                 SixelData::Data(d) => {
                     emit_sixel(d, &foreground_color, x, y);
-                    x += 1;
+                    x = x.saturating_add(1);
                 }
 
                 SixelData::Repeat { repeat_count, data } => {
                     for _ in 0..*repeat_count {
                         emit_sixel(data, &foreground_color, x, y);
-                        x += 1;
+                        x = x.saturating_add(1);
                     }
                 }
 

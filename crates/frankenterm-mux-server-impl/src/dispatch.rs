@@ -133,6 +133,7 @@ where
                 }
                 Ok(Item::Notif(MuxNotification::PaneAdded(_pane_id))) => {}
                 Ok(Item::Notif(MuxNotification::PaneRemoved(pane_id))) => {
+                    handler.remove_per_pane(pane_id);
                     Pdu::PaneRemoved(codec::PaneRemoved { pane_id })
                         .encode_async(&mut stream, 0)
                         .await?;
@@ -141,7 +142,9 @@ where
                 Ok(Item::Notif(MuxNotification::Alert { pane_id, alert })) => {
                     {
                         let per_pane = handler.per_pane(pane_id);
-                        let mut per_pane = per_pane.lock().unwrap();
+                        let mut per_pane = per_pane
+                            .lock()
+                            .map_err(|err| anyhow::anyhow!("per-pane lock poisoned: {err}"))?;
                         per_pane.notifications.push(alert);
                     }
                     handler.schedule_pane_push(pane_id);

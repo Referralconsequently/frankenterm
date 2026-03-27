@@ -77,20 +77,22 @@ impl super::TermWindow {
 
         let (padding_left, padding_top) = self.padding_left_top();
 
+        let cell_h = self.render_metrics.cell_size.height.max(1);
+        let cell_w = (self.render_metrics.cell_size.width as f32).max(1.0);
         let y = (event
             .coords
             .y
             .sub(padding_top as isize)
             .sub(first_line_offset)
             .max(0)
-            / self.render_metrics.cell_size.height) as i64;
+            / cell_h) as i64;
 
         let x = (event
             .coords
             .x
             .sub((padding_left + border.left.get() as f32) as isize)
             .max(0) as f32)
-            / self.render_metrics.cell_size.width as f32;
+            / cell_w;
         let x = if !pane.is_mouse_grabbed() {
             // Round the x coordinate so that we're a bit more forgiving of
             // the horizontal position when selecting cells
@@ -899,7 +901,7 @@ impl super::TermWindow {
                 },
                 _ => MouseEventTrigger::Down {
                     streak: 1,
-                    button: MouseButton::WheelDown(-amount as usize),
+                    button: MouseButton::WheelDown(amount.unsigned_abs() as usize),
                 },
             }),
             WMEK::HorzWheel(amount) => Some(match *amount {
@@ -910,7 +912,7 @@ impl super::TermWindow {
                 },
                 _ => MouseEventTrigger::Down {
                     streak: 1,
-                    button: MouseButton::WheelRight(-amount as usize),
+                    button: MouseButton::WheelRight(amount.unsigned_abs() as usize),
                 },
             }),
         };
