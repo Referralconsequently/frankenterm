@@ -559,7 +559,11 @@ impl Face {
 
         // Can't compute cap height until after we've assigned self.size
         if let Ok(cap_height) = self.compute_cap_height() {
-            let cap_height_to_height_ratio = cap_height / selected_size.height;
+            let cap_height_to_height_ratio = if selected_size.height > 0.0 {
+                cap_height / selected_size.height
+            } else {
+                0.0
+            };
 
             self.size.replace(FaceSize {
                 size: point_size,

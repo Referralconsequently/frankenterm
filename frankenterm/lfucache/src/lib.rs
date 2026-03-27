@@ -169,7 +169,7 @@ impl<K: Hash + Eq + Clone + Debug, V, S: Default + BuildHasher> LfuCache<K, V, S
                 return;
             }
 
-            let delta = ((self.tick - *entry.last_tick.borrow()) / 10) as u16;
+            let delta = (self.tick.wrapping_sub(*entry.last_tick.borrow()) / 10) as u16;
             if delta <= 1 {
                 // No point removing/reinserting in the rbtree if there is no change
                 return;
@@ -246,7 +246,7 @@ impl<K: Hash + Eq + Clone + Debug, V, S: Default + BuildHasher> LfuCache<K, V, S
                 let entry = cursor.into_ref()?;
                 metrics::histogram!(self.hit).record(1.);
 
-                self.tick += 1;
+                self.tick = self.tick.wrapping_add(1);
 
                 *entry.last_tick.borrow_mut() = self.tick;
 
@@ -276,7 +276,7 @@ impl<K: Hash + Eq + Clone + Debug, V, S: Default + BuildHasher> LfuCache<K, V, S
     pub fn put(&mut self, k: K, v: V) {
         let bucket = self.bucket_for_key(&k);
 
-        self.tick += 1;
+        self.tick = self.tick.wrapping_add(1);
 
         // Remove any prior value
         {

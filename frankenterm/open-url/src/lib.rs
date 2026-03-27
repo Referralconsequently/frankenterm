@@ -72,7 +72,7 @@ fn shell_execute(url: String, with: Option<String>) {
             None => (url.as_ptr(), std::ptr::null()),
         };
 
-        unsafe {
+        let result = unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),
                 operation.as_ptr(),
@@ -80,7 +80,11 @@ fn shell_execute(url: String, with: Option<String>) {
                 path,
                 std::ptr::null(),
                 winapi::um::winuser::SW_SHOW,
-            );
+            )
+        };
+        // ShellExecuteW returns an HINSTANCE > 32 on success
+        if (result as usize) <= 32 {
+            log::error!("ShellExecuteW failed with code {}", result as usize);
         }
     });
 }
