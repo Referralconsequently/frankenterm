@@ -13,7 +13,7 @@
 //   B13–B15: Task ownership and cancellation (ABC-OWN-001, ABC-CAN-002)
 //   B16–B18c: Error mapping chain (ABC-ERR-001, ABC-ERR-002 spot checks)
 //   B19–B20: Sync primitive boundary behavior (ABC-OWN-002)
-//   B21–B23: Cross-layer integration scenarios
+//   B21–B23c: Cross-layer integration scenarios
 // =============================================================================
 
 use std::error::Error as StdError;
@@ -21,11 +21,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+use codec::{CODEC_VERSION, GetCodecVersionResponse, Pdu, UnitResponse};
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+use frankenterm_core::runtime_compat::unix::{AsyncReadExt, AsyncWriteExt};
 use frankenterm_core::runtime_compat::{
     self, CompatRuntime, Mutex, RuntimeBuilder, RwLock, Semaphore, TryAcquireError,
 };
 use frankenterm_core::vendored_async_contracts::{
     ContractAuditReport, ContractCompliance, ContractEvidence, EvidenceType, standard_contracts,
+};
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+use frankenterm_core::{
+    cx::for_testing,
+    vendored::{DirectMuxClient, DirectMuxClientConfig},
 };
 #[cfg(all(feature = "vendored", unix))]
 use frankenterm_core::{
@@ -69,6 +78,19 @@ fn collect_error_chain_messages(err: &dyn StdError) -> Vec<String> {
         current = source.source();
     }
     chain
+}
+
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+async fn write_mux_response(
+    stream: &mut runtime_compat::unix::UnixStream,
+    serial: u64,
+    response: Pdu,
+) {
+    let mut out = Vec::new();
+    response
+        .encode(&mut out, serial)
+        .expect("encode mux response");
+    stream.write_all(&out).await.expect("write mux response");
 }
 
 // =============================================================================
@@ -687,7 +709,7 @@ fn b20_rwlock_write_then_read() {
 }
 
 // =============================================================================
-// B21–B23: Cross-layer integration scenarios
+// B21–B23c: Cross-layer integration scenarios
 // =============================================================================
 
 /// B21: Integration — Full audit report assembled from behavioral evidence.
@@ -847,6 +869,200 @@ fn b23_channel_pipeline_mpsc_to_broadcast() {
         assert_eq!(r2_items, vec![0, 10, 20]);
 
         emit_behavioral_log("b23", "ABC-CHN-001+CHN-002", "channel_pipeline", "pass");
+    });
+}
+
+/// B23b: Integration — explicit-Cx public request path enforces read timeout.
+///
+/// Uses only the public DirectMuxClient API from an external test crate to
+/// prove the explicit-Cx request path times out after a successful handshake
+/// when the peer stalls on a ListPanes response.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23b_explicit_cx_public_list_panes_timeout_contract() {
+    run_async_test(async {
+        let cx = for_testing();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-read-timeout.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+
+        let server = runtime_compat::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut read_buf = Vec::new();
+
+            loop {
+                let mut temp = vec![0u8; 4096];
+                let read = stream.read(&mut temp).await.expect("read request bytes");
+                if read == 0 {
+                    break;
+                }
+                read_buf.extend_from_slice(&temp[..read]);
+
+                while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                    match decoded.pdu {
+                        Pdu::GetCodecVersion(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                    codec_vers: CODEC_VERSION,
+                                    version_string: "behavioral-explicit-cx-read-timeout"
+                                        .to_string(),
+                                    executable_path: std::path::PathBuf::from("/bin/wezterm"),
+                                    config_file_path: None,
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SetClientId(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::UnitResponse(UnitResponse {}),
+                            )
+                            .await;
+                        }
+                        Pdu::ListPanes(_) => {
+                            runtime_compat::sleep(Duration::from_millis(150)).await;
+                            return;
+                        }
+                        other => panic!("unexpected handshake/request PDU: {}", other.pdu_name()),
+                    }
+                }
+            }
+        });
+
+        let mut config = DirectMuxClientConfig::default();
+        config.socket_path = Some(socket_path);
+        config.read_timeout = Duration::from_millis(25);
+
+        let mut client = DirectMuxClient::connect_with_cx(&cx, config)
+            .await
+            .expect("connect_with_cx");
+        let err = client
+            .list_panes_with_cx(&cx)
+            .await
+            .expect_err("list_panes_with_cx should time out when the peer stalls");
+        assert!(
+            matches!(err, DirectMuxError::ReadTimeout),
+            "expected ReadTimeout, got: {err}"
+        );
+
+        drop(client);
+        runtime_compat::timeout(Duration::from_millis(500), server)
+            .await
+            .expect("server task should finish promptly")
+            .expect("server task should join cleanly");
+
+        emit_behavioral_log(
+            "b23b",
+            "ABC-TO-001",
+            "explicit_cx_public_list_panes_timeout",
+            "pass",
+        );
+    });
+}
+
+/// B23c: Integration — explicit-Cx public request path enforces write timeout.
+///
+/// Uses only the public DirectMuxClient API from an external test crate to
+/// prove the explicit-Cx request path surfaces a write timeout when the peer
+/// stops reading after handshake and the client attempts a large SendPaste.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23c_explicit_cx_public_send_paste_write_timeout_contract() {
+    run_async_test(async {
+        let cx = for_testing();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-write-timeout.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+
+        let server = runtime_compat::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut read_buf = Vec::new();
+
+            loop {
+                let mut temp = vec![0u8; 4096];
+                let read = stream.read(&mut temp).await.expect("read request bytes");
+                if read == 0 {
+                    break;
+                }
+                read_buf.extend_from_slice(&temp[..read]);
+
+                while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                    match decoded.pdu {
+                        Pdu::GetCodecVersion(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                    codec_vers: CODEC_VERSION,
+                                    version_string: "behavioral-explicit-cx-write-timeout"
+                                        .to_string(),
+                                    executable_path: std::path::PathBuf::from("/bin/wezterm"),
+                                    config_file_path: None,
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SetClientId(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::UnitResponse(UnitResponse {}),
+                            )
+                            .await;
+
+                            // Keep the socket open but stop reading so the
+                            // client-side write path back-pressures.
+                            runtime_compat::sleep(Duration::from_millis(500)).await;
+                            return;
+                        }
+                        other => panic!("unexpected handshake PDU: {}", other.pdu_name()),
+                    }
+                }
+            }
+        });
+
+        let mut config = DirectMuxClientConfig::default();
+        config.socket_path = Some(socket_path);
+        config.read_timeout = Duration::from_millis(200);
+        config.write_timeout = Duration::from_millis(5);
+
+        let mut client = DirectMuxClient::connect_with_cx(&cx, config)
+            .await
+            .expect("connect_with_cx");
+
+        let payload = "x".repeat(32 * 1024 * 1024);
+        let err = client
+            .send_paste_with_cx(&cx, 0, payload)
+            .await
+            .expect_err("send_paste_with_cx should time out when the peer stops reading");
+        assert!(
+            matches!(err, DirectMuxError::WriteTimeout),
+            "expected WriteTimeout, got: {err}"
+        );
+
+        drop(client);
+        runtime_compat::timeout(Duration::from_millis(750), server)
+            .await
+            .expect("server task should finish promptly")
+            .expect("server task should join cleanly");
+
+        emit_behavioral_log(
+            "b23c",
+            "ABC-TO-001",
+            "explicit_cx_public_send_paste_write_timeout",
+            "pass",
+        );
     });
 }
 
