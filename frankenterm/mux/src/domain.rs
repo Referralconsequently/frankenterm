@@ -5,21 +5,21 @@
 //! container or actually remote, running on the other end
 //! of an ssh session somewhere.
 
-use std::convert::TryInto;
+use crate::Mux;
 use crate::localpane::LocalPane;
-use crate::pane::{alloc_pane_id, Pane, PaneId};
+use crate::pane::{Pane, PaneId, alloc_pane_id};
 use crate::tab::{SplitRequest, Tab, TabId};
 use crate::window::WindowId;
-use crate::Mux;
-use anyhow::{bail, Context, Error};
+use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
 use config::keyassignment::{SpawnCommand, SpawnTabDomain};
-use config::{configuration, ExecDomain, SerialDomain, ValueOrFunc, WslDomain};
-use downcast_rs::{impl_downcast, Downcast};
+use config::{ExecDomain, SerialDomain, ValueOrFunc, WslDomain, configuration};
+use downcast_rs::{Downcast, impl_downcast};
 use frankenterm_term::TerminalSize;
 use parking_lot::Mutex;
-use portable_pty::{native_pty_system, CommandBuilder, ExitStatus, MasterPty, PtySize, PtySystem};
+use portable_pty::{CommandBuilder, ExitStatus, MasterPty, PtySize, PtySystem, native_pty_system};
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -248,13 +248,95 @@ impl LocalDomain {
         let port = serial_domain.port.as_ref().unwrap_or(&serial_domain.name);
         let mut serial = portable_pty::serial::SerialTty::new(&port);
         if let Some(baud) = serial_domain.baud {
-            let baud_u32: u32 = baud.try_into().map_err(|_| {
-                anyhow::anyhow!("baud rate {} exceeds u32::MAX", baud)
-            })?;
+            let baud_u32: u32 = baud
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("baud rate {} exceeds u32::MAX", baud))?;
             serial.set_baud_rate(baud_u32);
         }
         let pty_system = Box::new(serial);
         Ok(Self::with_pty_system(&serial_domain.name, pty_system))
+    }
+
+    fn wslenv_entry_name(entry: &str) -> &str {
+        entry.split_once('/').map(|(name, _)| name).unwrap_or(entry)
+    }
+
+    fn augment_wslenv_for_wsl_command(cmd: &mut CommandBuilder) {
+        let mut wslenv_entries: Vec<String> = cmd
+            .get_env("WSLENV")
+            .map(|value| value.to_string_lossy().to_string())
+            .map(|value| {
+                value
+                    .split(':')
+                    .filter(|entry| !entry.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for (key, _) in cmd.iter_extra_env_as_str() {
+            if key == "WSLENV" {
+                continue;
+            }
+            if wslenv_entries
+                .iter()
+                .any(|entry| Self::wslenv_entry_name(entry) == key)
+            {
+                continue;
+            }
+            wslenv_entries.push(key.to_string());
+        }
+
+        if !wslenv_entries.is_empty() {
+            cmd.env("WSLENV", wslenv_entries.join(":"));
+        }
+    }
+
+    fn rewrite_command_for_wsl(cmd: &mut CommandBuilder, wsl: &WslDomain) -> anyhow::Result<()> {
+        let mut args: Vec<OsString> = cmd.get_argv().clone();
+
+        if args.is_empty() {
+            if let Some(def_prog) = &wsl.default_prog {
+                for arg in def_prog {
+                    args.push(arg.into());
+                }
+            }
+        }
+
+        let mut argv: Vec<OsString> = vec![
+            "wsl.exe".into(),
+            "--distribution".into(),
+            wsl.distribution
+                .as_deref()
+                .unwrap_or(wsl.name.as_str())
+                .into(),
+        ];
+
+        if let Some(cwd) = cmd.get_cwd() {
+            argv.push("--cd".into());
+            argv.push(cwd.into());
+        }
+
+        if let Some(user) = &wsl.username {
+            argv.push("--user".into());
+            argv.push(user.into());
+        }
+
+        if !args.is_empty() {
+            argv.push("--exec".into());
+            for arg in args {
+                argv.push(arg);
+            }
+        }
+
+        // WSL only imports Windows-side environment variables that are
+        // listed in WSLENV, so copy explicit command env keys into the
+        // existing WSLENV contract before we swap argv to `wsl.exe --exec`.
+        Self::augment_wslenv_for_wsl_command(cmd);
+
+        cmd.clear_cwd();
+        *cmd.get_argv_mut() = argv;
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -273,47 +355,7 @@ impl LocalDomain {
 
     async fn fixup_command(&self, cmd: &mut CommandBuilder) -> anyhow::Result<()> {
         if let Some(wsl) = self.resolve_wsl_domain() {
-            let mut args: Vec<OsString> = cmd.get_argv().clone();
-
-            if args.is_empty() {
-                if let Some(def_prog) = &wsl.default_prog {
-                    for arg in def_prog {
-                        args.push(arg.into());
-                    }
-                }
-            }
-
-            let mut argv: Vec<OsString> = vec![
-                "wsl.exe".into(),
-                "--distribution".into(),
-                wsl.distribution
-                    .as_deref()
-                    .unwrap_or(wsl.name.as_str())
-                    .into(),
-            ];
-
-            if let Some(cwd) = cmd.get_cwd() {
-                argv.push("--cd".into());
-                argv.push(cwd.into());
-            }
-
-            if let Some(user) = &wsl.username {
-                argv.push("--user".into());
-                argv.push(user.into());
-            }
-
-            if !args.is_empty() {
-                argv.push("--exec".into());
-                for arg in args {
-                    argv.push(arg);
-                }
-            }
-
-            // TODO: process env list and update WLSENV so that they
-            // get passed through
-
-            cmd.clear_cwd();
-            *cmd.get_argv_mut() = argv;
+            Self::rewrite_command_for_wsl(cmd, &wsl)?;
         } else if let Some(ed) = self.resolve_exec_domain() {
             let mut args = vec![];
             let mut set_environment_variables = HashMap::new();
@@ -750,6 +792,19 @@ impl Domain for LocalDomain {
 mod tests {
     use super::*;
 
+    fn wslenv_entries(cmd: &CommandBuilder) -> Vec<String> {
+        cmd.get_env("WSLENV")
+            .map(|value| value.to_string_lossy().to_string())
+            .map(|value| {
+                value
+                    .split(':')
+                    .filter(|entry| !entry.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
     fn domain_state_equality() {
         assert_eq!(DomainState::Detached, DomainState::Detached);
@@ -839,5 +894,92 @@ mod tests {
         };
         let mv = SplitSource::MovePane(0);
         assert_ne!(spawn, mv);
+    }
+
+    #[test]
+    fn rewrite_command_for_wsl_adds_explicit_env_keys_to_wslenv() -> anyhow::Result<()> {
+        let wsl = WslDomain {
+            name: "WSL:Ubuntu".to_string(),
+            distribution: Some("Ubuntu".to_string()),
+            username: Some("alice".to_string()),
+            default_cwd: None,
+            default_prog: None,
+        };
+
+        let mut cmd = CommandBuilder::new("bash");
+        cmd.cwd("/tmp/project");
+        cmd.env("WSLENV", "TERM:COLORTERM");
+        cmd.env("WEZTERM_PANE", "7");
+        cmd.env("CUSTOM_KEY", "custom");
+
+        LocalDomain::rewrite_command_for_wsl(&mut cmd, &wsl)?;
+
+        let argv = cmd
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            vec![
+                "wsl.exe",
+                "--distribution",
+                "Ubuntu",
+                "--cd",
+                "/tmp/project",
+                "--user",
+                "alice",
+                "--exec",
+                "bash",
+            ]
+        );
+        assert!(cmd.get_cwd().is_none());
+
+        let mut entries = wslenv_entries(&cmd);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec!["COLORTERM", "CUSTOM_KEY", "TERM", "WEZTERM_PANE"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rewrite_command_for_wsl_preserves_existing_flagged_wslenv_entries() -> anyhow::Result<()> {
+        let wsl = WslDomain {
+            name: "WSL:Ubuntu".to_string(),
+            distribution: Some("Ubuntu".to_string()),
+            username: None,
+            default_cwd: None,
+            default_prog: None,
+        };
+
+        let mut cmd = CommandBuilder::new("env");
+        cmd.env("WSLENV", "SSH_AUTH_SOCK/p:TERM");
+        cmd.env("SSH_AUTH_SOCK", "/tmp/agent.sock");
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("WEZTERM_PANE", "11");
+
+        LocalDomain::rewrite_command_for_wsl(&mut cmd, &wsl)?;
+
+        let entries = wslenv_entries(&cmd);
+        assert!(entries.iter().any(|entry| entry == "SSH_AUTH_SOCK/p"));
+        assert!(entries.iter().any(|entry| entry == "TERM"));
+        assert!(entries.iter().any(|entry| entry == "WEZTERM_PANE"));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| LocalDomain::wslenv_entry_name(entry) == "SSH_AUTH_SOCK")
+                .count(),
+            1
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| LocalDomain::wslenv_entry_name(entry) == "TERM")
+                .count(),
+            1
+        );
+        Ok(())
     }
 }
