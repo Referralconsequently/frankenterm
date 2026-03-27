@@ -2405,6 +2405,18 @@ impl Screen {
                 self.line_mut(y).update_last_change_seqno(seqno);
             }
         }
+
+        // Reclaim excess VecDeque capacity after bulk removal.
+        // Only shrink when capacity exceeds 2x the actual length to avoid
+        // thrashing on every scroll-off. This prevents the ring buffer from
+        // retaining peak capacity indefinitely in long-lived sessions.
+        if lines_removed > 0 {
+            let cap = self.lines.capacity();
+            let len = self.lines.len();
+            if cap > 1024 && cap > len * 2 {
+                self.lines.shrink_to_fit();
+            }
+        }
     }
 
     pub fn erase_scrollback(&mut self) {
