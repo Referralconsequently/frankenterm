@@ -10,7 +10,13 @@ SCENARIO_ID="ft_8vla_mmap_scrollback"
 CORRELATION_ID="ft-8vla-${RUN_ID}"
 LOG_FILE="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}.jsonl"
 STDOUT_FILE="${LOG_DIR}/${SCENARIO_ID}_${RUN_ID}.stdout.log"
-TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/target-rch-ft-8vla}-${RUN_ID}"
+DEFAULT_CARGO_TARGET_DIR="target/rch-e2e-ft-8vla-${RUN_ID}"
+INHERITED_CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-}"
+if [[ -n "${INHERITED_CARGO_TARGET_DIR}" && "${INHERITED_CARGO_TARGET_DIR}" != /* ]]; then
+  TARGET_DIR="${INHERITED_CARGO_TARGET_DIR}"
+else
+  TARGET_DIR="${DEFAULT_CARGO_TARGET_DIR}"
+fi
 LAST_STEP_LOG=""
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
 RCH_SOCKET_PATH_REGEX='unix_listener: path .*too long for Unix domain socket|too long for Unix domain socket'
