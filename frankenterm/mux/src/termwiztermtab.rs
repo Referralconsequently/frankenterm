@@ -12,7 +12,7 @@ use crate::renderable::*;
 use crate::tab::Tab;
 use crate::window::WindowId;
 use crate::Mux;
-use anyhow::bail;
+use anyhow::{bail, Context};
 use async_trait::async_trait;
 use config::keyassignment::ScrollbackEraseMode;
 use crossbeam::channel::{unbounded as channel, Receiver, Sender};
@@ -32,7 +32,6 @@ use termwiz::input::{InputEvent, KeyEvent, Modifiers, MouseEvent as TermWizMouse
 use termwiz::render::terminfo::TerminfoRenderer;
 use termwiz::surface::{Change, Line, SequenceNo};
 use termwiz::terminal::{ScreenSize, TerminalWaker};
-use termwiz::Context;
 use std::sync::OnceLock;
 use url::Url;
 
@@ -363,12 +362,16 @@ impl TermWizTerminal {
                     if err.is_timeout() {
                         Ok(None)
                     } else {
-                        Err(err).context("receive from channel")
+                        Err(termwiz::error::Error::from(format!(
+                            "receive from channel: {err}"
+                        )))
                     }
                 }
             }
         } else {
-            let input = self.input_rx.recv().context("receive from channel")?;
+            let input = self.input_rx.recv().map_err(|err| {
+                termwiz::error::Error::from(format!("receive from channel: {err}"))
+            })?;
             Ok(Some(input))
         }
     }
@@ -464,7 +467,8 @@ pub fn allocate(
     size: TerminalSize,
     config: Arc<dyn TerminalConfiguration + Send + Sync>,
 ) -> (TermWizTerminal, Arc<dyn Pane>) {
-    let render_pipe = Pipe::new().expect("Pipe creation not to fail");
+    let render_pipe = Pipe::new()
+        .expect("failed to create render pipe for TermWiz terminal — check file descriptor limits");
 
     let (input_tx, input_rx) = channel();
 
@@ -492,7 +496,8 @@ pub fn allocate(
     let pane: Arc<dyn Pane> = Arc::new(pane);
 
     let mux = Mux::get();
-    mux.add_pane(&pane).expect("to be able to add pane to mux");
+    mux.add_pane(&pane)
+        .expect("failed to add TermWiz pane to mux — pane ID collision?");
 
     (tw_term, pane)
 }
@@ -512,7 +517,8 @@ pub async fn run<
     f: F,
     term_config: Option<Arc<dyn TerminalConfiguration + Send + Sync>>,
 ) -> anyhow::Result<T> {
-    let render_pipe = Pipe::new().expect("Pipe creation not to fail");
+    let render_pipe = Pipe::new()
+        .context("failed to create render pipe for TermWiz terminal — check file descriptor limits")?;
     let render_rx = render_pipe.read;
     let (input_tx, input_rx) = channel();
     let should_close_window = window_id.is_none();

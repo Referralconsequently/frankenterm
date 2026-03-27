@@ -5,6 +5,7 @@
 //! container or actually remote, running on the other end
 //! of an ssh session somewhere.
 
+use std::convert::TryInto;
 use crate::localpane::LocalPane;
 use crate::pane::{alloc_pane_id, Pane, PaneId};
 use crate::tab::{SplitRequest, Tab, TabId};
@@ -247,7 +248,10 @@ impl LocalDomain {
         let port = serial_domain.port.as_ref().unwrap_or(&serial_domain.name);
         let mut serial = portable_pty::serial::SerialTty::new(&port);
         if let Some(baud) = serial_domain.baud {
-            serial.set_baud_rate(baud as u32);
+            let baud_u32: u32 = baud.try_into().map_err(|_| {
+                anyhow::anyhow!("baud rate {} exceeds u32::MAX", baud)
+            })?;
+            serial.set_baud_rate(baud_u32);
         }
         let pty_system = Box::new(serial);
         Ok(Self::with_pty_system(&serial_domain.name, pty_system))
