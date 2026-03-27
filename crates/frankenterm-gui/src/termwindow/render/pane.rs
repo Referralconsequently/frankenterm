@@ -286,7 +286,11 @@ impl crate::TermWindow {
             let config = &self.config;
             let padding = self.effective_right_padding(&config) as f32;
 
-            let thumb_x = self.dimensions.pixel_width - padding as usize - border.right.get();
+            let thumb_x = self
+                .dimensions
+                .pixel_width
+                .saturating_sub(padding as usize)
+                .saturating_sub(border.right.get());
 
             // Register the scroll bar location
             self.ui_items.push(UIItem {

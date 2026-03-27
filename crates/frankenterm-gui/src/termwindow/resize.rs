@@ -259,8 +259,10 @@ impl super::TermWindow {
                 )
                 .saturating_sub(tab_bar_height as usize);
 
-            let rows = avail_height / self.render_metrics.cell_size.height as usize;
-            let cols = avail_width / self.render_metrics.cell_size.width as usize;
+            let cell_h = (self.render_metrics.cell_size.height as usize).max(1);
+            let cell_w = (self.render_metrics.cell_size.width as usize).max(1);
+            let rows = avail_height / cell_h;
+            let cols = avail_width / cell_w;
 
             let size = TerminalSize {
                 rows,

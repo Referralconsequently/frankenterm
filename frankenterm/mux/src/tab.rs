@@ -236,8 +236,16 @@ impl SplitDirectionAndSize {
     }
 
     pub fn size(&self) -> TerminalSize {
-        let cell_width = self.first.pixel_width / self.first.cols;
-        let cell_height = self.first.pixel_height / self.first.rows;
+        let cell_width = if self.first.cols > 0 {
+            self.first.pixel_width / self.first.cols
+        } else {
+            0
+        };
+        let cell_height = if self.first.rows > 0 {
+            self.first.pixel_height / self.first.rows
+        } else {
+            0
+        };
 
         let rows = self.height();
         let cols = self.width();
@@ -1177,8 +1185,8 @@ fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
     TerminalSize {
         rows: 1,
         cols: 1,
-        pixel_width: size.pixel_width / size.cols,
-        pixel_height: size.pixel_height / size.rows,
+        pixel_width: if size.cols > 0 { size.pixel_width / size.cols } else { 0 },
+        pixel_height: if size.rows > 0 { size.pixel_height / size.rows } else { 0 },
         dpi: size.dpi,
     }
 }

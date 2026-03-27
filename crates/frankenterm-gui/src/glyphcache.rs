@@ -1223,8 +1223,8 @@ impl GlyphCache {
         };
 
         let draw_curly = |buffer: &mut Image| {
-            let max_y = metrics.cell_size.height as usize - 1;
-            let x_factor = (2. * std::f32::consts::PI) / metrics.cell_size.width as f32;
+            let max_y = (metrics.cell_size.height as usize).saturating_sub(1);
+            let x_factor = (2. * std::f32::consts::PI) / (metrics.cell_size.width as f32).max(1.0);
 
             // Have the wave go from the descender to the bottom of the cell
             let wave_height =
