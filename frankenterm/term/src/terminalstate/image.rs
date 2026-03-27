@@ -77,7 +77,10 @@ impl TerminalState {
         let cell_padding_top = params
             .cell_padding_top
             .min(cell_pixel_height.saturating_sub(1) as u16);
-        //NOTE: review conflicting origin vs drawing going over image
+        if params.image_width == 0 || params.image_height == 0 {
+            anyhow::bail!("image has zero dimensions");
+        }
+
         let image_max_width = params.image_width.saturating_sub(params.source_origin_x);
         let image_max_height = params.image_height.saturating_sub(params.source_origin_y);
         let draw_width = params
@@ -88,6 +91,10 @@ impl TerminalState {
             .source_height
             .unwrap_or(image_max_height)
             .min(image_max_height);
+
+        if draw_width == 0 || draw_height == 0 {
+            anyhow::bail!("image draw region has zero dimensions");
+        }
 
         let (fullcells_width, remainder_width_cell, x_delta_divisor) = params
             .columns

@@ -57,6 +57,10 @@ impl TerminalState {
         let height = image.height.to_pixels(cell_pixel_height, physical_rows);
 
         // Compute any Automatic dimensions
+        if info.width == 0 || info.height == 0 {
+            error!("image has zero dimensions: {}x{}", info.width, info.height);
+            return;
+        }
         let aspect = info.width as f32 / info.height as f32;
 
         let (width, height) = match (width, height) {

@@ -621,7 +621,7 @@ impl Config {
     fn should_expand_tokens(&self, key: &str) -> Option<&[&str]> {
         match key {
             "certificatefile" | "controlpath" | "identityagent" | "identityfile"
-            | "localforward" | "remotecommand" | "remoteforward" | "userknownkostsfile" => {
+            | "localforward" | "remotecommand" | "remoteforward" | "userknownhostsfile" => {
                 Some(&["%C", "%d", "%h", "%i", "%L", "%l", "%n", "%p", "%r", "%u"])
             }
             "hostname" => Some(&["%h"]),

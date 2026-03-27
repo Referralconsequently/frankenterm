@@ -98,7 +98,8 @@ impl CachedLeaderInfo {
     }
 
     fn update(&mut self) {
-        self.pid = unsafe { libc::tcgetpgrp(self.fd) } as u32;
+        let raw_pid = unsafe { libc::tcgetpgrp(self.fd) };
+        self.pid = if raw_pid > 0 { raw_pid as u32 } else { 0 };
         if self.pid > 0 {
             self.path = LocalProcessInfo::executable_path(self.pid);
             self.current_working_dir = LocalProcessInfo::current_working_dir(self.pid);

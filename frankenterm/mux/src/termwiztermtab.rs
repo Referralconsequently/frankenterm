@@ -476,8 +476,8 @@ pub fn allocate(
             screen_size: ScreenSize {
                 cols: size.cols as usize,
                 rows: size.rows as usize,
-                xpixel: (size.pixel_width / size.cols) as usize,
-                ypixel: (size.pixel_height / size.rows) as usize,
+                xpixel: if size.cols > 0 { (size.pixel_width / size.cols) as usize } else { 0 },
+                ypixel: if size.rows > 0 { (size.pixel_height / size.rows) as usize } else { 0 },
             },
         },
         input_rx,
@@ -525,8 +525,8 @@ pub async fn run<
             screen_size: ScreenSize {
                 cols: size.cols as usize,
                 rows: size.rows as usize,
-                xpixel: (size.pixel_width / size.cols) as usize,
-                ypixel: (size.pixel_height / size.rows) as usize,
+                xpixel: if size.cols > 0 { (size.pixel_width / size.cols) as usize } else { 0 },
+                ypixel: if size.rows > 0 { (size.pixel_height / size.rows) as usize } else { 0 },
             },
         },
         input_rx,
