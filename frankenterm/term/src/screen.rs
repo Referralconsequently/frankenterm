@@ -2113,8 +2113,8 @@ impl Screen {
     /// the scrollback.
     #[inline]
     pub fn scrollback_or_visible_row(&self, row: ScrollbackOrVisibleRowIndex) -> PhysRowIndex {
-        ((self.lines.len() - self.physical_rows) as ScrollbackOrVisibleRowIndex + row).max(0)
-            as usize
+        (self.lines.len().saturating_sub(self.physical_rows) as ScrollbackOrVisibleRowIndex + row)
+            .max(0) as usize
     }
 
     #[inline]
@@ -2410,7 +2410,7 @@ impl Screen {
     pub fn erase_scrollback(&mut self) {
         self.invalidate_last_good_frame(LastGoodFrameTransition::ScrollbackErase, None);
         let len = self.lines.len();
-        let to_clear = len - self.physical_rows;
+        let to_clear = len.saturating_sub(self.physical_rows);
         for _ in 0..to_clear {
             self.lines.pop_front();
             if self.allow_scrollback {

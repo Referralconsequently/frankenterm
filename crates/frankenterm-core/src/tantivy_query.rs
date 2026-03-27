@@ -516,16 +516,39 @@ pub fn extract_snippets(
 
             let raw_fragment = &text[start..end];
 
-            // Insert highlight markers
-            let relative_pos = pos - start;
+            // Insert highlight markers — clamp to char boundaries within the fragment
+            let relative_pos = (pos - start).min(raw_fragment.len());
+            let highlight_end = (relative_pos + match_len).min(raw_fragment.len());
+
+            // Adjust to valid UTF-8 char boundaries
+            let relative_pos = if raw_fragment.is_char_boundary(relative_pos) {
+                relative_pos
+            } else {
+                raw_fragment
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .take_while(|&i| i <= relative_pos)
+                    .last()
+                    .unwrap_or(0)
+            };
+            let highlight_end = if raw_fragment.is_char_boundary(highlight_end) {
+                highlight_end
+            } else {
+                raw_fragment
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .find(|&i| i >= highlight_end)
+                    .unwrap_or(raw_fragment.len())
+            };
+
             let mut highlighted = String::with_capacity(
                 raw_fragment.len() + config.highlight_pre.len() + config.highlight_post.len(),
             );
             highlighted.push_str(&raw_fragment[..relative_pos]);
             highlighted.push_str(&config.highlight_pre);
-            highlighted.push_str(&raw_fragment[relative_pos..relative_pos + match_len]);
+            highlighted.push_str(&raw_fragment[relative_pos..highlight_end]);
             highlighted.push_str(&config.highlight_post);
-            highlighted.push_str(&raw_fragment[relative_pos + match_len..]);
+            highlighted.push_str(&raw_fragment[highlight_end..]);
 
             fragments.push(Snippet {
                 fragment: highlighted,

@@ -405,8 +405,14 @@ impl crate::TermWindow {
         let fa_lock = "\u{f023}";
         let line = Line::from_text(fa_lock, attrs, 0, None);
         let cluster = line.cluster(None);
-        let shape_info = self.cached_cluster_shape(style, &cluster[0], gl_state, font, metrics)?;
-        Ok(Rc::clone(&shape_info[0].glyph))
+        let first_cluster = cluster
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("lock indicator produced empty cluster"))?;
+        let shape_info = self.cached_cluster_shape(style, first_cluster, gl_state, font, metrics)?;
+        let first_glyph = shape_info
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("lock indicator glyph shaping produced no glyphs"))?;
+        Ok(Rc::clone(&first_glyph.glyph))
     }
 
     pub fn populate_block_quad(
