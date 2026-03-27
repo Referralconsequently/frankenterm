@@ -16,8 +16,8 @@ impl PtySystem for ConPtySystem {
 
         let con = PsuedoCon::new(
             COORD {
-                X: size.cols as i16,
-                Y: size.rows as i16,
+                X: size.cols.min(i16::MAX as u16) as i16,
+                Y: size.rows.min(i16::MAX as u16) as i16,
             },
             stdin.read,
             stdout.write,
@@ -59,8 +59,8 @@ impl Inner {
         pixel_height: u16,
     ) -> Result<(), Error> {
         self.con.resize(COORD {
-            X: num_cols as i16,
-            Y: num_rows as i16,
+            X: num_cols.min(i16::MAX as u16) as i16,
+            Y: num_rows.min(i16::MAX as u16) as i16,
         })?;
         self.size = PtySize {
             rows: num_rows,

@@ -374,7 +374,9 @@ async fn client_thread_async(
         map: HashMap::new(),
     };
 
-    let mut stream = reconnectable.take_stream().unwrap();
+    let mut stream = reconnectable
+        .take_stream()
+        .ok_or_else(|| anyhow::anyhow!("mux client stream not available — connection not established"))?;
 
     loop {
         let rx_msg = rx.recv();

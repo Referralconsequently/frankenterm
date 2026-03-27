@@ -204,6 +204,10 @@ impl SpawnQueue {
                 std::ptr::null_mut(),
             )
         };
+        anyhow::ensure!(
+            !observer.is_null(),
+            "CFRunLoopObserverCreate returned null — failed to create run loop observer"
+        );
         unsafe {
             CFRunLoopAddObserver(CFRunLoopGetMain(), observer, kCFRunLoopCommonModes);
         }
