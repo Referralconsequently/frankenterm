@@ -99,29 +99,17 @@ if [[ "${1:-}" == "exec" ]]; then
   fi
 
   case "${cmdline}" in
-    *scale_50_panes_idle_hot_only*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_50_panes_idle","pane_count":50,"rss_mb":12.5,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.11,"status":"pass","metric_source":"mock","notes":"ok"}'
-      ;;
-    *scale_100_panes_idle_hot_only*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_100_panes_idle","pane_count":100,"rss_mb":25.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.22,"status":"pass","metric_source":"mock","notes":"ok"}'
-      ;;
-    *scale_200_panes_idle_hot_only*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_200_panes_idle","pane_count":200,"rss_mb":40.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.44,"status":"pass","metric_source":"mock","notes":"ok"}'
-      ;;
-    *scale_50_panes_with_warm_tier*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_50_panes_active","pane_count":50,"rss_mb":96.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Yellow","duration_s":0.55,"status":"pass","metric_source":"mock","notes":"ok"}'
-      ;;
-    *scale_200_panes_with_warm_tier*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_200_panes_active","pane_count":200,"rss_mb":380.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Red","duration_s":1.25,"status":"pass","metric_source":"mock","notes":"ok"}'
-      ;;
-    *single_pane_100k_lines_throughput*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_single_pane_10mb","pane_count":1,"rss_mb":18.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.35,"status":"pass","metric_source":"mock","notes":"ok"}'
-      ;;
-    *rapid_create_destroy_100_panes*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_rapid_pane_create_destroy","pane_count":100,"rss_mb":0.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.41,"status":"pass","metric_source":"mock","notes":"ok"}'
-      ;;
-    *coordinator_emergency_at_200_panes*)
-      printf '%s\n' 'FT_SWARM_METRIC {"test":"stress_200_panes_backpressure","pane_count":200,"rss_mb":180.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Black","duration_s":0.61,"status":"pass","metric_source":"mock","notes":"ok"}'
+    *"cargo test -p frankenterm-core --test e2e_swarm_stress_core -- --nocapture"*)
+      cat <<'METRICS'
+FT_SWARM_METRIC {"test":"stress_50_panes_idle","pane_count":50,"rss_mb":12.5,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.11,"status":"pass","metric_source":"mock","notes":"ok"}
+FT_SWARM_METRIC {"test":"stress_100_panes_idle","pane_count":100,"rss_mb":25.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.22,"status":"pass","metric_source":"mock","notes":"ok"}
+FT_SWARM_METRIC {"test":"stress_200_panes_idle","pane_count":200,"rss_mb":40.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.44,"status":"pass","metric_source":"mock","notes":"ok"}
+FT_SWARM_METRIC {"test":"stress_50_panes_active","pane_count":50,"rss_mb":96.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Yellow","duration_s":0.55,"status":"pass","metric_source":"mock","notes":"ok"}
+FT_SWARM_METRIC {"test":"stress_200_panes_active","pane_count":200,"rss_mb":380.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Red","duration_s":1.25,"status":"pass","metric_source":"mock","notes":"ok"}
+FT_SWARM_METRIC {"test":"stress_single_pane_10mb","pane_count":1,"rss_mb":18.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.35,"status":"pass","metric_source":"mock","notes":"ok"}
+FT_SWARM_METRIC {"test":"stress_rapid_pane_create_destroy","pane_count":100,"rss_mb":0.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Green","duration_s":0.41,"status":"pass","metric_source":"mock","notes":"ok"}
+FT_SWARM_METRIC {"test":"stress_200_panes_backpressure","pane_count":200,"rss_mb":180.0,"cpu_percent":null,"frame_time_p50_ms":null,"frame_time_p99_ms":null,"events_dropped":0,"backpressure_tier":"Black","duration_s":0.61,"status":"pass","metric_source":"mock","notes":"ok"}
+METRICS
       ;;
     *)
       echo "unexpected exec invocation: ${cmdline}" >&2

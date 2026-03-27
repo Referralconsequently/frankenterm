@@ -115,59 +115,165 @@ append_metric() {
     }' >> "${LOG_FILE}"
 }
 
-run_swarm_case() {
+expected_metric_names() {
+  cat <<'EOF'
+stress_50_panes_idle
+stress_100_panes_idle
+stress_200_panes_idle
+stress_50_panes_active
+stress_200_panes_active
+stress_single_pane_10mb
+stress_rapid_pane_create_destroy
+stress_200_panes_backpressure
+EOF
+}
+
+decision_path_for_metric() {
   local metric_name="$1"
-  local rust_test_name="$2"
-  local decision_path="$3"
-  local stdout_file="${ARTIFACT_DIR}/${metric_name}.stdout.log"
-  local metrics_found=0
+
+  case "${metric_name}" in
+    stress_50_panes_idle)
+      printf '%s\n' "idle_50"
+      ;;
+    stress_100_panes_idle)
+      printf '%s\n' "idle_100"
+      ;;
+    stress_200_panes_idle)
+      printf '%s\n' "idle_200"
+      ;;
+    stress_50_panes_active)
+      printf '%s\n' "active_50"
+      ;;
+    stress_200_panes_active)
+      printf '%s\n' "active_200"
+      ;;
+    stress_single_pane_10mb)
+      printf '%s\n' "single_pane_10mb"
+      ;;
+    stress_rapid_pane_create_destroy)
+      printf '%s\n' "pane_churn"
+      ;;
+    stress_200_panes_backpressure)
+      printf '%s\n' "backpressure_200"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_swarm_suite() {
+  local stdout_file="${ARTIFACT_DIR}/swarm_suite.stdout.log"
+  local metric_names_file="${ARTIFACT_DIR}/swarm_suite.metric_names.txt"
+  local saw_metrics=0
+  local remote_cmd=""
+
+  : > "${metric_names_file}"
+  remote_cmd="mkdir -p '${TARGET_DIR_REL}/debug/deps' '${TARGET_DIR_REL}/debug/.fingerprint' && cargo test -p frankenterm-core --test e2e_swarm_stress_core -- --nocapture"
 
   emit_event \
     "running" \
-    "${decision_path}" \
+    "suite_rch_exec" \
     "none" \
     "none" \
     "$(basename "${stdout_file}")" \
-    "cargo test -p frankenterm-core --test e2e_swarm_stress_core ${rust_test_name} -- --exact --nocapture"
+    "${remote_cmd}"
 
   if ! run_rch_cargo_logged \
     "${stdout_file}" \
     env CARGO_TARGET_DIR="${TARGET_DIR_REL}" \
-    cargo test -p frankenterm-core --test e2e_swarm_stress_core "${rust_test_name}" -- --exact --nocapture; then
+    bash -lc "${remote_cmd}"; then
     emit_event \
       "failed" \
-      "${decision_path}" \
+      "suite_rch_exec" \
       "cargo_test_failed" \
       "cargo_command_failed" \
       "$(basename "${stdout_file}")" \
-      "stress case failed"
+      "swarm suite failed"
     return 1
   fi
 
   while IFS= read -r metric_line; do
     local metric_json="${metric_line#FT_SWARM_METRIC }"
+    local metric_name=""
+    local decision_path=""
+
+    metric_name="$(jq -r '.test // empty' <<< "${metric_json}")"
+    if [[ -z "${metric_name}" ]]; then
+      emit_event \
+        "failed" \
+        "suite_parse" \
+        "invalid_metric_payload" \
+        "swarm_metric_invalid" \
+        "$(basename "${stdout_file}")" \
+        "missing .test field in FT_SWARM_METRIC payload"
+      return 1
+    fi
+
+    if ! decision_path="$(decision_path_for_metric "${metric_name}")"; then
+      emit_event \
+        "failed" \
+        "suite_parse" \
+        "unexpected_metric_name" \
+        "swarm_metric_unexpected" \
+        "$(basename "${stdout_file}")" \
+        "unexpected metric name: ${metric_name}"
+      return 1
+    fi
+
     append_metric "${decision_path}" "$(basename "${stdout_file}")" "${metric_json}"
-    metrics_found=1
+    printf '%s\n' "${metric_name}" >> "${metric_names_file}"
+    saw_metrics=1
+
+    emit_event \
+      "passed" \
+      "${decision_path}" \
+      "stress_case_passed" \
+      "none" \
+      "$(basename "${stdout_file}")" \
+      "metric=${metric_name}"
   done < <(grep '^FT_SWARM_METRIC ' "${stdout_file}" || true)
 
-  if [[ "${metrics_found}" -ne 1 ]]; then
+  if [[ "${saw_metrics}" -ne 1 ]]; then
     emit_event \
       "failed" \
-      "${decision_path}" \
+      "suite_parse" \
       "missing_metric_output" \
       "swarm_metric_missing" \
       "$(basename "${stdout_file}")" \
-      "expected FT_SWARM_METRIC line in cargo test output"
+      "expected FT_SWARM_METRIC lines in cargo test output"
     return 1
   fi
 
-  emit_event \
-    "passed" \
-    "${decision_path}" \
-    "stress_case_passed" \
-    "none" \
-    "$(basename "${stdout_file}")" \
-    "metric=${metric_name}"
+  while IFS= read -r expected_metric; do
+    local decision_path=""
+    local seen_count="0"
+
+    decision_path="$(decision_path_for_metric "${expected_metric}")"
+    seen_count="$(grep -Fxc "${expected_metric}" "${metric_names_file}" || true)"
+
+    if [[ "${seen_count}" -eq 0 ]]; then
+      emit_event \
+        "failed" \
+        "${decision_path}" \
+        "missing_metric_output" \
+        "swarm_metric_missing" \
+        "$(basename "${stdout_file}")" \
+        "expected metric not observed: ${expected_metric}"
+      return 1
+    fi
+
+    if [[ "${seen_count}" -gt 1 ]]; then
+      emit_event \
+        "failed" \
+        "${decision_path}" \
+        "duplicate_metric_output" \
+        "swarm_metric_duplicate" \
+        "$(basename "${stdout_file}")" \
+        "expected one metric, observed ${seen_count}: ${expected_metric}"
+      return 1
+    fi
+  done < <(expected_metric_names)
 }
 
 emit_summary() {
@@ -220,14 +326,7 @@ main() {
     "$(basename "${LOG_FILE}")" \
     "swarm stress suite init"
 
-  run_swarm_case "stress_50_panes_idle" "scale_50_panes_idle_hot_only" "idle_50"
-  run_swarm_case "stress_100_panes_idle" "scale_100_panes_idle_hot_only" "idle_100"
-  run_swarm_case "stress_200_panes_idle" "scale_200_panes_idle_hot_only" "idle_200"
-  run_swarm_case "stress_50_panes_active" "scale_50_panes_with_warm_tier" "active_50"
-  run_swarm_case "stress_200_panes_active" "scale_200_panes_with_warm_tier" "active_200"
-  run_swarm_case "stress_single_pane_10mb" "single_pane_100k_lines_throughput" "single_pane_10mb"
-  run_swarm_case "stress_rapid_pane_create_destroy" "rapid_create_destroy_100_panes" "pane_churn"
-  run_swarm_case "stress_200_panes_backpressure" "coordinator_emergency_at_200_panes" "backpressure_200"
+  run_swarm_suite
 
   emit_summary
 
