@@ -152,7 +152,7 @@ impl ClusteredLine {
                 None
             },
             clusters,
-            len: len.try_into().unwrap(),
+            len: len.min(u32::MAX as usize) as u32,
             last_cell_width,
         }
     }
