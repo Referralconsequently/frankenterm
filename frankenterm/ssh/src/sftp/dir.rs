@@ -60,7 +60,7 @@ impl Dir {
         let (reply, rx) = bounded(1);
         self.tx
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("SFTP dir handle not initialized or already closed"))?
             .send(SessionRequest::Sftp(SftpRequest::Dir(DirRequest::ReadDir(
                 self.dir_id,
                 reply,

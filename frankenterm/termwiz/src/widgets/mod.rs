@@ -618,7 +618,10 @@ impl<'widget> Ui<'widget> {
     fn compute_layout(&mut self, width: usize, height: usize) -> Result<bool> {
         let mut layout = layout::LayoutState::new();
 
-        let root = self.graph.root.unwrap();
+        let root = self
+            .graph
+            .root
+            .ok_or_else(|| anyhow::anyhow!("no root widget; add at least one widget before rendering"))?;
         self.add_widget_to_layout(&mut layout, root)?;
         let mut changed = false;
 

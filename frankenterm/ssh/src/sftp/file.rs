@@ -89,14 +89,20 @@ impl File {
         self.tx.replace(sender);
     }
 
+    fn sender(&self) -> SftpChannelResult<&SessionSender> {
+        self.tx.as_ref().ok_or_else(|| {
+            super::SftpChannelError::SendFailed(anyhow::anyhow!(
+                "SFTP file handle used before initialization or after close"
+            ))
+        })
+    }
+
     /// Set the metadata for this handle.
     ///
     /// See [`ssh2::File::setstat`] for more information.
     pub async fn set_metadata(&self, metadata: Metadata) -> SftpChannelResult<()> {
         let (reply, rx) = bounded(1);
-        self.tx
-            .as_ref()
-            .unwrap()
+        self.sender()?
             .send(SessionRequest::Sftp(SftpRequest::File(
                 FileRequest::SetMetadata(
                     SetMetadataFile {
@@ -116,9 +122,7 @@ impl File {
     /// See [`ssh2::File::stat`] for more information.
     pub async fn metadata(&self) -> SftpChannelResult<Metadata> {
         let (reply, rx) = bounded(1);
-        self.tx
-            .as_ref()
-            .unwrap()
+        self.sender()?
             .send(SessionRequest::Sftp(SftpRequest::File(
                 FileRequest::Metadata(self.file_id, reply),
             )))
@@ -133,9 +137,7 @@ impl File {
     /// See [`ssh2::File::fsync`] for more information.
     pub async fn fsync(&self) -> SftpChannelResult<()> {
         let (reply, rx) = bounded(1);
-        self.tx
-            .as_ref()
-            .unwrap()
+        self.sender()?
             .send(SessionRequest::Sftp(SftpRequest::File(FileRequest::Fsync(
                 self.file_id,
                 reply,
@@ -173,7 +175,15 @@ impl AsyncRead for File {
                 .await
                 .map_err(|x| io::Error::new(io::ErrorKind::Other, x))
         }
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         let poll = poll_io_future(&mut self.state.f_read, cx, || {
@@ -210,7 +220,15 @@ impl AsyncRead for File {
             return Poll::Ready(Ok(()));
         }
 
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         let poll = poll_io_future(&mut self.state.f_read, cx, || {
@@ -243,7 +261,15 @@ impl AsyncWrite for File {
                 .map_err(|x| io::Error::new(io::ErrorKind::Other, x))
         }
 
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         poll_io_future(&mut self.state.f_write, cx, || {
@@ -258,7 +284,15 @@ impl AsyncWrite for File {
                 .map_err(|x| io::Error::new(io::ErrorKind::Other, x))
         }
 
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         poll_io_future(&mut self.state.f_flush, cx, || Box::pin(flush(tx, file_id)))
@@ -271,7 +305,15 @@ impl AsyncWrite for File {
                 .map_err(|x| io::Error::new(io::ErrorKind::Other, x))
         }
 
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         poll_io_future(&mut self.state.f_close, cx, || Box::pin(close(tx, file_id)))
@@ -293,7 +335,15 @@ impl AsyncWrite for File {
                 .map_err(|x| io::Error::new(io::ErrorKind::Other, x))
         }
 
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         poll_io_future(&mut self.state.f_write, cx, || {
@@ -308,7 +358,15 @@ impl AsyncWrite for File {
                 .map_err(|x| io::Error::new(io::ErrorKind::Other, x))
         }
 
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         poll_io_future(&mut self.state.f_flush, cx, || Box::pin(flush(tx, file_id)))
@@ -321,7 +379,15 @@ impl AsyncWrite for File {
                 .map_err(|x| io::Error::new(io::ErrorKind::Other, x))
         }
 
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = match self.tx.as_ref() {
+            Some(tx) => tx.clone(),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "SFTP file handle used before initialization or after close",
+                )));
+            }
+        };
         let file_id = self.file_id;
 
         poll_io_future(&mut self.state.f_close, cx, || Box::pin(close(tx, file_id)))

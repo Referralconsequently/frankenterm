@@ -362,7 +362,7 @@ impl ScanPipeline {
         };
 
         for matched in self.trigger_scanner.scan_locate(&combined) {
-            if matched.offset + matched.length <= overlap_len {
+            if matched.offset.saturating_add(matched.length) <= overlap_len {
                 continue;
             }
 
