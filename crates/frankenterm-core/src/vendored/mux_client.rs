@@ -150,6 +150,27 @@ impl DirectMuxError {
     }
 }
 
+#[cfg(feature = "asupersync-runtime")]
+fn checkpoint_mux_cx(
+    cx: &Cx,
+    connection_id: u64,
+    phase: &'static str,
+) -> Result<(), DirectMuxError> {
+    cx.checkpoint().map_err(|err| {
+        tracing::debug!(
+            connection_id,
+            explicit_cx = true,
+            phase,
+            error = %err,
+            "mux operation cancelled before transport boundary"
+        );
+        DirectMuxError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            format!("mux {phase} cancelled: {err}"),
+        ))
+    })
+}
+
 pub struct DirectMuxClient {
     connection_id: u64,
     stream: UnixStream,
@@ -272,6 +293,7 @@ impl DirectMuxClient {
         compression_mode: CompressionMode,
     ) -> Result<Self, DirectMuxError> {
         let connection_id = next_connection_id();
+        checkpoint_mux_cx(cx, connection_id, "connect_start")?;
         let stream = timeout(config.connect_timeout, compat_unix::connect(&socket_path))
             .await
             .map_err(|_| DirectMuxError::ConnectTimeout(socket_path.clone()))??;
@@ -1001,9 +1023,10 @@ impl DirectMuxClient {
     #[cfg(feature = "asupersync-runtime")]
     async fn send_request_only_with_cx(
         &mut self,
-        _cx: &Cx,
+        cx: &Cx,
         pdu: Pdu,
     ) -> Result<u64, DirectMuxError> {
+        checkpoint_mux_cx(cx, self.connection_id, "request_start")?;
         let serial = next_request_serial(&mut self.serial)?;
         let pdu_name = pdu.pdu_name();
         let mut buf = Vec::new();
@@ -1019,6 +1042,7 @@ impl DirectMuxClient {
         pdu.encode_with_mode(&mut buf, serial, self.compression_mode)
             .map_err(|err| DirectMuxError::Codec(err.to_string()))?;
         let encoded_len = buf.len();
+        checkpoint_mux_cx(cx, self.connection_id, "request_write_wait")?;
         match timeout(self.config.write_timeout, self.stream.write_all(&buf)).await {
             Ok(Ok(())) => {
                 tracing::trace!(
@@ -1308,7 +1332,7 @@ impl DirectMuxClient {
     }
 
     #[cfg(feature = "asupersync-runtime")]
-    async fn read_next_pdu_with_cx(&mut self, _cx: &Cx) -> Result<DecodedPdu, DirectMuxError> {
+    async fn read_next_pdu_with_cx(&mut self, cx: &Cx) -> Result<DecodedPdu, DirectMuxError> {
         loop {
             if let Some(decoded) =
                 decode_from_buffer(&mut self.read_buf, self.config.max_frame_bytes)?
@@ -1324,6 +1348,7 @@ impl DirectMuxClient {
                 return Ok(decoded);
             }
 
+            checkpoint_mux_cx(cx, self.connection_id, "response_read_wait")?;
             let mut temp = vec![0u8; 4096];
             let read = match timeout(
                 self.config.read_timeout,
@@ -2073,6 +2098,28 @@ mod tests {
         stream.flush().await
     }
 
+    #[cfg(feature = "asupersync-runtime")]
+    fn cancelled_test_cx(message: &'static str) -> Cx {
+        let budget = crate::cx::Budget::new().with_poll_quota(0);
+        let cx = Cx::for_testing_with_budget(budget);
+        cx.cancel_with(crate::outcome::CancelKind::User, Some(message));
+        cx
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    fn assert_cancelled_mux_io(err: &DirectMuxError) {
+        match err {
+            DirectMuxError::Io(io_err) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::Interrupted);
+                assert!(
+                    io_err.to_string().contains("cancelled"),
+                    "cancelled mux io error should mention cancellation: {io_err}"
+                );
+            }
+            other => panic!("expected cancelled io error, got: {other}"),
+        }
+    }
+
     #[test]
     fn decode_from_buffer_roundtrip() {
         let mut buf = Vec::new();
@@ -2389,6 +2436,193 @@ mod tests {
             assert_eq!(saw_write.1, b"hello".to_vec());
             assert_eq!(saw_paste.0, 78);
             assert_eq!(saw_paste.1, "paste me");
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn send_request_only_with_precancelled_cx_fails_before_writing_frame() {
+        run_async_test(async {
+            let cx = crate::cx::for_testing();
+            let cancelled_cx = cancelled_test_cx("pre-cancelled request write");
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let socket_path = temp_dir.path().join("pre-cancelled-request-write.sock");
+            let listener = compat_unix::bind(&socket_path)
+                .await
+                .expect("bind listener");
+
+            let server = task::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut read_buf = Vec::new();
+                let mut post_handshake_requests = 0usize;
+                let mut handshake_complete = false;
+
+                loop {
+                    let mut temp = vec![0u8; 4096];
+                    let read = match timeout(
+                        Duration::from_millis(200),
+                        unix_stream_read(&mut stream, &mut temp),
+                    )
+                    .await
+                    {
+                        Ok(Ok(read)) => read,
+                        Ok(Err(err)) => panic!("read failed: {err}"),
+                        Err(_) if handshake_complete => break,
+                        Err(_) => panic!("server timed out before handshake completed"),
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    read_buf.extend_from_slice(&temp[..read]);
+                    while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                        match decoded.pdu {
+                            Pdu::GetCodecVersion(_) => {
+                                let response =
+                                    Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                        codec_vers: CODEC_VERSION,
+                                        version_string: "pre-cancelled-request-write-test"
+                                            .to_string(),
+                                        executable_path: PathBuf::from("/bin/wezterm"),
+                                        config_file_path: None,
+                                    });
+                                write_response_pdu(&mut stream, &response, decoded.serial)
+                                    .await
+                                    .expect("write codec response");
+                            }
+                            Pdu::SetClientId(_) => {
+                                let response = Pdu::UnitResponse(UnitResponse {});
+                                write_response_pdu(&mut stream, &response, decoded.serial)
+                                    .await
+                                    .expect("write client response");
+                                handshake_complete = true;
+                            }
+                            Pdu::ListPanes(_) => {
+                                post_handshake_requests += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                post_handshake_requests
+            });
+
+            let config = DirectMuxClientConfig::default().with_socket_path(socket_path);
+            let mut client = DirectMuxClient::connect_with_cx(&cx, config)
+                .await
+                .expect("connect with cx");
+
+            let err = client
+                .send_request_only_with_cx(&cancelled_cx, Pdu::ListPanes(ListPanes {}))
+                .await
+                .expect_err("pre-cancelled request write should fail before sending");
+            assert_cancelled_mux_io(&err);
+
+            drop(client);
+            assert_eq!(
+                server.await.expect("server task"),
+                0,
+                "pre-cancelled request should not emit a post-handshake request frame"
+            );
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn await_response_with_precancelled_cx_fails_before_reading_frame() {
+        run_async_test(async {
+            let cx = crate::cx::for_testing();
+            let cancelled_cx = cancelled_test_cx("pre-cancelled response read");
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let socket_path = temp_dir.path().join("pre-cancelled-response-read.sock");
+            let listener = compat_unix::bind(&socket_path)
+                .await
+                .expect("bind listener");
+            let (request_seen_tx, request_seen_rx) = std::sync::mpsc::channel();
+
+            let server = task::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut read_buf = Vec::new();
+                let mut list_panes_requests = 0usize;
+
+                loop {
+                    let mut temp = vec![0u8; 4096];
+                    let read = match timeout(
+                        Duration::from_millis(400),
+                        unix_stream_read(&mut stream, &mut temp),
+                    )
+                    .await
+                    {
+                        Ok(Ok(read)) => read,
+                        Ok(Err(err)) => panic!("read failed: {err}"),
+                        Err(_) => break,
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    read_buf.extend_from_slice(&temp[..read]);
+                    while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                        match decoded.pdu {
+                            Pdu::GetCodecVersion(_) => {
+                                let response =
+                                    Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                        codec_vers: CODEC_VERSION,
+                                        version_string: "pre-cancelled-response-read-test"
+                                            .to_string(),
+                                        executable_path: PathBuf::from("/bin/wezterm"),
+                                        config_file_path: None,
+                                    });
+                                write_response_pdu(&mut stream, &response, decoded.serial)
+                                    .await
+                                    .expect("write codec response");
+                            }
+                            Pdu::SetClientId(_) => {
+                                let response = Pdu::UnitResponse(UnitResponse {});
+                                write_response_pdu(&mut stream, &response, decoded.serial)
+                                    .await
+                                    .expect("write client response");
+                            }
+                            Pdu::ListPanes(_) => {
+                                list_panes_requests += 1;
+                                request_seen_tx
+                                    .send(())
+                                    .expect("signal that request frame was observed");
+                                sleep(Duration::from_millis(250)).await;
+                                return list_panes_requests;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                list_panes_requests
+            });
+
+            let config = DirectMuxClientConfig::default().with_socket_path(socket_path);
+            let mut client = DirectMuxClient::connect_with_cx(&cx, config)
+                .await
+                .expect("connect with cx");
+            let serial = client
+                .send_request_only(Pdu::ListPanes(ListPanes {}))
+                .await
+                .expect("send request without awaiting response");
+
+            request_seen_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("server should observe the request frame");
+
+            let err = client
+                .await_response_with_cx(&cancelled_cx, serial)
+                .await
+                .expect_err("pre-cancelled response read should fail before blocking read");
+            assert_cancelled_mux_io(&err);
+
+            drop(client);
+            assert_eq!(
+                server.await.expect("server task"),
+                1,
+                "server should observe exactly the one request sent before cancellation"
+            );
         });
     }
 
@@ -4258,8 +4492,13 @@ mod tests {
 
     #[test]
     fn protocol_error_kind_treats_other_io_as_transient() {
-        let err = DirectMuxError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
-        assert_eq!(err.protocol_error_kind(), ProtocolErrorKind::Transient);
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::Interrupted,
+        ] {
+            let err = DirectMuxError::Io(std::io::Error::from(kind));
+            assert_eq!(err.protocol_error_kind(), ProtocolErrorKind::Transient);
+        }
     }
 
     #[test]
@@ -4428,6 +4667,35 @@ mod tests {
                 DirectMuxError::SocketNotFound(_) => {}
                 other => panic!("expected SocketNotFound, got: {other}"),
             }
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn connect_with_precancelled_cx_fails_before_opening_socket() {
+        run_async_test(async {
+            let cx = cancelled_test_cx("pre-cancelled connect");
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let socket_path = temp_dir.path().join("pre-cancelled-connect.sock");
+            let listener = compat_unix::bind(&socket_path).await.expect("bind");
+
+            let server = task::spawn(async move {
+                match timeout(Duration::from_millis(200), listener.accept()).await {
+                    Ok(Ok((_stream, _addr))) => true,
+                    Ok(Err(err)) => panic!("accept failed: {err}"),
+                    Err(_) => false,
+                }
+            });
+
+            let config = DirectMuxClientConfig::default().with_socket_path(socket_path);
+            let err = DirectMuxClient::connect_with_cx(&cx, config)
+                .await
+                .expect_err("pre-cancelled connect_with_cx should fail fast");
+            assert_cancelled_mux_io(&err);
+            assert!(
+                !server.await.expect("server task"),
+                "pre-cancelled connect should not open a socket connection"
+            );
         });
     }
 
