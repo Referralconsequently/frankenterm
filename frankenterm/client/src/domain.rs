@@ -729,9 +729,13 @@ impl ClientDomain {
             threshold,
             overlay_lag_indicator,
         ));
-        *domain.inner.lock().unwrap() = Some(Arc::clone(&inner));
 
-        Self::process_pane_list(inner, panes, primary_window_id)?;
+        // Process the pane list BEFORE publishing inner to the domain.
+        // This prevents concurrent operations from seeing a partially
+        // attached domain with incomplete pane mappings.
+        Self::process_pane_list(Arc::clone(&inner), panes, primary_window_id)?;
+
+        *domain.inner.lock().unwrap() = Some(inner);
 
         Ok(())
     }

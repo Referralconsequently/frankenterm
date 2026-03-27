@@ -1059,24 +1059,20 @@ impl Mux {
     }
 
     pub fn get_window(&self, window_id: WindowId) -> Option<MappedRwLockReadGuard<'_, Window>> {
-        if !self.windows.read().contains_key(&window_id) {
-            return None;
-        }
-        Some(RwLockReadGuard::map(self.windows.read(), |windows| {
-            windows.get(&window_id).unwrap()
-        }))
+        RwLockReadGuard::try_map(self.windows.read(), |windows| {
+            windows.get(&window_id)
+        })
+        .ok()
     }
 
     pub fn get_window_mut(
         &self,
         window_id: WindowId,
     ) -> Option<MappedRwLockWriteGuard<'_, Window>> {
-        if !self.windows.read().contains_key(&window_id) {
-            return None;
-        }
-        Some(RwLockWriteGuard::map(self.windows.write(), |windows| {
-            windows.get_mut(&window_id).unwrap()
-        }))
+        RwLockWriteGuard::try_map(self.windows.write(), |windows| {
+            windows.get_mut(&window_id)
+        })
+        .ok()
     }
 
     pub fn get_active_tab_for_window(&self, window_id: WindowId) -> Option<Arc<Tab>> {
