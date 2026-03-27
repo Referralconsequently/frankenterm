@@ -819,17 +819,17 @@ impl<'a> Performer<'a> {
                         // of the host base dpi.
                         screen.dpi as f32 / 72.
                     };
-                    let width = (self.pixel_width as f32 / width as f32) / scale;
-                    let height = (self.pixel_height as f32 / height as f32) / scale;
+                    let width_f = (self.pixel_width as f32 / width.max(1) as f32) / scale;
+                    let height_f = (self.pixel_height as f32 / height.max(1) as f32) / scale;
 
                     let response = OperatingSystemCommand::ITermProprietary(
                         ITermProprietary::ReportCellSize {
-                            width_pixels: NotNan::new(width).unwrap(),
-                            height_pixels: NotNan::new(height).unwrap(),
+                            width_pixels: NotNan::new(width_f).unwrap_or_default(),
+                            height_pixels: NotNan::new(height_f).unwrap_or_default(),
                             scale: if screen.dpi == 0 {
                                 None
                             } else {
-                                Some(NotNan::new(scale).unwrap())
+                                NotNan::new(scale).ok()
                             },
                         },
                     );

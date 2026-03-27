@@ -1618,7 +1618,7 @@ pub fn extract_delta(previous: &str, current: &str, overlap_size: usize) -> Delt
         // Candidate overlap starts at pos relative to search_window
         let overlap_len = search_window.len() - pos;
 
-        if !current.is_char_boundary(overlap_len) {
+        if overlap_len > current.len() || !current.is_char_boundary(overlap_len) {
             continue;
         }
 
