@@ -71,7 +71,7 @@ impl TerminalState {
                 SixelData::CarriageReturn => x = 0,
                 SixelData::NewLine => {
                     x = 0;
-                    y += 6;
+                    y = y.saturating_add(6);
                 }
 
                 SixelData::DefineColorMapRGB { color_number, rgb } => {
