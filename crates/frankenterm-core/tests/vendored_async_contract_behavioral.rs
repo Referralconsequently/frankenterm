@@ -13,7 +13,7 @@
 //   B13–B15: Task ownership and cancellation (ABC-OWN-001, ABC-CAN-002)
 //   B16–B18c: Error mapping chain (ABC-ERR-001, ABC-ERR-002 spot checks)
 //   B19–B20: Sync primitive boundary behavior (ABC-OWN-002)
-//   B21–B23c: Cross-layer integration scenarios
+//   B21–B23f: Cross-layer integration scenarios
 // =============================================================================
 
 use std::error::Error as StdError;
@@ -33,7 +33,7 @@ use frankenterm_core::vendored_async_contracts::{
 };
 #[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
 use frankenterm_core::{
-    cx::for_testing,
+    cx::{Budget, Cx, for_testing},
     vendored::{DirectMuxClient, DirectMuxClientConfig},
 };
 #[cfg(all(feature = "vendored", unix))]
@@ -91,6 +91,28 @@ async fn write_mux_response(
         .encode(&mut out, serial)
         .expect("encode mux response");
     stream.write_all(&out).await.expect("write mux response");
+}
+
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+fn cancelled_test_cx(message: &'static str) -> Cx {
+    let budget = Budget::new().with_poll_quota(0);
+    let cx = Cx::for_testing_with_budget(budget);
+    cx.cancel_with(frankenterm_core::outcome::CancelKind::User, Some(message));
+    cx
+}
+
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+fn assert_cancelled_mux_io(err: &DirectMuxError) {
+    match err {
+        DirectMuxError::Io(io_err) => {
+            assert_eq!(io_err.kind(), std::io::ErrorKind::Interrupted);
+            assert!(
+                io_err.to_string().contains("cancelled"),
+                "cancelled mux io error should mention cancellation: {io_err}"
+            );
+        }
+        other => panic!("expected cancelled io error, got: {other}"),
+    }
 }
 
 // =============================================================================
@@ -1065,6 +1087,290 @@ fn b23c_explicit_cx_public_send_paste_write_timeout_contract() {
             "b23c",
             "ABC-TO-001",
             "explicit_cx_public_send_paste_write_timeout",
+            "pass",
+        );
+    });
+}
+
+/// B23d: Integration — explicit-Cx public connect path fails fast when cancelled.
+///
+/// Uses only the public DirectMuxClient API from an external test crate to
+/// prove a pre-cancelled caller context does not open a socket connection.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23d_explicit_cx_public_connect_cancellation_contract() {
+    run_async_test(async {
+        let cancelled_cx = cancelled_test_cx("behavioral public connect cancellation");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-connect-cancel.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+
+        let server = runtime_compat::task::spawn(async move {
+            match runtime_compat::timeout(Duration::from_millis(200), listener.accept()).await {
+                Ok(Ok((_stream, _addr))) => true,
+                Ok(Err(err)) => panic!("accept failed: {err}"),
+                Err(_) => false,
+            }
+        });
+
+        let config = DirectMuxClientConfig::default().with_socket_path(socket_path);
+        let err = DirectMuxClient::connect_with_cx(&cancelled_cx, config)
+            .await
+            .expect_err("connect_with_cx should fail fast for a pre-cancelled context");
+        assert_cancelled_mux_io(&err);
+
+        let accepted = runtime_compat::timeout(Duration::from_millis(500), server)
+            .await
+            .expect("server task should finish promptly")
+            .expect("server task should join cleanly");
+        assert!(
+            !accepted,
+            "pre-cancelled connect_with_cx should not open a socket connection"
+        );
+
+        emit_behavioral_log(
+            "b23d",
+            "ABC-CAN-002",
+            "explicit_cx_public_connect_cancelled_fast_fail",
+            "pass",
+        );
+    });
+}
+
+/// B23e: Integration — explicit-Cx public request path fails fast when cancelled.
+///
+/// Uses only the public DirectMuxClient API from an external test crate to
+/// prove a pre-cancelled caller context does not send any post-handshake
+/// ListPanes request bytes across the transport boundary.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23e_explicit_cx_public_list_panes_cancellation_contract() {
+    run_async_test(async {
+        let connect_cx = for_testing();
+        let cancelled_cx = cancelled_test_cx("behavioral public request cancellation");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-list-panes-cancel.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+        let (handshake_seen_tx, handshake_seen_rx) = std::sync::mpsc::channel();
+
+        let server = runtime_compat::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut read_buf = Vec::new();
+            let mut post_handshake_requests = 0usize;
+            let mut handshake_complete = false;
+
+            loop {
+                let mut temp = vec![0u8; 4096];
+                let read = match runtime_compat::timeout(
+                    Duration::from_millis(1_000),
+                    runtime_compat::io::read(&mut stream, &mut temp),
+                )
+                .await
+                {
+                    Ok(Ok(read)) => read,
+                    Ok(Err(err)) => panic!("read failed: {err}"),
+                    Err(_) if handshake_complete => break,
+                    Err(_) => panic!("server timed out before handshake completed"),
+                };
+                if read == 0 {
+                    break;
+                }
+                read_buf.extend_from_slice(&temp[..read]);
+
+                while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                    match decoded.pdu {
+                        Pdu::GetCodecVersion(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                    codec_vers: CODEC_VERSION,
+                                    version_string: "behavioral-explicit-cx-request-cancel"
+                                        .to_string(),
+                                    executable_path: std::path::PathBuf::from("/bin/wezterm"),
+                                    config_file_path: None,
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SetClientId(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::UnitResponse(UnitResponse {}),
+                            )
+                            .await;
+                            handshake_complete = true;
+                            handshake_seen_tx
+                                .send(())
+                                .expect("signal that handshake completed");
+                        }
+                        Pdu::ListPanes(_) => {
+                            post_handshake_requests += 1;
+                        }
+                        other => panic!("unexpected handshake/request PDU: {}", other.pdu_name()),
+                    }
+                }
+            }
+
+            post_handshake_requests
+        });
+
+        let config = DirectMuxClientConfig::default().with_socket_path(socket_path);
+        let mut client = DirectMuxClient::connect_with_cx(&connect_cx, config)
+            .await
+            .expect("connect_with_cx");
+        handshake_seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server should complete handshake");
+
+        let err = client
+            .list_panes_with_cx(&cancelled_cx)
+            .await
+            .expect_err("list_panes_with_cx should fail fast for a pre-cancelled context");
+        assert_cancelled_mux_io(&err);
+
+        drop(client);
+        let post_handshake_requests = runtime_compat::timeout(Duration::from_millis(500), server)
+            .await
+            .expect("server task should finish promptly")
+            .expect("server task should join cleanly");
+        assert_eq!(
+            post_handshake_requests, 0,
+            "pre-cancelled list_panes_with_cx should not send a post-handshake request frame"
+        );
+
+        emit_behavioral_log(
+            "b23e",
+            "ABC-CAN-002",
+            "explicit_cx_public_list_panes_cancelled_fast_fail",
+            "pass",
+        );
+    });
+}
+
+/// B23f: Integration — explicit-Cx public batch path fails fast when cancelled.
+///
+/// Uses only the public DirectMuxClient API from an external test crate to
+/// prove a pre-cancelled caller context does not send any post-handshake
+/// GetPaneRenderChanges batch request bytes across the transport boundary.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23f_explicit_cx_public_render_batch_cancellation_contract() {
+    run_async_test(async {
+        let connect_cx = for_testing();
+        let cancelled_cx = cancelled_test_cx("behavioral public batch cancellation");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-render-batch-cancel.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+        let (handshake_seen_tx, handshake_seen_rx) = std::sync::mpsc::channel();
+
+        let server = runtime_compat::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut read_buf = Vec::new();
+            let mut post_handshake_batch_requests = 0usize;
+            let mut handshake_complete = false;
+
+            loop {
+                let mut temp = vec![0u8; 4096];
+                let read = match runtime_compat::timeout(
+                    Duration::from_millis(1_000),
+                    runtime_compat::io::read(&mut stream, &mut temp),
+                )
+                .await
+                {
+                    Ok(Ok(read)) => read,
+                    Ok(Err(err)) => panic!("read failed: {err}"),
+                    Err(_) if handshake_complete => break,
+                    Err(_) => panic!("server timed out before handshake completed"),
+                };
+                if read == 0 {
+                    break;
+                }
+                read_buf.extend_from_slice(&temp[..read]);
+
+                while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                    match decoded.pdu {
+                        Pdu::GetCodecVersion(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                    codec_vers: CODEC_VERSION,
+                                    version_string: "behavioral-explicit-cx-batch-cancel"
+                                        .to_string(),
+                                    executable_path: std::path::PathBuf::from("/bin/wezterm"),
+                                    config_file_path: None,
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SetClientId(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::UnitResponse(UnitResponse {}),
+                            )
+                            .await;
+                            handshake_complete = true;
+                            handshake_seen_tx
+                                .send(())
+                                .expect("signal that handshake completed");
+                        }
+                        Pdu::GetPaneRenderChanges(_) => {
+                            post_handshake_batch_requests += 1;
+                        }
+                        other => panic!("unexpected handshake/request PDU: {}", other.pdu_name()),
+                    }
+                }
+            }
+
+            post_handshake_batch_requests
+        });
+
+        let config = DirectMuxClientConfig::default().with_socket_path(socket_path);
+        let mut client = DirectMuxClient::connect_with_cx(&connect_cx, config)
+            .await
+            .expect("connect_with_cx");
+        handshake_seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server should complete handshake");
+
+        let err = client
+            .get_pane_render_changes_batch_with_cx(&cancelled_cx, &[11, 22], 2, Duration::from_millis(250))
+            .await
+            .expect_err(
+                "get_pane_render_changes_batch_with_cx should fail fast for a pre-cancelled context",
+            );
+        assert_cancelled_mux_io(&err);
+
+        drop(client);
+        let post_handshake_batch_requests =
+            runtime_compat::timeout(Duration::from_millis(500), server)
+                .await
+                .expect("server task should finish promptly")
+                .expect("server task should join cleanly");
+        assert_eq!(
+            post_handshake_batch_requests, 0,
+            "pre-cancelled get_pane_render_changes_batch_with_cx should not send batch request frames"
+        );
+
+        emit_behavioral_log(
+            "b23f",
+            "ABC-CAN-002",
+            "explicit_cx_public_render_batch_cancelled_fast_fail",
             "pass",
         );
     });
