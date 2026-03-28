@@ -238,7 +238,9 @@ mod tests {
 
     impl Drop for ConfigFileOverrideGuard {
         fn drop(&mut self) {
-            *crate::CONFIG_FILE_OVERRIDE.lock().unwrap() = self.previous.clone();
+            if let Ok(mut guard) = crate::CONFIG_FILE_OVERRIDE.lock() {
+                *guard = self.previous.clone();
+            }
         }
     }
 

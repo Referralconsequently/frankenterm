@@ -287,7 +287,9 @@ impl ScopedExecutor {
 
 impl Drop for ScopedExecutor {
     fn drop(&mut self) {
-        SCOPED_EXECUTOR.lock().unwrap().take();
+        if let Ok(mut guard) = SCOPED_EXECUTOR.lock() {
+            guard.take();
+        }
     }
 }
 

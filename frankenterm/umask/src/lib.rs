@@ -55,7 +55,9 @@ impl Drop for UmaskSaver {
         #[cfg(unix)]
         unsafe {
             umask(self.mask);
-            SAVED_UMASK.lock().unwrap().take();
+            if let Ok(mut guard) = SAVED_UMASK.lock() {
+                guard.take();
+            }
         }
     }
 }
