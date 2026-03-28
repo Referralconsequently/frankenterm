@@ -374,9 +374,10 @@ impl OperatingSystemCommand {
             | ResetTektronixBackgroundColor
             | ResetHighlightColor
             | ResetTektronixCursorColor
-            | ResetHighlightForegroundColor => Self::parse_reset_dynamic_color_number(
-                p1str.parse::<u8>().unwrap().saturating_sub(100),
-            ),
+            | ResetHighlightForegroundColor => match p1str.parse::<u8>() {
+                Ok(code) => Self::parse_reset_dynamic_color_number(code.saturating_sub(100)),
+                Err(_) => bail!("invalid OSC reset color code: {}", p1str),
+            },
 
             SetTextForegroundColor
             | SetTextBackgroundColor
@@ -387,9 +388,10 @@ impl OperatingSystemCommand {
             | SetTektronixBackgroundColor
             | SetHighlightBackgroundColor
             | SetTektronixCursorColor
-            | SetHighlightForegroundColor => {
-                Self::parse_change_dynamic_color_number(p1str.parse::<u8>().unwrap(), osc)
-            }
+            | SetHighlightForegroundColor => match p1str.parse::<u8>() {
+                Ok(code) => Self::parse_change_dynamic_color_number(code, osc),
+                Err(_) => bail!("invalid OSC set color code: {}", p1str),
+            },
 
             osc_code => bail!("{:?} not impl", osc_code),
         }

@@ -35,10 +35,13 @@ impl DirWrap {
                 ))),
                 Some(Err(err)) => Err(SftpChannelError::from(err)),
                 Some(Ok(metadata)) => {
-                    let path: Utf8PathBuf = metadata
-                        .name()
-                        .expect("name to be present in read_dir")
-                        .into();
+                    let name = metadata.name().ok_or_else(|| {
+                        SftpChannelError::from(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "SFTP directory entry missing name",
+                        ))
+                    })?;
+                    let path: Utf8PathBuf = name.into();
                     let md: Metadata = metadata.into();
                     Ok((path, md))
                 }

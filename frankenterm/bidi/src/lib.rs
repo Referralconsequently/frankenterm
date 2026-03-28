@@ -558,7 +558,7 @@ impl BidiContext {
                     let mut first_strong_bc = iso_run.sos;
 
                     if ridx > 0 {
-                        for &pidx in iso_run.indices.get(0..ridx).unwrap().iter().rev() {
+                        for &pidx in iso_run.indices[..ridx].iter().rev() {
                             match self.char_types[pidx] {
                                 bc @ BidiClass::LeftToRight
                                 | bc @ BidiClass::RightToLeft
@@ -766,7 +766,7 @@ impl BidiContext {
                     let mut first_strong_bc = iso_run.sos;
 
                     if ridx > 0 {
-                        for &pidx in iso_run.indices.get(0..ridx).unwrap().iter().rev() {
+                        for &pidx in iso_run.indices[..ridx].iter().rev() {
                             match self.char_types[pidx] {
                                 bc @ BidiClass::LeftToRight | bc @ BidiClass::RightToLeft => {
                                     first_strong_bc = bc;

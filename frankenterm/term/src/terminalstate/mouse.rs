@@ -13,11 +13,11 @@ impl TerminalState {
         if self.mouse_encoding == MouseEncoding::Utf8 {
             if value < 0x800 {
                 let mut utf8 = [0; 2];
-                dest.extend_from_slice(
-                    (char::from_u32(value as u32).unwrap())
-                        .encode_utf8(&mut utf8)
-                        .as_bytes(),
-                );
+                if let Some(ch) = char::from_u32(value as u32) {
+                    dest.extend_from_slice(ch.encode_utf8(&mut utf8).as_bytes());
+                } else {
+                    dest.push(0);
+                }
             } else {
                 // out of range
                 dest.push(0);
