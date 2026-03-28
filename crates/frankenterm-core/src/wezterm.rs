@@ -1428,6 +1428,7 @@ impl WeztermClient {
             crate::vendored::MuxPoolError::Pool(_) => true,
             crate::vendored::MuxPoolError::Mux(mux) => {
                 !matches!(mux, crate::vendored::DirectMuxError::RemoteError(_))
+                    && !mux.is_cancelled()
             }
         }
     }
@@ -2769,6 +2770,18 @@ mod tests {
     #[test]
     fn mux_pool_cancelled_does_not_trigger_circuit_breaker() {
         let err = crate::vendored::MuxPoolError::Pool(crate::pool::PoolError::Cancelled);
+        assert!(!WeztermClient::mux_error_is_circuit_breaker_trigger(&err));
+    }
+
+    #[cfg(all(feature = "vendored", unix))]
+    #[test]
+    fn mux_transport_cancellation_does_not_trigger_circuit_breaker() {
+        let err = crate::vendored::MuxPoolError::Mux(crate::vendored::DirectMuxError::Io(
+            std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "mux response_read_wait cancelled: test cancellation",
+            ),
+        ));
         assert!(!WeztermClient::mux_error_is_circuit_breaker_trigger(&err));
     }
 

@@ -344,8 +344,10 @@ impl MuxPool {
                     return Ok(value);
                 }
                 Err(err) => {
+                    let cancelled = err.is_cancelled();
                     let kind = err.protocol_error_kind();
-                    let can_retry = self.recovery.enabled
+                    let can_retry = !cancelled
+                        && self.recovery.enabled
                         && attempt < max_attempts
                         && matches!(
                             kind,
@@ -357,6 +359,7 @@ impl MuxPool {
                             op = op_name,
                             attempt,
                             max_attempts,
+                            cancelled,
                             kind = ?kind,
                             error = %err,
                             "mux pool op failed; reconnecting and retrying"
@@ -380,6 +383,7 @@ impl MuxPool {
                         op = op_name,
                         attempt,
                         max_attempts,
+                        cancelled,
                         kind = ?kind,
                         error = %err,
                         "mux pool op failed; dropping client"
@@ -421,8 +425,10 @@ impl MuxPool {
                     return Ok(value);
                 }
                 Err(err) => {
+                    let cancelled = err.is_cancelled();
                     let kind = err.protocol_error_kind();
-                    let can_retry = self.recovery.enabled
+                    let can_retry = !cancelled
+                        && self.recovery.enabled
                         && attempt < max_attempts
                         && matches!(
                             kind,
@@ -434,6 +440,7 @@ impl MuxPool {
                             op = op_name,
                             attempt,
                             max_attempts,
+                            cancelled,
                             kind = ?kind,
                             error = %err,
                             "mux pool op failed; reconnecting and retrying"
@@ -457,6 +464,7 @@ impl MuxPool {
                         op = op_name,
                         attempt,
                         max_attempts,
+                        cancelled,
                         kind = ?kind,
                         error = %err,
                         "mux pool op failed; dropping client"
@@ -2655,6 +2663,74 @@ mod tests {
             assert_eq!(stats.pool.total_timeouts, 0);
             assert_eq!(stats.connections_created, 0);
             assert_eq!(stats.connections_failed, 0);
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn pool_execute_with_recovery_with_cx_does_not_retry_cancelled_mux_io() {
+        run_async_test(async {
+            let temp_dir = tempfile::tempdir().expect("tempdir");
+            let socket_path = spawn_mock_server(&temp_dir).await;
+
+            let config = MuxPoolConfig {
+                pool: PoolConfig {
+                    max_size: 2,
+                    idle_timeout: Duration::from_secs(60),
+                    acquire_timeout: Duration::from_millis(500),
+                },
+                mux: DirectMuxClientConfig::default().with_socket_path(socket_path),
+                recovery: MuxRecoveryConfig {
+                    enabled: true,
+                    retry_policy: RetryPolicy::new(
+                        Duration::from_millis(0),
+                        Duration::from_millis(0),
+                        1.0,
+                        0.0,
+                        Some(5),
+                    ),
+                },
+                pipeline_depth: 32,
+                pipeline_timeout: Duration::from_secs(5),
+            };
+            let pool = MuxPool::new(config);
+            let cx = crate::cx::for_testing();
+
+            let client = DirectMuxClient::connect_with_cx(&cx, pool.mux_config.clone())
+                .await
+                .expect("seed mux client");
+            pool.pool.put(client).await;
+
+            let err = pool
+                .execute_with_recovery_with_cx(&cx, "cancelled-op", |_client| {
+                    Box::pin(async {
+                        Err(DirectMuxError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "mux request_write_wait cancelled: synthetic cancellation",
+                        )))
+                    })
+                })
+                .await
+                .expect_err("cancelled mux op should not succeed");
+
+            match err {
+                MuxPoolError::Mux(mux_err) => assert!(mux_err.is_cancelled()),
+                other => panic!("expected mux cancellation error, got: {other}"),
+            }
+
+            let stats = pool.stats().await;
+            assert_eq!(
+                stats.recovery_attempts, 0,
+                "cancelled mux errors must not trigger reconnect retries"
+            );
+            assert_eq!(
+                stats.connections_created, 0,
+                "cancelled mux errors should not create replacement connections"
+            );
+            assert_eq!(
+                stats.pool.total_acquired, 1,
+                "only one attempt should acquire"
+            );
         });
     }
 
