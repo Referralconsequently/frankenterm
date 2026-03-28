@@ -622,10 +622,22 @@ impl EventBus {
         sender: &broadcast::Sender<Event>,
         times: &Mutex<VecDeque<Instant>>,
     ) -> usize {
-        sender.send(event).map_or(0, |count| {
-            Self::record_timestamp(times, self.capacity);
-            count
-        })
+        match sender.send(event) {
+            Ok(count) => {
+                Self::record_timestamp(times, self.capacity);
+                count
+            }
+            Err(_) => {
+                // Broadcast send failed — either no receivers or all lagging.
+                // Track as backpressure if there ARE active subscribers.
+                if sender.receiver_count() > 0 {
+                    self.metrics
+                        .subscriber_lag_events
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                0
+            }
+        }
     }
 
     fn record_timestamp(times: &Mutex<VecDeque<Instant>>, capacity: usize) {

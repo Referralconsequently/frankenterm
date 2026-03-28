@@ -406,6 +406,10 @@ impl WorkflowRunner {
         let step_count = workflow.step_count();
         let mut current_step = start_step;
         let mut retries = 0;
+        let mut jump_count: usize = 0;
+        // Prevent infinite loops from backward JumpTo cycles.
+        // A workflow with N steps should never need more than N*10 jumps.
+        let max_total_jumps = step_count.saturating_mul(10).max(100);
         let start_action_id = if start_step == 0 {
             record_workflow_start_action(
                 &self.storage,
@@ -748,6 +752,22 @@ impl WorkflowRunner {
                     }
                 }
                 StepResult::JumpTo { step } => {
+                    jump_count += 1;
+                    if jump_count > max_total_jumps {
+                        tracing::error!(
+                            execution_id,
+                            jump_count,
+                            "Workflow exceeded maximum jump count ({max_total_jumps}); aborting to prevent infinite loop"
+                        );
+                        return WorkflowExecutionResult::Aborted {
+                            execution_id: execution_id.to_string(),
+                            reason: format!(
+                                "exceeded maximum jump count ({max_total_jumps})"
+                            ),
+                            step_index: current_step,
+                            elapsed_ms: elapsed_ms(start_time),
+                        };
+                    }
                     current_step = step;
                     retries = 0;
 
