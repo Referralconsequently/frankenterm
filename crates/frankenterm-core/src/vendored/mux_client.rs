@@ -122,6 +122,17 @@ pub enum ProtocolErrorKind {
 }
 
 impl DirectMuxError {
+    /// Whether this error represents an explicit capability-context cancellation.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self,
+            Self::Io(err)
+                if err.kind() == std::io::ErrorKind::Interrupted
+                    && err.to_string().contains("cancelled")
+        )
+    }
+
     /// Classify an error into a retry/reconnect decision bucket.
     #[must_use]
     pub fn protocol_error_kind(&self) -> ProtocolErrorKind {
@@ -4506,6 +4517,25 @@ mod tests {
             let err = DirectMuxError::Io(std::io::Error::from(kind));
             assert_eq!(err.protocol_error_kind(), ProtocolErrorKind::Transient);
         }
+    }
+
+    #[test]
+    fn cancelled_mux_io_is_detected_without_changing_protocol_bucket() {
+        let err = DirectMuxError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "mux request_write_wait cancelled: test cancel",
+        ));
+        assert!(err.is_cancelled());
+        assert_eq!(err.protocol_error_kind(), ProtocolErrorKind::Transient);
+    }
+
+    #[test]
+    fn generic_interrupted_io_is_not_treated_as_mux_cancellation() {
+        let err = DirectMuxError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "generic interrupt",
+        ));
+        assert!(!err.is_cancelled());
     }
 
     #[test]
