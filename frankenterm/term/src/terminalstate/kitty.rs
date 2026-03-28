@@ -712,7 +712,13 @@ impl TerminalState {
                         // Create a second frame
 
                         let mut new_frame = if base_frame.is_some() {
-                            RgbaImage::from_vec(*width, *height, data.clone()).unwrap()
+                            RgbaImage::from_vec(*width, *height, data.clone())
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "kitty image data size mismatch: {}x{} vs {} bytes",
+                                        width, height, data.len()
+                                    )
+                                })?
                         } else {
                             RgbaImage::from_pixel(*width, *height, background_pixel)
                         };
@@ -761,7 +767,13 @@ impl TerminalState {
                                 n,
                                 frames.len()
                             );
-                            RgbaImage::from_vec(*width, *height, frames[n - 1].clone()).unwrap()
+                            RgbaImage::from_vec(*width, *height, frames[n - 1].clone())
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "kitty frame {} data size mismatch: {}x{} vs {} bytes",
+                                        n, width, height, frames[n - 1].len()
+                                    )
+                                })?
                         }
                     };
 

@@ -85,7 +85,7 @@ impl TerminalState {
 
                     candidates.sort_by_key(|a| a.0 * a.1);
 
-                    candidates.pop().unwrap()
+                    candidates.pop().unwrap_or((width, height))
                 } else {
                     (width, height)
                 }
