@@ -2450,6 +2450,7 @@ mod tests {
             let listener = compat_unix::bind(&socket_path)
                 .await
                 .expect("bind listener");
+            let (handshake_seen_tx, handshake_seen_rx) = std::sync::mpsc::channel();
 
             let server = task::spawn(async move {
                 let (mut stream, _) = listener.accept().await.expect("accept");
@@ -2460,7 +2461,7 @@ mod tests {
                 loop {
                     let mut temp = vec![0u8; 4096];
                     let read = match timeout(
-                        Duration::from_millis(200),
+                        Duration::from_millis(1_000),
                         unix_stream_read(&mut stream, &mut temp),
                     )
                     .await
@@ -2495,6 +2496,9 @@ mod tests {
                                     .await
                                     .expect("write client response");
                                 handshake_complete = true;
+                                handshake_seen_tx
+                                    .send(())
+                                    .expect("signal that handshake completed");
                             }
                             Pdu::ListPanes(_) => {
                                 post_handshake_requests += 1;
@@ -2511,6 +2515,9 @@ mod tests {
             let mut client = DirectMuxClient::connect_with_cx(&cx, config)
                 .await
                 .expect("connect with cx");
+            handshake_seen_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("server should complete handshake");
 
             let err = client
                 .send_request_only_with_cx(&cancelled_cx, Pdu::ListPanes(ListPanes {}))

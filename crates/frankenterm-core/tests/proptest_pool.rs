@@ -654,9 +654,9 @@ proptest! {
         let timeout = PoolError::AcquireTimeout;
         let closed = PoolError::Closed;
         let cancelled = PoolError::Cancelled;
-        prop_assert_ne!(timeout, closed);
-        prop_assert_ne!(timeout, cancelled);
-        prop_assert_ne!(closed, cancelled);
+        prop_assert_ne!(&timeout, &closed);
+        prop_assert_ne!(&timeout, &cancelled);
+        prop_assert_ne!(&closed, &cancelled);
     }
 
     /// Error Debug is non-empty.

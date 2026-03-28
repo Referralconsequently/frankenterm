@@ -2158,7 +2158,10 @@ impl ObservationRuntime {
             let mut pane_priorities = config_rx.borrow().pane_priorities.clone();
             #[cfg(all(feature = "vendored", unix))]
             let mut vendored_subscription_config = initial_vendored_subscription_config;
-            #[cfg(all(feature = "vendored", unix))]
+            #[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+            let (stream_exit_tx, stream_exit_rx) =
+                mpsc::channel::<StreamingTaskExit>(vendored_channel_capacity);
+            #[cfg(all(feature = "vendored", unix, not(feature = "asupersync-runtime")))]
             let (stream_exit_tx, mut stream_exit_rx) =
                 mpsc::channel::<StreamingTaskExit>(vendored_channel_capacity);
             #[cfg(all(feature = "vendored", unix))]
