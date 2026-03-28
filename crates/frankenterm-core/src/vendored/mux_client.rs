@@ -129,7 +129,10 @@ impl DirectMuxError {
             self,
             Self::Io(err)
                 if err.kind() == std::io::ErrorKind::Interrupted
-                    && err.to_string().contains("cancelled")
+                    && {
+                        let text = err.to_string().to_ascii_lowercase();
+                        text.contains("cancelled") || text.contains("canceled")
+                    }
         )
     }
 
@@ -4524,6 +4527,16 @@ mod tests {
         let err = DirectMuxError::Io(std::io::Error::new(
             std::io::ErrorKind::Interrupted,
             "mux request_write_wait cancelled: test cancel",
+        ));
+        assert!(err.is_cancelled());
+        assert_eq!(err.protocol_error_kind(), ProtocolErrorKind::Transient);
+    }
+
+    #[test]
+    fn canceled_mux_io_spelling_variant_is_detected() {
+        let err = DirectMuxError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "mux request_write_wait canceled: american spelling",
         ));
         assert!(err.is_cancelled());
         assert_eq!(err.protocol_error_kind(), ProtocolErrorKind::Transient);
