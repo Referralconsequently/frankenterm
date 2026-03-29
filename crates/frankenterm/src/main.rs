@@ -14399,75 +14399,98 @@ async fn run_watcher(
     // Track current config for hot reload
     let mut current_config = config.clone();
 
-    // Wait for signals (SIGINT/SIGTERM to shutdown, SIGHUP to reload config)
+    // Wait for signals (SIGINT/SIGTERM to shutdown, SIGHUP to reload config).
+    //
+    // Signal registration can fail under runtimes that don't support it
+    // (e.g. asupersync Phase 0).  In that case we fall back to ctrl_c()-only
+    // shutdown, which is less graceful (no SIGHUP hot-reload) but doesn't crash.
     #[cfg(unix)]
     {
         use frankenterm_core::runtime_compat::signal::unix::{SignalKind, signal};
-        let mut sigint = signal(SignalKind::interrupt())?;
-        let mut sigterm = signal(SignalKind::terminate())?;
-        let mut sighup = signal(SignalKind::hangup())?;
+        let signal_reg = (|| -> std::io::Result<_> {
+            let sigint = signal(SignalKind::interrupt())?;
+            let sigterm = signal(SignalKind::terminate())?;
+            let sighup = signal(SignalKind::hangup())?;
+            Ok((sigint, sigterm, sighup))
+        })();
 
-        loop {
-            frankenterm_core::runtime_compat::select! {
-                _ = sigint.recv() => {
-                    tracing::info!("Received SIGINT, initiating graceful shutdown");
-                    break;
-                }
-                _ = sigterm.recv() => {
-                    tracing::info!("Received SIGTERM, initiating graceful shutdown");
-                    break;
-                }
-                _ = sighup.recv() => {
-                    tracing::info!("Received SIGHUP, attempting config reload");
+        match signal_reg {
+            Ok((mut sigint, mut sigterm, mut sighup)) => {
+                loop {
+                    frankenterm_core::runtime_compat::select! {
+                        _ = sigint.recv() => {
+                            tracing::info!("Received SIGINT, initiating graceful shutdown");
+                            break;
+                        }
+                        _ = sigterm.recv() => {
+                            tracing::info!("Received SIGTERM, initiating graceful shutdown");
+                            break;
+                        }
+                        _ = sighup.recv() => {
+                            tracing::info!("Received SIGHUP, attempting config reload");
 
-                    // Reload config from disk
-                    match Config::load_with_overrides(config_path, false, &ConfigOverrides::default()) {
-                        Ok(new_config) => {
-                            // Check what changed
-                            let diff = current_config.diff_for_hot_reload(&new_config);
+                            // Reload config from disk
+                            match Config::load_with_overrides(config_path, false, &ConfigOverrides::default()) {
+                                Ok(new_config) => {
+                                    // Check what changed
+                                    let diff = current_config.diff_for_hot_reload(&new_config);
 
-                            if !diff.allowed {
-                                tracing::warn!(
-                                    "Config reload blocked: forbidden changes detected"
-                                );
-                                for fc in &diff.forbidden {
-                                    tracing::warn!(
-                                        setting = %fc.name,
-                                        reason = %fc.reason,
-                                        "Forbidden config change"
-                                    );
+                                    if !diff.allowed {
+                                        tracing::warn!(
+                                            "Config reload blocked: forbidden changes detected"
+                                        );
+                                        for fc in &diff.forbidden {
+                                            tracing::warn!(
+                                                setting = %fc.name,
+                                                reason = %fc.reason,
+                                                "Forbidden config change"
+                                            );
+                                        }
+                                        tracing::warn!(
+                                            "Restart the watcher to apply these changes"
+                                        );
+                                    } else if diff.changes.is_empty() {
+                                        tracing::info!("No configuration changes detected");
+                                    } else {
+                                        // Log and apply changes
+                                        for change in &diff.changes {
+                                            tracing::info!(
+                                                setting = %change.name,
+                                                old = %change.old_value,
+                                                new = %change.new_value,
+                                                "Applying config change"
+                                            );
+                                        }
+
+                                        // Create hot-reloadable config and apply to runtime
+                                        let hot_config = HotReloadableConfig::from_config(&new_config);
+                                        if let Err(e) = handle.apply_config_update(hot_config) {
+                                            tracing::error!(error = %e, "Failed to apply config update");
+                                        } else {
+                                            current_config = new_config;
+                                            tracing::info!("Config reload complete");
+                                        }
+                                    }
                                 }
-                                tracing::warn!(
-                                    "Restart the watcher to apply these changes"
-                                );
-                            } else if diff.changes.is_empty() {
-                                tracing::info!("No configuration changes detected");
-                            } else {
-                                // Log and apply changes
-                                for change in &diff.changes {
-                                    tracing::info!(
-                                        setting = %change.name,
-                                        old = %change.old_value,
-                                        new = %change.new_value,
-                                        "Applying config change"
-                                    );
-                                }
-
-                                // Create hot-reloadable config and apply to runtime
-                                let hot_config = HotReloadableConfig::from_config(&new_config);
-                                if let Err(e) = handle.apply_config_update(hot_config) {
-                                    tracing::error!(error = %e, "Failed to apply config update");
-                                } else {
-                                    current_config = new_config;
-                                    tracing::info!("Config reload complete");
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Failed to reload config");
                                 }
                             }
                         }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to reload config");
-                        }
                     }
                 }
+            }
+            Err(e) => {
+                // Runtime doesn't support Unix signal registration (e.g.
+                // asupersync Phase 0).  Fall back to ctrl_c() only -- no
+                // SIGHUP hot-reload, but the watcher still functions.
+                tracing::warn!(
+                    error = %e,
+                    "Unix signal registration failed; falling back to Ctrl-C only \
+                     (SIGHUP config reload unavailable)"
+                );
+                frankenterm_core::runtime_compat::signal::ctrl_c().await?;
+                tracing::info!("Received Ctrl+C, initiating graceful shutdown");
             }
         }
     }

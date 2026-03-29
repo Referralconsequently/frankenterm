@@ -69,7 +69,7 @@ pub async fn run_orphan_reaper(config: CliConfig, shutdown_flag: Arc<AtomicBool>
     );
 
     loop {
-        tokio::time::sleep(Duration::from_secs(interval)).await;
+        crate::runtime_compat::sleep(Duration::from_secs(interval)).await;
 
         if shutdown_flag.load(Ordering::Relaxed) {
             debug!("orphan reaper shutting down");
@@ -108,10 +108,15 @@ async fn scan_and_reap(max_age_seconds: u64) -> Result<(usize, usize), String> {
             );
             // Best-effort SIGKILL.  We intentionally ignore errors (the
             // process may have exited between the scan and the kill).
-            let _ = tokio::process::Command::new("kill")
-                .args(["-s", "KILL", &entry.pid.to_string()])
-                .status()
-                .await;
+            // Use runtime_compat::spawn_blocking + std::process::Command
+            // to avoid requiring a Tokio reactor (panics under asupersync).
+            let pid_str = entry.pid.to_string();
+            let _ = crate::runtime_compat::spawn_blocking(move || {
+                std::process::Command::new("kill")
+                    .args(["-s", "KILL", &pid_str])
+                    .status()
+            })
+            .await;
             killed += 1;
         }
     }
@@ -134,11 +139,16 @@ async fn scan_and_reap(max_age_seconds: u64) -> Result<(usize, usize), String> {
 /// - Any unrecognized subcommand (defense in depth — only reap what we know)
 async fn list_wezterm_cli_processes_via_ps() -> Result<Vec<ProcessEntry>, String> {
     // `etimes` gives elapsed time in seconds (POSIX, works on Linux and macOS).
-    let output = tokio::process::Command::new("ps")
-        .args(["-eo", "pid,etimes,args"])
-        .output()
-        .await
-        .map_err(|e| format!("failed to run ps: {e}"))?;
+    // Use runtime_compat::spawn_blocking + std::process::Command to avoid
+    // requiring a Tokio reactor (panics under asupersync runtime).
+    let output = crate::runtime_compat::spawn_blocking(|| {
+        std::process::Command::new("ps")
+            .args(["-eo", "pid,etimes,args"])
+            .output()
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))?
+    .map_err(|e| format!("failed to run ps: {e}"))?;
 
     if !output.status.success() {
         return Err(format!(
