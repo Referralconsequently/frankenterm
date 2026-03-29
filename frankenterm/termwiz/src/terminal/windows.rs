@@ -352,8 +352,8 @@ impl ConsoleOutputHandle for OutputHandle {
                 self.handle.as_raw_handle() as *mut _,
                 res.as_mut_ptr(),
                 COORD {
-                    X: cols as i16,
-                    Y: rows as i16,
+                    X: cols.min(i16::MAX as usize) as i16,
+                    Y: rows.min(i16::MAX as usize) as i16,
                 },
                 COORD { X: 0, Y: 0 },
                 &mut read_region,
@@ -387,8 +387,8 @@ impl ConsoleOutputHandle for OutputHandle {
                 self.handle.as_raw_handle() as *mut _,
                 buffer.as_ptr(),
                 COORD {
-                    X: cols as i16,
-                    Y: rows as i16,
+                    X: cols.min(i16::MAX as usize) as i16,
+                    Y: rows.min(i16::MAX as usize) as i16,
                 },
                 COORD { X: 0, Y: 0 },
                 &mut write_region,

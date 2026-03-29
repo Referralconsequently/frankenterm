@@ -230,8 +230,8 @@ impl ScreenBuffer {
         self.flush_screen(out)?;
         let info = out.get_buffer_info()?;
         out.set_cursor_position(
-            self.cursor_x as i16,
-            self.cursor_y as i16 + info.srWindow.Top,
+            self.cursor_x.min(i16::MAX as usize) as i16,
+            (self.cursor_y.min(i16::MAX as usize) as i16).saturating_add(info.srWindow.Top),
         )?;
         out.set_attr(self.pending_attr)?;
         out.flush()?;
@@ -271,7 +271,7 @@ impl ScreenBuffer {
 
             // We're only doing vertical scrolling
             let dx = 0;
-            let dy = scroll_count as i16;
+            let dy = scroll_count.min(i16::MAX as usize) as i16;
 
             if first_row == 0 && region_size == self.rows {
                 // We're scrolling the whole screen, so let it scroll
@@ -284,8 +284,10 @@ impl ScreenBuffer {
                 )?;
             } else {
                 // We're just scrolling a region within the window
-                let top = info.srWindow.Top + first_row as i16;
-                let bottom = top + region_size.saturating_sub(1) as i16;
+                let top = info.srWindow.Top
+                    .saturating_add(first_row.min(i16::MAX as usize) as i16);
+                let bottom = top
+                    .saturating_add(region_size.saturating_sub(1).min(i16::MAX as usize) as i16);
                 out.scroll_region(left, top, right, bottom, dx, dy, self.pending_attr)?;
             }
 
