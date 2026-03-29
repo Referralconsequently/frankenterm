@@ -186,6 +186,60 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Runtime migration matrix: default workspace builds already include
+  # asupersync-runtime, so exercise frankenterm-core in both runtime modes
+  # explicitly to keep the tokio-compat fallback path from silently rotting.
+  runtime-matrix:
+    name: Runtime (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: tokio-compat
+            check_args: -p frankenterm-core --all-targets --no-default-features
+            test_args: -p frankenterm-core --lib --no-default-features
+          - runtime: asupersync-runtime
+            check_args: -p frankenterm-core --all-targets --no-default-features --features asupersync-runtime
+            test_args: -p frankenterm-core --lib --no-default-features --features asupersync-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: runtime-${{ matrix.runtime }}
+
+      - name: Log runtime under test
+        run: |
+          echo "## Runtime: \`${{ matrix.runtime }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Check args: \`${{ matrix.check_args }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Test args: \`${{ matrix.test_args }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check compilation
+        run: |
+          set -exo pipefail
+          mkdir -p target/ci-logs
+          cargo check ${{ matrix.check_args }} 2>&1 | tee target/ci-logs/runtime-${{ matrix.runtime }}-check.log
+          cargo clippy ${{ matrix.check_args }} -- -D warnings -D clippy::all 2>&1 | tee target/ci-logs/runtime-${{ matrix.runtime }}-clippy.log
+
+      - name: Run focused tests
+        run: cargo test ${{ matrix.test_args }} --verbose
+
+      - name: Upload runtime logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-test-logs-${{ matrix.runtime }}
+          path: |
+            target/ci-logs/**/*.log
+            target/**/*.stderr
+            target/**/*.stdout
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Vendored feature: separate job since it may need extra build dependencies
   feature-vendored:
     name: Feature (vendored)
@@ -559,7 +613,7 @@ jobs:
   # Build verification across platforms
   build:
     name: Build (${{ matrix.target }})
-    needs: [lint, test, feature-matrix, ftui-tests]
+    needs: [lint, test, feature-matrix, runtime-matrix, ftui-tests]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
