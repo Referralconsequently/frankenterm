@@ -1185,8 +1185,16 @@ fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
     TerminalSize {
         rows: 1,
         cols: 1,
-        pixel_width: if size.cols > 0 { size.pixel_width / size.cols } else { 0 },
-        pixel_height: if size.rows > 0 { size.pixel_height / size.rows } else { 0 },
+        pixel_width: if size.cols > 0 {
+            size.pixel_width / size.cols
+        } else {
+            0
+        },
+        pixel_height: if size.rows > 0 {
+            size.pixel_height / size.rows
+        } else {
+            0
+        },
         dpi: size.dpi,
     }
 }
@@ -6426,10 +6434,7 @@ mod test {
         let (tab, _size) = make_tab_with_n_panes(2);
         // Tabs now ship with a default layout cycle, so swap should succeed.
         let name = tab.swap_to_next_layout();
-        assert!(
-            name.is_some(),
-            "Default layout cycle should allow swap"
-        );
+        assert!(name.is_some(), "Default layout cycle should allow swap");
         assert!(tab.current_layout_name().is_some());
     }
 
@@ -6779,7 +6784,11 @@ mod test {
         // Use union for the true unique count.
         let all_panes: HashSet<PaneId> = tree_panes.union(&stacked_panes).copied().collect();
 
-        assert_eq!(all_panes.len(), 6, "All 6 panes must survive (tree + stacked)");
+        assert_eq!(
+            all_panes.len(),
+            6,
+            "All 6 panes must survive (tree + stacked)"
+        );
         assert_eq!(
             tree_panes.len(),
             grid_4().arrangement.slot_count(),

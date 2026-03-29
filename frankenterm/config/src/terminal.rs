@@ -279,10 +279,7 @@ mod tests {
     #[test]
     fn term_config_maps_terminal_state_limits() {
         let mut overrides = BTreeMap::new();
-        overrides.insert(
-            Value::String("max_user_vars".into()),
-            Value::U64(1024),
-        );
+        overrides.insert(Value::String("max_user_vars".into()), Value::U64(1024));
         overrides.insert(
             Value::String("max_unicode_version_stack_depth".into()),
             Value::U64(128),

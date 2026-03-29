@@ -264,7 +264,10 @@ async fn decode_raw_async<R: Unpin + AsyncRead + std::fmt::Debug>(
         anyhow::bail!(
             "decode_raw_async: PDU payload size {} exceeds maximum {} \
             (serial={} ident={})",
-            data_len, MAX_PDU_SIZE, serial, ident
+            data_len,
+            MAX_PDU_SIZE,
+            serial,
+            ident
         );
     }
 
@@ -319,7 +322,10 @@ fn decode_raw<R: std::io::Read>(mut r: R) -> anyhow::Result<Decoded> {
     if data_len > MAX_PDU_SIZE {
         anyhow::bail!(
             "PDU payload size {} exceeds maximum {} (serial={} ident={})",
-            data_len, MAX_PDU_SIZE, serial, ident
+            data_len,
+            MAX_PDU_SIZE,
+            serial,
+            ident
         );
     }
 

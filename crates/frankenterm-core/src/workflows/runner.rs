@@ -761,9 +761,7 @@ impl WorkflowRunner {
                         );
                         return WorkflowExecutionResult::Aborted {
                             execution_id: execution_id.to_string(),
-                            reason: format!(
-                                "exceeded maximum jump count ({max_total_jumps})"
-                            ),
+                            reason: format!("exceeded maximum jump count ({max_total_jumps})"),
                             step_index: current_step,
                             elapsed_ms: elapsed_ms(start_time),
                         };

@@ -472,7 +472,12 @@ impl ConnectionLimiter {
             }
             if self
                 .active
-                .compare_exchange(current, current.saturating_add(1), Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(
+                    current,
+                    current.saturating_add(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
                 .is_ok()
             {
                 return Ok(ConnectionPermit {

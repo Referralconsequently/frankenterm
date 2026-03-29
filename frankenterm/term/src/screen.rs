@@ -2363,7 +2363,7 @@ impl Screen {
                 if insert_at_end {
                     self.lines.push_back(line);
                 } else {
-                    self.lines.insert(phys_scroll.end - 1, line);
+                    self.lines.insert(phys_scroll.end.saturating_sub(1), line);
                 }
             }
             // We may still have some lines to add at the bottom, so
@@ -2463,9 +2463,9 @@ impl Screen {
         self.invalidate_last_good_frame(LastGoodFrameTransition::ContentMutation, Some(seqno));
         debug!("scroll_down {:?} {}", scroll_region, num_rows);
         let phys_scroll = self.phys_range(scroll_region);
-        let num_rows = num_rows.min(phys_scroll.end - phys_scroll.start);
+        let num_rows = num_rows.min(phys_scroll.end.saturating_sub(phys_scroll.start));
 
-        let middle = phys_scroll.end - num_rows;
+        let middle = phys_scroll.end.saturating_sub(num_rows);
 
         // dirty the rows in the region
         for y in phys_scroll.start..middle {
@@ -2960,7 +2960,10 @@ mod tests {
         screen.resize(test_size(4, 4, 96), test_cursor(0, 1, 1), 2, false);
 
         for line in &screen.lines {
-            assert_eq!(line.bidi_info(), (true, ParagraphDirectionHint::RightToLeft));
+            assert_eq!(
+                line.bidi_info(),
+                (true, ParagraphDirectionHint::RightToLeft)
+            );
         }
     }
 
@@ -2985,7 +2988,10 @@ mod tests {
             "conpty resize should append rows after the cursor"
         );
         for line in screen.lines.iter().skip(len_before) {
-            assert_eq!(line.bidi_info(), (true, ParagraphDirectionHint::RightToLeft));
+            assert_eq!(
+                line.bidi_info(),
+                (true, ParagraphDirectionHint::RightToLeft)
+            );
         }
     }
 

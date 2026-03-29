@@ -27,12 +27,12 @@ use rangeset::RangeSet;
 use std::io::{BufWriter, Write};
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use termwiz::input::{InputEvent, KeyEvent, Modifiers, MouseEvent as TermWizMouseEvent};
 use termwiz::render::terminfo::TerminfoRenderer;
 use termwiz::surface::{Change, Line, SequenceNo};
 use termwiz::terminal::{ScreenSize, TerminalWaker};
-use std::sync::OnceLock;
 use url::Url;
 
 struct TermWizTerminalDomain {
@@ -480,8 +480,16 @@ pub fn allocate(
             screen_size: ScreenSize {
                 cols: size.cols as usize,
                 rows: size.rows as usize,
-                xpixel: if size.cols > 0 { (size.pixel_width / size.cols) as usize } else { 0 },
-                ypixel: if size.rows > 0 { (size.pixel_height / size.rows) as usize } else { 0 },
+                xpixel: if size.cols > 0 {
+                    (size.pixel_width / size.cols) as usize
+                } else {
+                    0
+                },
+                ypixel: if size.rows > 0 {
+                    (size.pixel_height / size.rows) as usize
+                } else {
+                    0
+                },
             },
         },
         input_rx,
@@ -517,8 +525,9 @@ pub async fn run<
     f: F,
     term_config: Option<Arc<dyn TerminalConfiguration + Send + Sync>>,
 ) -> anyhow::Result<T> {
-    let render_pipe = Pipe::new()
-        .context("failed to create render pipe for TermWiz terminal — check file descriptor limits")?;
+    let render_pipe = Pipe::new().context(
+        "failed to create render pipe for TermWiz terminal — check file descriptor limits",
+    )?;
     let render_rx = render_pipe.read;
     let (input_tx, input_rx) = channel();
     let should_close_window = window_id.is_none();
@@ -531,8 +540,16 @@ pub async fn run<
             screen_size: ScreenSize {
                 cols: size.cols as usize,
                 rows: size.rows as usize,
-                xpixel: if size.cols > 0 { (size.pixel_width / size.cols) as usize } else { 0 },
-                ypixel: if size.rows > 0 { (size.pixel_height / size.rows) as usize } else { 0 },
+                xpixel: if size.cols > 0 {
+                    (size.pixel_width / size.cols) as usize
+                } else {
+                    0
+                },
+                ypixel: if size.rows > 0 {
+                    (size.pixel_height / size.rows) as usize
+                } else {
+                    0
+                },
             },
         },
         input_rx,

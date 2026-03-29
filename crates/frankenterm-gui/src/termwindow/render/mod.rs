@@ -408,7 +408,8 @@ impl crate::TermWindow {
         let first_cluster = cluster
             .first()
             .ok_or_else(|| anyhow::anyhow!("lock indicator produced empty cluster"))?;
-        let shape_info = self.cached_cluster_shape(style, first_cluster, gl_state, font, metrics)?;
+        let shape_info =
+            self.cached_cluster_shape(style, first_cluster, gl_state, font, metrics)?;
         let first_glyph = shape_info
             .first()
             .ok_or_else(|| anyhow::anyhow!("lock indicator glyph shaping produced no glyphs"))?;

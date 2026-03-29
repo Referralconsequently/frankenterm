@@ -154,7 +154,10 @@ pub fn field_info(field: &Field) -> Result<FieldInfo<'_>> {
                             container_type = match last_seg.ident.to_string().as_str() {
                                 "Option" => ContainerType::Option,
                                 "Vec" => ContainerType::Vec,
-                                _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
+                                _ => panic!(
+                                    "unhandled type for {name}: {}",
+                                    field.ty.to_token_stream()
+                                ),
                             };
                             t.path.segments.last().unwrap().ident.to_string()
                         }
@@ -167,7 +170,10 @@ pub fn field_info(field: &Field) -> Result<FieldInfo<'_>> {
                         GenericArgument::Type(Type::Path(t)) => {
                             container_type = match last_seg.ident.to_string().as_str() {
                                 "HashMap" => ContainerType::Map,
-                                _ => panic!("unhandled type for {name}: {}", field.ty.to_token_stream()),
+                                _ => panic!(
+                                    "unhandled type for {name}: {}",
+                                    field.ty.to_token_stream()
+                                ),
                             };
                             t.path.segments.last().unwrap().ident.to_string()
                         }

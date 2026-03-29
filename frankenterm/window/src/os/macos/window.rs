@@ -714,8 +714,8 @@ impl WindowOps for Window {
     async fn enable_opengl(&self) -> anyhow::Result<Rc<glium::backend::Context>> {
         let window_id = self.id;
         promise::spawn::spawn(async move {
-            let conn = Connection::get()
-                .ok_or_else(|| anyhow::anyhow!("Connection not available"))?;
+            let conn =
+                Connection::get().ok_or_else(|| anyhow::anyhow!("Connection not available"))?;
             if let Some(handle) = conn.window_by_id(window_id) {
                 let mut inner = handle.borrow_mut();
                 inner.enable_opengl()

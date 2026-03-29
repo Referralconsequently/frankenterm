@@ -1,7 +1,7 @@
-use crate::TerminalState;
 use crate::terminalstate::image::*;
-use ::image::ImageFormat;
+use crate::TerminalState;
 use ::image::imageops::FilterType;
+use ::image::ImageFormat;
 use frankenterm_cell::image::ImageDataType;
 use frankenterm_escape_parser::osc::ITermFileData;
 use log::error;
@@ -85,7 +85,9 @@ impl TerminalState {
 
                     candidates.sort_by_key(|a| a.0 * a.1);
 
-                    candidates.pop().unwrap_or((width as usize, height as usize))
+                    candidates
+                        .pop()
+                        .unwrap_or((width as usize, height as usize))
                 } else {
                     (width, height)
                 }

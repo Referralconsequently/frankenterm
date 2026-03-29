@@ -642,15 +642,7 @@ impl Modifiers {
                 "Hyper",
                 "Hyper",
             ),
-            (
-                Self::META,
-                "META",
-                "Meta",
-                "Meta",
-                "Meta",
-                "Meta",
-                "Meta",
-            ),
+            (Self::META, "META", "Meta", "Meta", "Meta", "Meta", "Meta"),
             (
                 Self::LEFT_ALT,
                 "LEFT_ALT",
@@ -1926,9 +1918,9 @@ impl KeyEvent {
                     && !(flags.contains(KittyKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES)
                         && (self.modifiers.contains(Modifiers::CTRL)
                             || self.modifiers.contains(Modifiers::ALT)))
-                    && !self.modifiers.intersects(
-                        Modifiers::SUPER | Modifiers::HYPER | Modifiers::META,
-                    );
+                    && !self
+                        .modifiers
+                        .intersects(Modifiers::SUPER | Modifiers::HYPER | Modifiers::META);
 
                 if use_legacy {
                     // Legacy text key

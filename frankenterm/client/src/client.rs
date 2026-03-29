@@ -374,9 +374,9 @@ async fn client_thread_async(
         map: HashMap::new(),
     };
 
-    let mut stream = reconnectable
-        .take_stream()
-        .ok_or_else(|| anyhow::anyhow!("mux client stream not available — connection not established"))?;
+    let mut stream = reconnectable.take_stream().ok_or_else(|| {
+        anyhow::anyhow!("mux client stream not available — connection not established")
+    })?;
 
     loop {
         let rx_msg = rx.recv();
@@ -1065,10 +1065,8 @@ impl Client {
 
         thread::spawn(move || {
             let cfg = configuration();
-            let base_interval =
-                Duration::from_millis(cfg.client_reconnect_base_interval_ms);
-            let max_interval =
-                Duration::from_millis(cfg.client_reconnect_max_interval_ms);
+            let base_interval = Duration::from_millis(cfg.client_reconnect_base_interval_ms);
+            let max_interval = Duration::from_millis(cfg.client_reconnect_max_interval_ms);
 
             let mut backoff = base_interval;
             loop {

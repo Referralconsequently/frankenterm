@@ -895,7 +895,7 @@ impl RenderableState {
 
 #[cfg(test)]
 mod tests {
-    use super::{initial_last_poll, should_apply_unilateral_delta, base_poll_interval};
+    use super::{base_poll_interval, initial_last_poll, should_apply_unilateral_delta};
     use std::time::Instant;
     use termwiz::surface::SequenceNo;
 

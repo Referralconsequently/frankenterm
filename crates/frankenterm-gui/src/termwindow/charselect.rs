@@ -714,7 +714,7 @@ impl Modal for CharSelector {
 
         let max_rows_on_screen = ((term_window.dimensions.pixel_height * 8 / 10)
             / (metrics.cell_size.height as usize).max(1))
-            .saturating_sub(2);
+        .saturating_sub(2);
         *self.max_rows_on_screen.borrow_mut() = max_rows_on_screen;
 
         let rebuild_matches = results

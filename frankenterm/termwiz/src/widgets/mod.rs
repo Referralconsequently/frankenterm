@@ -416,13 +416,7 @@ impl<'widget> Ui<'widget> {
         };
 
         let mut best = None;
-        self.hovered_recursive(
-            root,
-            0,
-            coords,
-            &ScreenRelativeCoords::default(),
-            &mut best,
-        );
+        self.hovered_recursive(root, 0, coords, &ScreenRelativeCoords::default(), &mut best);
 
         best.map(|(_, id)| id)
     }
@@ -457,13 +451,7 @@ impl<'widget> Ui<'widget> {
         }
 
         for child in self.graph.children(widget) {
-            self.hovered_recursive(
-                *child,
-                depth + 1,
-                coords,
-                &widget_origin,
-                best,
-            );
+            self.hovered_recursive(*child, depth + 1, coords, &widget_origin, best);
         }
     }
 
@@ -513,7 +501,10 @@ impl<'widget> Ui<'widget> {
         self.graph.retain_reachable(&reachable);
         self.render.retain(|widget, _| reachable.contains(widget));
 
-        if self.focused.is_some_and(|focused| !reachable.contains(&focused)) {
+        if self
+            .focused
+            .is_some_and(|focused| !reachable.contains(&focused))
+        {
             self.focused = self.graph.root;
         }
 
@@ -618,10 +609,9 @@ impl<'widget> Ui<'widget> {
     fn compute_layout(&mut self, width: usize, height: usize) -> Result<bool> {
         let mut layout = layout::LayoutState::new();
 
-        let root = self
-            .graph
-            .root
-            .ok_or_else(|| anyhow::anyhow!("no root widget; add at least one widget before rendering"))?;
+        let root = self.graph.root.ok_or_else(|| {
+            anyhow::anyhow!("no root widget; add at least one widget before rendering")
+        })?;
         self.add_widget_to_layout(&mut layout, root)?;
         let mut changed = false;
 
@@ -897,10 +887,7 @@ mod test {
 
         fn process_event(&mut self, event: &WidgetEvent, _args: &mut UpdateArgs) -> bool {
             if let WidgetEvent::Input(InputEvent::Mouse(mouse)) = event {
-                self.log
-                    .lock()
-                    .unwrap()
-                    .push((self.name, mouse.x, mouse.y));
+                self.log.lock().unwrap().push((self.name, mouse.x, mouse.y));
                 return true;
             }
             false

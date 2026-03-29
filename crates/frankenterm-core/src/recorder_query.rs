@@ -1067,9 +1067,9 @@ mod tests {
     use crate::policy::ActorKind;
     use crate::recorder_audit::AuditLogConfig;
     use crate::recording::{
-        RecorderEventCausality, RecorderEventPayload, RecorderEventSource, RecorderIngressKind,
-        RecorderRedactionLevel, RecorderSegmentKind, RecorderTextEncoding,
-        RECORDER_EVENT_SCHEMA_VERSION_V1,
+        RECORDER_EVENT_SCHEMA_VERSION_V1, RecorderEventCausality, RecorderEventPayload,
+        RecorderEventSource, RecorderIngressKind, RecorderRedactionLevel, RecorderSegmentKind,
+        RecorderTextEncoding,
     };
 
     // -----------------------------------------------------------------------
