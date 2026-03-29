@@ -19,7 +19,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-frankenterm-core.workspace = true
+frankenterm-core = { workspace = true, default-features = false }
 frankenterm-alloc = { workspace = true, optional = true }
 clap.workspace = true
 chrono.workspace = true

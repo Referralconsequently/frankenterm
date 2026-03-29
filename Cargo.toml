@@ -538,7 +538,7 @@ frankensearch = { git = "https://github.com/Dicklesworthstone/frankensearch", re
 franken-agent-detection = "0.1.0"
 
 # Internal crates
-frankenterm-core = { path = "crates/frankenterm-core" }
+frankenterm-core = { path = "crates/frankenterm-core", default-features = false }
 frankenterm-alloc = { path = "crates/frankenterm-alloc" }
 
 [profile.release]
