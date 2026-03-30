@@ -326,6 +326,8 @@ pub struct RuntimeConfig {
     pub retention_max_mb: u32,
     /// Database checkpoint interval in seconds
     pub checkpoint_interval_secs: u32,
+    /// Periodic cache compaction and vacuum policy
+    pub gc: CacheGcSettings,
     /// Vendored mux socket paths used for pane-delta streaming subscriptions.
     ///
     /// When sharding is enabled, the index in this vector matches the encoded
@@ -357,6 +359,7 @@ impl Default for RuntimeConfig {
             retention_days: 30,
             retention_max_mb: 0,
             checkpoint_interval_secs: 60,
+            gc: CacheGcSettings::default(),
             vendored_mux_socket_paths: Vec::new(),
             vendored_mux_compression: crate::config::VendoredCompressionMode::Auto,
             native_event_socket: None,
@@ -1059,10 +1062,11 @@ impl ObservationRuntime {
             retention_days: config.retention_days,
             retention_max_mb: config.retention_max_mb,
             checkpoint_interval_secs: config.checkpoint_interval_secs,
+            gc: config.gc,
             patterns: config.patterns.clone(),
             workflows_enabled: vec![],
             auto_run_allowlist: vec![],
-            trauma_guard: crate::config::TraumaGuardConfig::default(),
+            trauma_guard: config.trauma_guard.clone(),
         };
         let (config_tx, config_rx) = watch::channel(hot_config);
 
@@ -1428,11 +1432,12 @@ impl ObservationRuntime {
 
         let initial_retention_days = self.config.retention_days;
         let initial_checkpoint_secs = self.config.checkpoint_interval_secs;
-        let cache_gc_settings = CacheGcSettings::default();
+        let initial_cache_gc_settings = self.config.gc;
 
         task::spawn(async move {
             let mut retention_days = initial_retention_days;
             let mut checkpoint_secs = initial_checkpoint_secs;
+            let mut cache_gc_settings = initial_cache_gc_settings;
             let mut last_health_snapshot = Instant::now()
                 .checked_sub(Duration::from_secs(60))
                 .unwrap_or_else(Instant::now);
@@ -1487,6 +1492,14 @@ impl ObservationRuntime {
                         );
                         checkpoint_secs = new_config.checkpoint_interval_secs;
                     }
+                    if new_config.gc != cache_gc_settings {
+                        info!(
+                            old = ?cache_gc_settings,
+                            new = ?new_config.gc,
+                            "Cache GC settings updated"
+                        );
+                        cache_gc_settings = new_config.gc;
+                    }
                 }
 
                 let now = Instant::now();
@@ -1533,9 +1546,9 @@ impl ObservationRuntime {
                 }
 
                 if cache_gc_settings.enabled
-                    && cache_gc_settings.interval_secs > 0
+                    && cache_gc_settings.interval_seconds > 0
                     && now.duration_since(last_cache_gc)
-                        >= Duration::from_secs(cache_gc_settings.interval_secs)
+                        >= Duration::from_secs(cache_gc_settings.interval_seconds)
                 {
                     let active_panes: HashSet<u64> = {
                         let reg = registry.read().await;
@@ -1550,6 +1563,11 @@ impl ObservationRuntime {
                     let context_gc = {
                         let mut contexts_guard = detection_contexts.write().await;
                         compact_u64_map(&mut contexts_guard, &active_panes)
+                    };
+
+                    let activity_gc = {
+                        let mut tracker_guard = pane_activity_tracker.write().await;
+                        compact_u64_map(&mut tracker_guard, &active_panes)
                     };
 
                     let mut page_count = 0_i64;
@@ -1586,18 +1604,50 @@ impl ObservationRuntime {
                         }
                     }
 
+                    let cache_reports = [
+                        ("cursors", cursor_gc),
+                        ("detection_contexts", context_gc),
+                        ("pane_activity_tracker", activity_gc),
+                    ];
+                    let total_estimated_bytes_freed = cache_reports
+                        .iter()
+                        .map(|(_, stats)| stats.estimated_bytes_freed())
+                        .sum::<usize>();
+                    let caches = cache_reports
+                        .iter()
+                        .map(|(name, stats)| {
+                            serde_json::json!({
+                                "name": name,
+                                "before_len": stats.before_len,
+                                "before_capacity": stats.before_capacity,
+                                "after_len": stats.after_len,
+                                "after_capacity": stats.after_capacity,
+                                "removed_entries": stats.removed_entries,
+                                "freed_slots": stats.freed_slots(),
+                                "estimated_bytes_freed": stats.estimated_bytes_freed(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
                     let metadata = serde_json::json!({
                         "active_panes": active_panes.len(),
                         "cursor_removed": cursor_gc.removed_entries,
                         "cursor_freed_slots": cursor_gc.freed_slots(),
+                        "cursor_estimated_bytes_freed": cursor_gc.estimated_bytes_freed(),
                         "context_removed": context_gc.removed_entries,
                         "context_freed_slots": context_gc.freed_slots(),
+                        "context_estimated_bytes_freed": context_gc.estimated_bytes_freed(),
+                        "pane_activity_removed": activity_gc.removed_entries,
+                        "pane_activity_freed_slots": activity_gc.freed_slots(),
+                        "pane_activity_estimated_bytes_freed": activity_gc.estimated_bytes_freed(),
+                        "total_estimated_bytes_freed": total_estimated_bytes_freed,
                         "page_count": page_count,
                         "free_pages": free_pages,
                         "free_ratio": free_ratio,
                         "vacuumed": vacuumed,
                         "vacuum_threshold": cache_gc_settings.vacuum_threshold,
                         "vacuum_error": vacuum_error,
+                        "log_report": cache_gc_settings.log_report,
+                        "caches": caches,
                     });
                     let _ = storage
                         .record_maintenance(MaintenanceRecord {
@@ -1609,16 +1659,33 @@ impl ObservationRuntime {
                         })
                         .await;
 
-                    info!(
-                        active_panes = active_panes.len(),
-                        cursor_removed = cursor_gc.removed_entries,
-                        context_removed = context_gc.removed_entries,
-                        cursor_freed_slots = cursor_gc.freed_slots(),
-                        context_freed_slots = context_gc.freed_slots(),
-                        free_ratio,
-                        vacuumed,
-                        "Cache GC cycle completed"
-                    );
+                    if cache_gc_settings.log_report {
+                        info!(
+                            active_panes = active_panes.len(),
+                            cursor_removed = cursor_gc.removed_entries,
+                            cursor_freed_slots = cursor_gc.freed_slots(),
+                            cursor_estimated_bytes_freed = cursor_gc.estimated_bytes_freed(),
+                            context_removed = context_gc.removed_entries,
+                            context_freed_slots = context_gc.freed_slots(),
+                            context_estimated_bytes_freed = context_gc.estimated_bytes_freed(),
+                            pane_activity_removed = activity_gc.removed_entries,
+                            pane_activity_freed_slots = activity_gc.freed_slots(),
+                            pane_activity_estimated_bytes_freed =
+                                activity_gc.estimated_bytes_freed(),
+                            total_estimated_bytes_freed,
+                            free_ratio,
+                            vacuumed,
+                            "Cache GC cycle completed"
+                        );
+                    } else {
+                        debug!(
+                            active_panes = active_panes.len(),
+                            total_estimated_bytes_freed,
+                            free_ratio,
+                            vacuumed,
+                            "Cache GC cycle completed"
+                        );
+                    }
 
                     last_cache_gc = now;
                 }
@@ -6075,6 +6142,12 @@ mod tests {
     fn runtime_config_default_checkpoint_interval() {
         let config = RuntimeConfig::default();
         assert_eq!(config.checkpoint_interval_secs, 60);
+    }
+
+    #[test]
+    fn runtime_config_default_cache_gc_settings() {
+        let config = RuntimeConfig::default();
+        assert_eq!(config.gc, CacheGcSettings::default());
     }
 
     #[test]

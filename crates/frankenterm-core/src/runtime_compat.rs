@@ -1642,7 +1642,8 @@ impl RuntimeBuilder {
 /// Sleep for the specified duration using the active runtime backend.
 #[cfg(feature = "asupersync-runtime")]
 pub async fn sleep(duration: Duration) {
-    asupersync::time::sleep(asupersync::time::wall_now(), duration).await;
+    let cx = crate::cx::Cx::current().unwrap_or_else(crate::cx::for_request);
+    let _ = sleep_with_cx(&cx, duration).await;
 }
 
 /// Sleep for the specified duration using the active runtime backend.
@@ -1651,15 +1652,43 @@ pub async fn sleep(duration: Duration) {
     tokio::time::sleep(duration).await;
 }
 
+/// Sleep for the requested duration while respecting the provided `Cx`.
+#[cfg(feature = "asupersync-runtime")]
+pub(crate) async fn sleep_with_cx(cx: &crate::cx::Cx, duration: Duration) -> Result<(), String> {
+    asupersync::time::budget_sleep(cx, duration, cx_timer_now(cx))
+        .await
+        .map_err(|err| err.to_string())
+}
+
 /// Runs `future` with a timeout using the active runtime backend.
 #[cfg(feature = "asupersync-runtime")]
 pub async fn timeout<F>(duration: Duration, future: F) -> Result<F::Output, String>
 where
     F: Future,
 {
-    asupersync::time::timeout(asupersync::time::wall_now(), duration, Box::pin(future))
+    let cx = crate::cx::Cx::current().unwrap_or_else(crate::cx::for_request);
+    timeout_with_cx(&cx, duration, future).await
+}
+
+/// Runs `future` with a timeout that respects the provided `Cx`.
+#[cfg(feature = "asupersync-runtime")]
+pub(crate) async fn timeout_with_cx<F>(
+    cx: &crate::cx::Cx,
+    duration: Duration,
+    future: F,
+) -> Result<F::Output, String>
+where
+    F: Future,
+{
+    asupersync::time::budget_timeout(cx, duration, Box::pin(future), cx_timer_now(cx))
         .await
         .map_err(|err| err.to_string())
+}
+
+#[cfg(feature = "asupersync-runtime")]
+fn cx_timer_now(cx: &crate::cx::Cx) -> asupersync::Time {
+    cx.timer_driver()
+        .map_or_else(asupersync::time::wall_now, |driver| driver.now())
 }
 
 /// Runs `future` with a timeout using the active runtime backend.
@@ -1995,6 +2024,183 @@ mod tests {
             .await;
             assert!(result.is_err());
         });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn sleep_with_cx_returns_elapsed_when_budget_is_exhausted() {
+        run_async_test(async {
+            let probe = crate::cx::for_testing();
+            let cx = crate::cx::Cx::for_testing_with_budget(
+                asupersync::Budget::new().with_deadline(cx_timer_now(&probe)),
+            );
+
+            let result = sleep_with_cx(&cx, Duration::from_secs(1)).await;
+            assert!(result.is_err(), "expired budgets must short-circuit sleep");
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn sleep_uses_active_cx_virtual_time_under_labruntime() {
+        let woke = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let woke_task = std::sync::Arc::clone(&woke);
+        let wall_start = std::time::Instant::now();
+        let mut runtime = asupersync::LabRuntime::new(
+            asupersync::LabConfig::new(11)
+                .with_auto_advance()
+                .worker_count(2)
+                .max_steps(10_000),
+        );
+        let region = runtime
+            .state
+            .create_root_region(asupersync::Budget::INFINITE);
+        let (task_id, _handle) = runtime
+            .state
+            .create_task(region, asupersync::Budget::INFINITE, async move {
+                sleep(Duration::from_secs(1)).await;
+                woke_task.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+            .expect("spawn sleep task");
+        runtime.scheduler.lock().schedule(task_id, 0);
+
+        runtime.step_for_test();
+        let virtual_time = runtime.run_with_auto_advance();
+        let report = runtime.run_until_quiescent_with_report();
+
+        assert!(
+            virtual_time.auto_advances >= 1,
+            "LabRuntime should auto-advance to the sleep deadline"
+        );
+        assert!(
+            runtime.now() >= asupersync::Time::from_secs(1),
+            "virtual time should move to the requested deadline"
+        );
+        assert!(
+            wall_start.elapsed() < Duration::from_secs(1),
+            "virtual time must not consume a real second"
+        );
+        assert!(
+            woke.load(std::sync::atomic::Ordering::SeqCst),
+            "sleep task should complete under LabRuntime"
+        );
+        assert!(report.oracle_report.all_passed());
+        assert!(report.invariant_violations.is_empty());
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn timeout_uses_active_cx_budget_under_labruntime() {
+        let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let timed_out_task = std::sync::Arc::clone(&timed_out);
+        let mut runtime = asupersync::LabRuntime::new(
+            asupersync::LabConfig::new(19)
+                .with_auto_advance()
+                .worker_count(2)
+                .max_steps(10_000),
+        );
+        let region = runtime
+            .state
+            .create_root_region(asupersync::Budget::INFINITE);
+        let budget = asupersync::Budget::new().with_deadline(asupersync::Time::from_millis(5));
+        let (task_id, _handle) = runtime
+            .state
+            .create_task(region, budget, async move {
+                let result = timeout(Duration::from_secs(30), std::future::pending::<()>()).await;
+                timed_out_task.store(result.is_err(), std::sync::atomic::Ordering::SeqCst);
+            })
+            .expect("spawn timeout task");
+        runtime.scheduler.lock().schedule(task_id, 0);
+
+        runtime.step_for_test();
+        let virtual_time = runtime.run_with_auto_advance();
+        let report = runtime.run_until_quiescent_with_report();
+
+        assert!(
+            virtual_time.auto_advances >= 1,
+            "budget-bound timeout should advance to the tighter deadline"
+        );
+        assert!(
+            runtime.now() >= asupersync::Time::from_millis(5),
+            "virtual time should stop at or after the budget deadline"
+        );
+        assert!(
+            timed_out.load(std::sync::atomic::Ordering::SeqCst),
+            "timeout should report elapsed once the budget deadline is reached"
+        );
+        assert!(report.oracle_report.all_passed());
+        assert!(report.invariant_violations.is_empty());
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    fn arb_labruntime_timer_deadlines_ms() -> impl Strategy<Value = Vec<u64>> {
+        prop::collection::vec(0_u64..=50, 1..10)
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn proptest_budget_meet_selects_earliest_deadline(
+            left_ms in 0_u64..=1_000,
+            right_ms in 0_u64..=1_000,
+        ) {
+            let left = asupersync::Budget::new().with_deadline(asupersync::Time::from_millis(left_ms));
+            let right = asupersync::Budget::new().with_deadline(asupersync::Time::from_millis(right_ms));
+            let combined = left.meet(right);
+            let expected = asupersync::Time::from_millis(left_ms.min(right_ms));
+
+            prop_assert_eq!(combined.deadline, Some(expected));
+        }
+
+        #[test]
+        fn proptest_labruntime_timers_fire_in_deadline_order(
+            deadlines_ms in arb_labruntime_timer_deadlines_ms(),
+        ) {
+            let fired = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut runtime = asupersync::LabRuntime::new(
+                asupersync::LabConfig::new(23)
+                    .with_auto_advance()
+                    .worker_count(2)
+                    .max_steps(50_000),
+            );
+            let region = runtime
+                .state
+                .create_root_region(asupersync::Budget::INFINITE);
+
+            for &deadline_ms in &deadlines_ms {
+                let fired_task = std::sync::Arc::clone(&fired);
+                let (task_id, _handle) = runtime
+                    .state
+                    .create_task(region, asupersync::Budget::INFINITE, async move {
+                        let cx = asupersync::Cx::current()
+                            .expect("LabRuntime tasks should expose the current Cx");
+                        sleep_with_cx(&cx, Duration::from_millis(deadline_ms))
+                            .await
+                            .expect("infinite-budget LabRuntime sleep should complete");
+                        fired_task.lock().expect("timer order lock").push(deadline_ms);
+                    })
+                    .expect("spawn timer task");
+                runtime.scheduler.lock().schedule(task_id, 0);
+            }
+
+            runtime.step_for_test();
+            let report = runtime.run_with_auto_advance();
+            let oracle_report = runtime.run_until_quiescent_with_report();
+            let observed = fired.lock().expect("timer order lock").clone();
+            let mut expected = deadlines_ms.clone();
+            expected.sort_unstable();
+
+            prop_assert_eq!(&observed, &expected);
+            prop_assert_eq!(observed.len(), deadlines_ms.len());
+            prop_assert!(
+                report.auto_advances >= 1 || deadlines_ms.iter().all(|deadline| *deadline == 0),
+                "non-zero timers should trigger at least one auto-advance"
+            );
+            prop_assert!(oracle_report.oracle_report.all_passed());
+            prop_assert!(oracle_report.invariant_violations.is_empty());
+        }
     }
 
     #[test]

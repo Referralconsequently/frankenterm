@@ -2704,7 +2704,7 @@ mod tests {
             let err = pool
                 .execute_with_recovery_with_cx(&cx, "cancelled-op", |_client| {
                     Box::pin(async {
-                        Err(DirectMuxError::Io(std::io::Error::new(
+                        Err::<(), _>(DirectMuxError::Io(std::io::Error::new(
                             std::io::ErrorKind::Interrupted,
                             "mux request_write_wait cancelled: synthetic cancellation",
                         )))

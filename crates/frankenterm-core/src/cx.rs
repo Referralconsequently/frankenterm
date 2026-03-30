@@ -268,7 +268,15 @@ where
     Fut: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    crate::runtime_compat::timeout(timeout, spawn_with_cx(handle, cx, task)).await
+    #[cfg(feature = "asupersync-runtime")]
+    {
+        crate::runtime_compat::timeout_with_cx(cx, timeout, spawn_with_cx(handle, cx, task)).await
+    }
+
+    #[cfg(not(feature = "asupersync-runtime"))]
+    {
+        crate::runtime_compat::timeout(timeout, spawn_with_cx(handle, cx, task)).await
+    }
 }
 
 #[cfg(test)]
@@ -707,6 +715,32 @@ mod tests {
             .await
         });
         assert!(result.is_err());
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn spawn_with_timeout_uses_tighter_cx_budget() {
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let seed_cx = for_testing();
+        let seed_now = seed_cx
+            .timer_driver()
+            .map_or_else(asupersync::time::wall_now, |driver| driver.now());
+        let cx = Cx::for_testing_with_budget(
+            Budget::new().with_deadline(seed_now + Duration::from_millis(20)),
+        );
+        let handle = runtime.handle();
+
+        let result = runtime.block_on(async {
+            spawn_with_timeout(&handle, &cx, Duration::from_secs(5), |_cx| async {
+                std::future::pending::<()>().await
+            })
+            .await
+        });
+
+        assert!(
+            result.is_err(),
+            "explicit Cx deadline should win over a looser timeout argument"
+        );
     }
 
     // -----------------------------------------------------------------------
