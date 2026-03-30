@@ -43,6 +43,27 @@ fn smoke_run_lab_test_with_config() {
 }
 
 #[test]
+fn smoke_run_lab_test_writes_structured_event_log() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let config = LabTestConfig::new(11, "smoke_structured_event_log")
+        .component("tests.lab_smoke")
+        .bead_id("wa-a4goc")
+        .artifact_dir(tmp.path());
+    let report = run_lab_test(config, |runtime| {
+        runtime.run_until_quiescent();
+    });
+    assert!(report.passed());
+    assert!(report.event_count >= 3);
+    let event_log_path = report.event_log_path.expect("event log path");
+    assert!(event_log_path.exists(), "event log should exist");
+    assert!(
+        event_log_path.starts_with(tmp.path()),
+        "event log should be written under the configured artifact dir"
+    );
+    assert!(!report.correlation_id.is_empty());
+}
+
+#[test]
 fn smoke_run_lab_test_with_tasks() {
     let report = run_lab_test_simple(99, "smoke_with_tasks", |runtime| {
         let region = runtime.state.create_root_region(Budget::INFINITE);

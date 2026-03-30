@@ -10,9 +10,14 @@
 
 #![allow(dead_code)]
 
+use std::path::PathBuf;
+
 use asupersync::lab::chaos::ChaosConfig;
 use asupersync::lab::explorer::{ExplorationReport, ExplorerConfig, ScheduleExplorer};
 use asupersync::{LabConfig, LabRuntime, Time};
+
+use super::reason_codes::{ErrorCode, Outcome, ReasonCode};
+use super::test_event_logger::TestEventLogger;
 
 // ---------------------------------------------------------------------------
 // LabTestConfig — ergonomic builder for test-level config
@@ -31,6 +36,12 @@ pub struct LabTestConfig {
     pub max_steps: u64,
     /// Whether to panic when obligation leaks are detected.
     pub panic_on_leak: bool,
+    /// Structured logging component emitted by helper-level evidence.
+    pub component: String,
+    /// Structured logging bead identifier.
+    pub bead_id: String,
+    /// Optional artifact directory for `.jsonl` event logs.
+    pub artifact_dir: Option<PathBuf>,
 }
 
 impl LabTestConfig {
@@ -43,6 +54,9 @@ impl LabTestConfig {
             worker_count: 2,
             max_steps: 100_000,
             panic_on_leak: true,
+            component: "tests.common.lab".to_string(),
+            bead_id: "wa-a4goc".to_string(),
+            artifact_dir: None,
         }
     }
 
@@ -64,6 +78,27 @@ impl LabTestConfig {
     #[must_use]
     pub fn panic_on_leak(mut self, value: bool) -> Self {
         self.panic_on_leak = value;
+        self
+    }
+
+    /// Set the structured logging component.
+    #[must_use]
+    pub fn component(mut self, component: impl Into<String>) -> Self {
+        self.component = component.into();
+        self
+    }
+
+    /// Set the structured logging bead identifier.
+    #[must_use]
+    pub fn bead_id(mut self, bead_id: impl Into<String>) -> Self {
+        self.bead_id = bead_id.into();
+        self
+    }
+
+    /// Set the optional artifact directory for structured event logs.
+    #[must_use]
+    pub fn artifact_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.artifact_dir = Some(dir.into());
         self
     }
 
@@ -96,6 +131,12 @@ pub struct LabTestReport {
     pub oracles_passed: bool,
     /// Whether any invariant violations were found.
     pub invariant_violations_found: bool,
+    /// Correlation ID for the structured helper evidence log.
+    pub correlation_id: String,
+    /// Number of structured events recorded for this helper run.
+    pub event_count: usize,
+    /// Optional `.jsonl` artifact written by the shared test-event logger.
+    pub event_log_path: Option<PathBuf>,
 }
 
 impl LabTestReport {
@@ -144,6 +185,10 @@ where
 {
     let seed = config.seed;
     let test_name = config.test_name.clone();
+    let mut logger = TestEventLogger::new(&config.component, &config.bead_id, &test_name);
+    if let Some(dir) = config.artifact_dir.clone() {
+        logger = logger.with_artifact_dir(dir);
+    }
 
     tracing::info!(
         seed,
@@ -152,17 +197,75 @@ where
         max_steps = config.max_steps,
         "Starting LabRuntime test"
     );
+    logger.started();
+    logger
+        .emit(
+            Outcome::SetupComplete,
+            ReasonCode::Completed,
+            ErrorCode::None,
+        )
+        .decision_path("lab_runtime_create")
+        .input_summary(&format!(
+            "seed={seed} workers={} max_steps={} panic_on_leak={}",
+            config.worker_count, config.max_steps, config.panic_on_leak
+        ))
+        .log();
 
     let lab_config = config.to_lab_config();
     let mut runtime = LabRuntime::new(lab_config);
 
-    // Run the test closure
-    test_fn(&mut runtime);
+    let test_result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test_fn(&mut runtime)));
+    if let Err(panic_payload) = test_result {
+        let panic_message = panic_payload
+            .downcast_ref::<String>()
+            .map(|message| message.as_str())
+            .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        logger
+            .emit(
+                Outcome::Failed,
+                ReasonCode::PanicPropagated,
+                ErrorCode::Panic,
+            )
+            .decision_path("test_closure")
+            .input_summary(panic_message)
+            .log();
+        let _ = logger.flush();
+        std::panic::resume_unwind(panic_payload);
+    }
+    logger.checkpoint("test_closure_completed");
 
     // Collect oracle report
     let report = runtime.run_until_quiescent_with_report();
     let oracles_passed = report.oracle_report.all_passed();
     let invariant_violations_found = !report.invariant_violations.is_empty();
+    let (reason_code, error_code) = if !oracles_passed {
+        (ReasonCode::OracleFailure, ErrorCode::HarnessInternal)
+    } else if invariant_violations_found {
+        (ReasonCode::InvariantViolation, ErrorCode::SafetyViolation)
+    } else {
+        (ReasonCode::Completed, ErrorCode::None)
+    };
+    let outcome = if oracles_passed && !invariant_violations_found {
+        Outcome::Passed
+    } else {
+        Outcome::Failed
+    };
+    logger
+        .emit(outcome, reason_code, error_code)
+        .decision_path("lab_runtime_report")
+        .input_summary(&format!(
+            "steps={} final_time_ns={} oracles_passed={} invariant_violations={}",
+            runtime.steps(),
+            runtime.now().as_nanos(),
+            oracles_passed,
+            report.invariant_violations.len()
+        ))
+        .log();
+    let event_count = logger.events().len();
+    let correlation_id = logger.correlation_id().to_string();
+    let event_log_path = logger.flush();
 
     let lab_report = LabTestReport {
         seed,
@@ -171,6 +274,9 @@ where
         final_time: runtime.now(),
         oracles_passed,
         invariant_violations_found,
+        correlation_id,
+        event_count,
+        event_log_path,
     };
 
     tracing::info!(
@@ -306,7 +412,12 @@ where
 {
     let seed = config.base.seed;
     let test_name = config.base.test_name.clone();
+    let mut logger = TestEventLogger::new(&config.base.component, &config.base.bead_id, &test_name);
+    if let Some(dir) = config.base.artifact_dir.clone() {
+        logger = logger.with_artifact_dir(dir);
+    }
 
+    let chaos_description = format!("{:?}", config.chaos);
     let mut lab_config = config.base.to_lab_config();
     lab_config = match config.chaos {
         ChaosPreset::Light => lab_config.with_light_chaos(),
@@ -320,11 +431,44 @@ where
         chaos = true,
         "Starting chaos LabRuntime test"
     );
+    logger.started();
+    logger
+        .emit(
+            Outcome::SetupComplete,
+            ReasonCode::ChaosInjected,
+            ErrorCode::None,
+        )
+        .decision_path("chaos_runtime_create")
+        .input_summary(&format!(
+            "seed={seed} workers={} max_steps={} chaos={:?}",
+            config.base.worker_count, config.base.max_steps, chaos_description
+        ))
+        .log();
 
     let mut runtime = LabRuntime::new(lab_config);
     let chaos_active = runtime.has_chaos();
 
-    test_fn(&mut runtime);
+    let test_result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test_fn(&mut runtime)));
+    if let Err(panic_payload) = test_result {
+        let panic_message = panic_payload
+            .downcast_ref::<String>()
+            .map(|message| message.as_str())
+            .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        logger
+            .emit(
+                Outcome::Failed,
+                ReasonCode::PanicPropagated,
+                ErrorCode::Panic,
+            )
+            .decision_path("chaos_test_closure")
+            .input_summary(panic_message)
+            .log();
+        let _ = logger.flush();
+        std::panic::resume_unwind(panic_payload);
+    }
+    logger.checkpoint("chaos_test_closure_completed");
 
     let report = runtime.run_until_quiescent_with_report();
     let oracles_passed = report.oracle_report.all_passed();
@@ -342,6 +486,33 @@ where
         violations = report.invariant_violations.len(),
         "Chaos LabRuntime test completed"
     );
+    let (reason_code, error_code) = if !oracles_passed {
+        (ReasonCode::OracleFailure, ErrorCode::HarnessInternal)
+    } else if invariant_violations_found {
+        (ReasonCode::InvariantViolation, ErrorCode::SafetyViolation)
+    } else {
+        (ReasonCode::ChaosInjected, ErrorCode::None)
+    };
+    let outcome = if oracles_passed && !invariant_violations_found {
+        Outcome::Passed
+    } else {
+        Outcome::Failed
+    };
+    logger
+        .emit(outcome, reason_code, error_code)
+        .decision_path("chaos_lab_runtime_report")
+        .input_summary(&format!(
+            "steps={} final_time_ns={} chaos_active={} chaos_decision_points={} chaos_delays={}",
+            runtime.steps(),
+            runtime.now().as_nanos(),
+            chaos_active,
+            chaos_stats.decision_points,
+            chaos_stats.delays
+        ))
+        .log();
+    let event_count = logger.events().len();
+    let correlation_id = logger.correlation_id().to_string();
+    let event_log_path = logger.flush();
 
     let base_report = LabTestReport {
         seed,
@@ -350,6 +521,9 @@ where
         final_time: runtime.now(),
         oracles_passed,
         invariant_violations_found,
+        correlation_id,
+        event_count,
+        event_log_path,
     };
 
     assert!(
@@ -488,6 +662,7 @@ where
     F: Fn(&mut LabRuntime),
 {
     let test_name = config.test_name.clone();
+    let mut logger = TestEventLogger::new("tests.common.lab", "wa-a4goc", &test_name);
 
     tracing::info!(
         test_name = %test_name,
@@ -496,6 +671,19 @@ where
         workers = config.worker_count,
         "Starting schedule exploration"
     );
+    logger.started();
+    logger
+        .emit(
+            Outcome::SetupComplete,
+            ReasonCode::Completed,
+            ErrorCode::None,
+        )
+        .decision_path("schedule_explorer_create")
+        .input_summary(&format!(
+            "base_seed={} max_runs={} workers={} max_steps_per_run={}",
+            config.base_seed, config.max_runs, config.worker_count, config.max_steps_per_run
+        ))
+        .log();
 
     let explorer_config = config.to_explorer_config();
     let mut explorer = ScheduleExplorer::new(explorer_config);
@@ -512,6 +700,25 @@ where
         violation_count = violation_seeds.len(),
         "Schedule exploration completed"
     );
+    let (reason_code, error_code) = if has_violations {
+        (ReasonCode::ScheduleDivergence, ErrorCode::SafetyViolation)
+    } else {
+        (ReasonCode::Completed, ErrorCode::None)
+    };
+    let outcome = if has_violations {
+        Outcome::Failed
+    } else {
+        Outcome::Passed
+    };
+    logger
+        .emit(outcome, reason_code, error_code)
+        .decision_path("schedule_explorer_report")
+        .input_summary(&format!(
+            "total_runs={} unique_classes={} violation_seeds={:?}",
+            inner.total_runs, inner.unique_classes, violation_seeds
+        ))
+        .log();
+    let _ = logger.flush();
 
     let report = ExplorationTestReport {
         test_name: test_name.clone(),
@@ -545,30 +752,7 @@ where
     for &seed in seeds {
         let name = format!("{test_name}/seed-{seed}");
         let config = LabTestConfig::new(seed, name);
-        let mut runtime = LabRuntime::new(config.to_lab_config());
-        test_fn(&mut runtime);
-
-        let report = runtime.run_until_quiescent_with_report();
-        let oracles_passed = report.oracle_report.all_passed();
-        let invariant_violations_found = !report.invariant_violations.is_empty();
-
-        assert!(
-            oracles_passed,
-            "[{test_name}] Oracle failure at seed {seed}"
-        );
-        assert!(
-            !invariant_violations_found,
-            "[{test_name}] Invariant violations at seed {seed}"
-        );
-
-        reports.push(LabTestReport {
-            seed,
-            test_name: format!("{test_name}/seed-{seed}"),
-            steps: runtime.steps(),
-            final_time: runtime.now(),
-            oracles_passed,
-            invariant_violations_found,
-        });
+        reports.push(run_lab_test(config, |runtime| test_fn(runtime)));
     }
     reports
 }

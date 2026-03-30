@@ -76,12 +76,19 @@ fn bench_gc_cycle_time(c: &mut Criterion) {
             |(mut caches, active_sets)| {
                 let mut removed_total = 0usize;
                 let mut freed_slots_total = 0usize;
+                let mut estimated_bytes_freed_total = 0usize;
                 for (cache, active) in caches.iter_mut().zip(&active_sets) {
                     let stats = compact_u64_map(cache, active);
                     removed_total = removed_total.saturating_add(stats.removed_entries);
                     freed_slots_total = freed_slots_total.saturating_add(stats.freed_slots());
+                    estimated_bytes_freed_total =
+                        estimated_bytes_freed_total.saturating_add(stats.estimated_bytes_freed());
                 }
-                black_box((removed_total, freed_slots_total));
+                black_box((
+                    removed_total,
+                    freed_slots_total,
+                    estimated_bytes_freed_total,
+                ));
             },
             BatchSize::SmallInput,
         );
@@ -148,6 +155,8 @@ fn bench_gc_report_generation(c: &mut Criterion) {
             after_len: 10_000usize.saturating_sub((idx % 8).saturating_mul(200)),
             after_capacity: 12_288,
             removed_entries: (idx % 8).saturating_mul(200),
+            estimated_bytes_freed: (16_384usize.saturating_sub(12_288))
+                .saturating_mul(std::mem::size_of::<(u64, u64)>()),
         })
         .collect();
 
@@ -165,6 +174,7 @@ fn bench_gc_report_generation(c: &mut Criterion) {
                         "after_capacity": stats.after_capacity,
                         "removed_entries": stats.removed_entries,
                         "freed_slots": stats.freed_slots(),
+                        "estimated_bytes_freed": stats.estimated_bytes_freed(),
                     })
                 })
                 .collect();

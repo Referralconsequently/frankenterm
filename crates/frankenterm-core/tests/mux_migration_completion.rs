@@ -109,6 +109,89 @@ fn pool_cancelled_cx_acquire_fails_cleanly() {
 }
 
 #[test]
+fn pool_cancelled_cx_under_contention_then_recovery_restores_capacity() {
+    let rt = RuntimeFixture::current_thread();
+    rt.block_on(async {
+        let cx = healthy_cx();
+        let pool = MockPool::new(1);
+        let client = MockMuxClient::new();
+
+        client
+            .set_pane_content(&cx, 11, "steady-state".to_string())
+            .await
+            .expect("set content");
+
+        let held_conn = pool.acquire(&cx).await.expect("primary acquire");
+        let first = client.get_pane_text(&cx, 11).await.expect("first read");
+        assert_eq!(first, "steady-state");
+        assert_eq!(
+            pool.available_permits(),
+            0,
+            "primary checkout holds the only slot"
+        );
+        assert_eq!(
+            pool.total_acquired(),
+            1,
+            "only the healthy primary acquire should count as successful"
+        );
+
+        let cancelled = user_cancelled_cx();
+        let blocked = pool.acquire(&cancelled).await;
+        assert!(blocked.is_err(), "cancelled nested acquire should fail");
+        let err = blocked.unwrap_err();
+        assert!(
+            err.contains("cancelled") || err.contains("semaphore") || err.contains("Cancelled"),
+            "error should indicate cancellation: {err}"
+        );
+        assert_eq!(
+            pool.available_permits(),
+            0,
+            "cancelled acquire must not leak or restore a permit while the primary checkout is held"
+        );
+        assert_eq!(
+            pool.total_acquired(),
+            1,
+            "cancelled acquire must not count as a successful checkout"
+        );
+        assert_eq!(
+            client.request_count(),
+            1,
+            "cancellation should fail before issuing an extra mux request"
+        );
+
+        pool.release(&cx, held_conn).await.expect("release primary");
+        assert_eq!(
+            pool.available_permits(),
+            1,
+            "release must restore the only permit"
+        );
+
+        let recovered_conn = pool.acquire(&cx).await.expect("recovery acquire");
+        let second = client.get_pane_text(&cx, 11).await.expect("second read");
+        assert_eq!(second, "steady-state");
+        pool.release(&cx, recovered_conn)
+            .await
+            .expect("release recovery");
+
+        assert_eq!(
+            pool.total_acquired(),
+            2,
+            "only the two healthy acquires should count after recovery"
+        );
+        assert_eq!(
+            client.request_count(),
+            2,
+            "healthy retry should complete the next read"
+        );
+        assert_eq!(
+            pool.available_permits(),
+            1,
+            "recovery path must leave the pool balanced"
+        );
+    });
+}
+
+#[test]
 fn mux_client_cancelled_cx_rejects_operations() {
     let rt = RuntimeFixture::current_thread();
     rt.block_on(async {

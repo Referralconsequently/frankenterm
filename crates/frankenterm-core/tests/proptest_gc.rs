@@ -279,6 +279,7 @@ proptest! {
             after_len: 0,
             after_capacity: after_cap,
             removed_entries: 0,
+            estimated_bytes_freed: 0,
         };
         let freed = stats.freed_slots();
         prop_assert_eq!(freed, before_cap.saturating_sub(after_cap));
@@ -318,9 +319,10 @@ proptest! {
 fn default_settings_are_valid() {
     let settings = CacheGcSettings::default();
     assert!(settings.enabled);
-    assert!(settings.interval_secs > 0);
+    assert!(settings.interval_seconds > 0);
     assert!(settings.vacuum_threshold > 0.0);
     assert!(settings.vacuum_threshold <= 1.0);
+    assert!(settings.log_report);
 }
 
 #[test]
@@ -332,6 +334,7 @@ fn default_compaction_stats_are_zero() {
     assert_eq!(stats.after_capacity, 0);
     assert_eq!(stats.removed_entries, 0);
     assert_eq!(stats.freed_slots(), 0);
+    assert_eq!(stats.estimated_bytes_freed(), 0);
 }
 
 // =============================================================================
@@ -548,8 +551,9 @@ proptest! {
     ) {
         let settings = CacheGcSettings {
             enabled,
-            interval_secs: interval,
+            interval_seconds: interval,
             vacuum_threshold: threshold,
+            log_report: true,
         };
         prop_assert!(settings == settings, "PartialEq should be reflexive");
     }
@@ -570,13 +574,15 @@ proptest! {
     ) {
         let a = CacheGcSettings {
             enabled: true,
-            interval_secs: interval,
+            interval_seconds: interval,
             vacuum_threshold: threshold,
+            log_report: true,
         };
         let b = CacheGcSettings {
             enabled: false,
-            interval_secs: interval,
+            interval_seconds: interval,
             vacuum_threshold: threshold,
+            log_report: true,
         };
         prop_assert!(a != b, "different enabled should mean different settings");
     }
@@ -601,6 +607,7 @@ proptest! {
             after_len: 0,
             after_capacity: after_cap,
             removed_entries: 0,
+            estimated_bytes_freed: 0,
         };
         // freed_slots should never panic or overflow
         let freed = stats.freed_slots();
@@ -626,9 +633,14 @@ proptest! {
             after_len,
             after_capacity: after_cap,
             removed_entries: removed,
+            estimated_bytes_freed: removed,
         };
         let copied = stats;
         prop_assert_eq!(stats, copied, "Copy should produce identical stats");
         prop_assert_eq!(stats.freed_slots(), copied.freed_slots());
+        prop_assert_eq!(
+            stats.estimated_bytes_freed(),
+            copied.estimated_bytes_freed()
+        );
     }
 }

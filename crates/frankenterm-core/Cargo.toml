@@ -158,6 +158,16 @@ harness = false
 required-features = ["asupersync-runtime"]
 
 [[bench]]
+name = "sync_primitives"
+harness = false
+required-features = ["asupersync-runtime"]
+
+[[bench]]
+name = "timer_precision"
+harness = false
+required-features = ["asupersync-runtime"]
+
+[[bench]]
 name = "task_spawn"
 harness = false
 required-features = ["asupersync-runtime"]

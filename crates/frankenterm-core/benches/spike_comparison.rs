@@ -45,12 +45,12 @@ const BUDGETS: &[bench_common::BenchBudget] = &[
         budget: "asupersync semaphore+mutex+budget-timeout baseline",
     },
     bench_common::BenchBudget {
-        name: "spike_comparison/lab_oracle/tokio",
-        budget: "tokio no-op control for deterministic harness work",
+        name: "spike_comparison/sleep_wakeup/tokio",
+        budget: "tokio timer sleep wake-up baseline",
     },
     bench_common::BenchBudget {
-        name: "spike_comparison/lab_oracle/asupersync",
-        budget: "asupersync LabRuntime run+oracle report",
+        name: "spike_comparison/sleep_wakeup/asupersync",
+        budget: "asupersync LabRuntime virtual sleep wake-up baseline",
     },
     bench_common::BenchBudget {
         name: "spike_comparison/select_race/tokio",
@@ -96,6 +96,13 @@ async fn asup_read_pdu(stream: &mut AsupUnixStream) -> Vec<u8> {
     let mut payload = vec![0_u8; len];
     stream.read_exact(&mut payload).await.expect("read payload");
     payload
+}
+
+async fn asup_sleep_once(duration: Duration) {
+    let now = Cx::current()
+        .and_then(|cx| cx.timer_driver())
+        .map_or(asupersync::Time::ZERO, |driver| driver.now());
+    asupersync::time::sleep(now, duration).await;
 }
 
 fn bench_unixstream_pdu(c: &mut Criterion) {
@@ -221,8 +228,8 @@ fn bench_pool_pattern(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_lab_runtime_oracle(c: &mut Criterion) {
-    let mut group = c.benchmark_group("spike_comparison/lab_oracle");
+fn bench_sleep_wakeup(c: &mut Criterion) {
+    let mut group = c.benchmark_group("spike_comparison/sleep_wakeup");
     let tokio_rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -231,16 +238,34 @@ fn bench_lab_runtime_oracle(c: &mut Criterion) {
     group.bench_function("tokio", |b| {
         b.iter(|| {
             tokio_rt.block_on(async {
-                black_box(1_u8);
+                tokio::time::sleep(Duration::from_millis(1)).await;
             });
         });
     });
 
     group.bench_function("asupersync", |b| {
         b.iter(|| {
-            let mut lab = LabRuntime::new(LabConfig::new(7).worker_count(2).max_steps(1_000));
-            let report = lab.run_until_quiescent_with_report();
-            black_box(report.oracle_report.all_passed());
+            let mut lab = LabRuntime::new(
+                LabConfig::new(7)
+                    .with_auto_advance()
+                    .worker_count(2)
+                    .max_steps(1_000),
+            );
+            let region = lab.state.create_root_region(Budget::INFINITE);
+            let (task_id, _handle) = lab
+                .state
+                .create_task(region, Budget::INFINITE, async {
+                    asup_sleep_once(Duration::from_millis(1)).await;
+                })
+                .expect("spawn virtual sleep task");
+            lab.scheduler.lock().schedule(task_id, 0);
+            lab.step_for_test();
+            let wake_report = lab.run_with_auto_advance();
+            let oracle_report = lab.run_until_quiescent_with_report();
+            black_box((
+                wake_report.auto_advances,
+                oracle_report.oracle_report.all_passed(),
+            ));
         });
     });
 
@@ -297,7 +322,7 @@ criterion_group!(
         bench_unixstream_pdu,
         bench_two_phase_send,
         bench_pool_pattern,
-        bench_lab_runtime_oracle,
+        bench_sleep_wakeup,
         bench_select_race
 );
 criterion_main!(benches);
