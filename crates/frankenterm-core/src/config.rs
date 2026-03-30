@@ -8,6 +8,7 @@
 //! - `general`: Log level, workspace/data directory
 //! - `ingest`: Poll interval, concurrency, gap detection, pane filters/priorities, budgets
 //! - `storage`: DB path, retention, flush intervals
+//! - `gc`: Periodic cache compaction and SQLite vacuum policy
 //! - `backup`: Scheduled backup configuration
 //! - `sync`: Asupersync targets, allow/deny rules, safety defaults
 //! - `patterns`: Enabled packs, per-pack overrides
@@ -47,6 +48,9 @@ pub struct Config {
 
     /// Storage settings (database, retention)
     pub storage: StorageConfig,
+
+    /// Periodic cache compaction and vacuum settings
+    pub gc: crate::gc::CacheGcSettings,
 
     /// Backup settings (scheduled backups)
     pub backup: BackupConfig,
@@ -3218,6 +3222,8 @@ pub struct HotReloadableConfig {
     pub retention_max_mb: u32,
     /// Checkpoint interval in seconds
     pub checkpoint_interval_secs: u32,
+    /// Periodic cache GC and vacuum policy.
+    pub gc: crate::gc::CacheGcSettings,
 
     // Patterns
     /// Pattern detection settings
@@ -3248,6 +3254,7 @@ impl HotReloadableConfig {
             retention_days: config.storage.retention_days,
             retention_max_mb: config.storage.retention_max_mb,
             checkpoint_interval_secs: config.storage.checkpoint_interval_secs,
+            gc: config.gc,
             patterns: config.patterns.clone(),
             workflows_enabled: config.workflows.enabled.clone(),
             auto_run_allowlist: config.workflows.auto_run_allowlist.clone(),
@@ -3469,6 +3476,38 @@ impl Config {
                 name: "storage.checkpoint_interval_secs".to_string(),
                 old_value: self.storage.checkpoint_interval_secs.to_string(),
                 new_value: new_config.storage.checkpoint_interval_secs.to_string(),
+            });
+        }
+
+        if self.gc.enabled != new_config.gc.enabled {
+            changes.push(HotReloadChange {
+                name: "gc.enabled".to_string(),
+                old_value: self.gc.enabled.to_string(),
+                new_value: new_config.gc.enabled.to_string(),
+            });
+        }
+
+        if self.gc.interval_seconds != new_config.gc.interval_seconds {
+            changes.push(HotReloadChange {
+                name: "gc.interval_seconds".to_string(),
+                old_value: self.gc.interval_seconds.to_string(),
+                new_value: new_config.gc.interval_seconds.to_string(),
+            });
+        }
+
+        if (self.gc.vacuum_threshold - new_config.gc.vacuum_threshold).abs() > f64::EPSILON {
+            changes.push(HotReloadChange {
+                name: "gc.vacuum_threshold".to_string(),
+                old_value: self.gc.vacuum_threshold.to_string(),
+                new_value: new_config.gc.vacuum_threshold.to_string(),
+            });
+        }
+
+        if self.gc.log_report != new_config.gc.log_report {
+            changes.push(HotReloadChange {
+                name: "gc.log_report".to_string(),
+                old_value: self.gc.log_report.to_string(),
+                new_value: new_config.gc.log_report.to_string(),
             });
         }
 
@@ -3828,6 +3867,10 @@ impl Config {
             )
             .into());
         }
+
+        self.gc
+            .validate()
+            .map_err(crate::error::ConfigError::ValidationError)?;
 
         if self.workflows.max_concurrent == 0 {
             return Err(crate::error::ConfigError::ValidationError(
@@ -4286,6 +4329,7 @@ mod tests {
         assert!(toml.contains("[general]"));
         assert!(toml.contains("[ingest]"));
         assert!(toml.contains("[storage]"));
+        assert!(toml.contains("[gc]"));
         assert!(toml.contains("[patterns]"));
         assert!(toml.contains("[workflows]"));
         assert!(toml.contains("[safety]"));
@@ -4304,6 +4348,7 @@ mod tests {
             parsed.ingest.poll_interval_ms
         );
         assert_eq!(config.storage.retention_days, parsed.storage.retention_days);
+        assert_eq!(config.gc, parsed.gc);
         assert_eq!(
             config.workflows.max_concurrent,
             parsed.workflows.max_concurrent
@@ -4356,6 +4401,22 @@ window_size = 256
         assert_eq!(config.safety.trauma_guard.max_consecutive_failures, 6);
         assert!((config.safety.trauma_guard.similarity_threshold - 0.91).abs() < f64::EPSILON);
         assert_eq!(config.safety.trauma_guard.window_size, 256);
+    }
+
+    #[test]
+    fn gc_toml_parses() {
+        let toml = r#"
+[gc]
+enabled = false
+interval_seconds = 120
+vacuum_threshold = 0.35
+log_report = false
+"#;
+        let config = Config::from_toml(toml).expect("Failed to parse");
+        assert!(!config.gc.enabled);
+        assert_eq!(config.gc.interval_seconds, 120);
+        assert!((config.gc.vacuum_threshold - 0.35).abs() < f64::EPSILON);
+        assert!(!config.gc.log_report);
     }
 
     #[test]
@@ -5151,6 +5212,19 @@ max_bytes_per_sec = 1048576
     }
 
     #[test]
+    fn hot_reload_allows_gc_change() {
+        let config1 = Config::default();
+        let mut config2 = Config::default();
+        config2.gc.interval_seconds = 900;
+
+        let result = config1.diff_for_hot_reload(&config2);
+
+        assert!(result.allowed);
+        assert_eq!(result.changes.len(), 1);
+        assert_eq!(result.changes[0].name, "gc.interval_seconds");
+    }
+
+    #[test]
     fn hot_reload_allows_pattern_packs_change() {
         let config1 = Config::default();
         let mut config2 = Config::default();
@@ -5345,6 +5419,10 @@ max_bytes_per_sec = 1048576
         config.ingest.priorities.default_priority = 42;
         config.ingest.budgets.max_captures_per_sec = 25;
         config.storage.retention_days = 45;
+        config.gc.enabled = false;
+        config.gc.interval_seconds = 900;
+        config.gc.vacuum_threshold = 0.33;
+        config.gc.log_report = false;
         config.patterns.packs = vec!["builtin:core".to_string()];
         config.safety.trauma_guard.enabled = false;
         config.safety.trauma_guard.max_consecutive_failures = 5;
@@ -5358,6 +5436,10 @@ max_bytes_per_sec = 1048576
         assert_eq!(hot.pane_priorities.default_priority, 42);
         assert_eq!(hot.capture_budgets.max_captures_per_sec, 25);
         assert_eq!(hot.retention_days, 45);
+        assert!(!hot.gc.enabled);
+        assert_eq!(hot.gc.interval_seconds, 900);
+        assert!((hot.gc.vacuum_threshold - 0.33).abs() < f64::EPSILON);
+        assert!(!hot.gc.log_report);
         assert_eq!(hot.patterns.packs, vec!["builtin:core".to_string()]);
         assert!(!hot.trauma_guard.enabled);
         assert_eq!(hot.trauma_guard.max_consecutive_failures, 5);
@@ -6175,6 +6257,15 @@ retention_tiers = []
         let config = StorageConfig::default();
         assert!(config.retention_days > 0);
         assert!(config.checkpoint_interval_secs > 0);
+    }
+
+    #[test]
+    fn gc_config_defaults() {
+        let config = crate::gc::CacheGcSettings::default();
+        assert!(config.enabled);
+        assert_eq!(config.interval_seconds, 3600);
+        assert!((config.vacuum_threshold - 0.20).abs() < f64::EPSILON);
+        assert!(config.log_report);
     }
 
     #[test]

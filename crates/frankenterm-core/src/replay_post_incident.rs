@@ -75,10 +75,10 @@ pub struct PostIncidentInput {
 
 /// Validate pipeline input.
 pub fn validate_input(input: &PostIncidentInput) -> Result<(), String> {
-    if input.incident_id.is_empty() {
+    if input.incident_id.trim().is_empty() {
         return Err("incident_id is required".into());
     }
-    if input.recording_path.is_empty() {
+    if input.recording_path.trim().is_empty() {
         return Err("recording_path is required".into());
     }
     if !input.recording_path.ends_with(".ftreplay") {
@@ -173,6 +173,10 @@ pub fn execute_pipeline(input: &PostIncidentInput) -> PipelineResult {
             .unwrap_or(&input.recording_path)
     );
     let bead_id = format!("incident-{}", input.incident_id);
+    let notify_message = match input.webhook_url.as_deref() {
+        Some(url) => format!("Notification sent to {url}"),
+        None => "Notification skipped: no webhook_url configured".to_string(),
+    };
 
     let steps = vec![
         StepResult {
@@ -210,7 +214,7 @@ pub fn execute_pipeline(input: &PostIncidentInput) -> PipelineResult {
         StepResult {
             step: PipelineStep::Notify,
             success: true,
-            message: "Notification sent".into(),
+            message: notify_message,
             artifact_path: None,
             bead_id: None,
             duration_ms: 25,
@@ -404,9 +408,32 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_incident_id_error() {
+        let input = PostIncidentInput {
+            incident_id: "   ".into(),
+            recording_path: "test.ftreplay".into(),
+            ..sample_input()
+        };
+        let result = validate_input(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("incident_id"));
+    }
+
+    #[test]
     fn empty_recording_path_error() {
         let input = PostIncidentInput {
             recording_path: String::new(),
+            ..sample_input()
+        };
+        let result = validate_input(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("recording_path"));
+    }
+
+    #[test]
+    fn whitespace_recording_path_error() {
+        let input = PostIncidentInput {
+            recording_path: "   ".into(),
             ..sample_input()
         };
         let result = validate_input(&input);
@@ -471,6 +498,34 @@ mod tests {
         let result = execute_pipeline(&input);
         let sum: u64 = result.steps.iter().map(|s| s.duration_ms).sum();
         assert_eq!(result.total_duration_ms, sum);
+    }
+
+    #[test]
+    fn pipeline_notify_step_is_skipped_without_webhook() {
+        let input = sample_input();
+        let result = execute_pipeline(&input);
+        let notify = result
+            .steps
+            .iter()
+            .find(|step| step.step == PipelineStep::Notify)
+            .expect("notify step present");
+        assert_eq!(notify.message, "Notification skipped: no webhook_url configured");
+    }
+
+    #[test]
+    fn pipeline_notify_step_mentions_destination_when_configured() {
+        let mut input = sample_input();
+        input.webhook_url = Some("https://example.invalid/hook".into());
+        let result = execute_pipeline(&input);
+        let notify = result
+            .steps
+            .iter()
+            .find(|step| step.step == PipelineStep::Notify)
+            .expect("notify step present");
+        assert_eq!(
+            notify.message,
+            "Notification sent to https://example.invalid/hook"
+        );
     }
 
     #[test]

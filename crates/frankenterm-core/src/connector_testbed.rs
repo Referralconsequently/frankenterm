@@ -136,8 +136,16 @@ impl MockProvider {
     ) -> MockProviderOutcome {
         self.requests_received += 1;
 
+        let current_second = at_ms / 1000;
+        let requests_this_second = self
+            .request_log
+            .iter()
+            .filter(|request| request.at_ms / 1000 == current_second)
+            .count();
         let outcome = if !self.online {
             MockProviderOutcome::Offline
+        } else if self.rate_limit_rps > 0 && requests_this_second >= self.rate_limit_rps as usize {
+            MockProviderOutcome::RateLimited
         } else if self.failure_rate_pct > 0 && (seed % 100) < u64::from(self.failure_rate_pct) {
             MockProviderOutcome::SimulatedFailure
         } else {
@@ -856,6 +864,29 @@ mod tests {
         assert_eq!(out1, MockProviderOutcome::SimulatedFailure);
         let out2 = p.receive_request("conn-1", "invoke", 1001, 70); // 70 >= 50 → success
         assert_eq!(out2, MockProviderOutcome::Success);
+    }
+
+    #[test]
+    fn mock_provider_rate_limit_enforced_per_second() {
+        let mut p = MockProvider::new("github").with_rate_limit(2);
+
+        assert_eq!(
+            p.receive_request("conn-1", "invoke", 1000, 0),
+            MockProviderOutcome::Success
+        );
+        assert_eq!(
+            p.receive_request("conn-1", "invoke", 1500, 0),
+            MockProviderOutcome::Success
+        );
+        assert_eq!(
+            p.receive_request("conn-1", "invoke", 1999, 0),
+            MockProviderOutcome::RateLimited
+        );
+        assert_eq!(
+            p.receive_request("conn-1", "invoke", 2000, 0),
+            MockProviderOutcome::Success
+        );
+        assert_eq!(p.requests_failed, 1);
     }
 
     #[test]

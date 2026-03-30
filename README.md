@@ -520,6 +520,15 @@ writer_queue_size = 100
 # How long to retain captured output
 retention_days = 30
 
+[gc]
+# Periodic cache compaction for long-running watchers
+enabled = true
+interval_seconds = 3600
+# Run VACUUM when more than 20% of SQLite pages are free
+vacuum_threshold = 0.20
+# Emit a per-cycle report with reclaimed slots/bytes
+log_report = true
+
 [vendored]
 # Optional explicit socket for single-backend mux access
 mux_socket_path = "~/.local/share/wezterm/default.sock"
@@ -1021,7 +1030,7 @@ ft tx show --include-contract
 
 ### Is my terminal output stored permanently?
 
-By default, output is retained for 30 days (configurable via `storage.retention_days`). Data is stored locally in SQLite at `~/.local/share/ft/ft.db`. Backup and restore is supported via `ft backup export` / `ft backup import`.
+By default, output is retained for 30 days (configurable via `storage.retention_days`). Data is stored locally in SQLite at `~/.local/share/ft/ft.db`. Long-running watchers also run periodic cache compaction and optional SQLite `VACUUM` based on the `[gc]` settings. Backup and restore is supported via `ft backup export` / `ft backup import`.
 
 ### Does ft send data anywhere?
 

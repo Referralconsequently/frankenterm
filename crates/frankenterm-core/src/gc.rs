@@ -7,24 +7,47 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 
+use serde::{Deserialize, Serialize};
+
 /// Runtime settings for periodic cache GC.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CacheGcSettings {
     /// Enable/disable periodic GC.
     pub enabled: bool,
     /// GC cadence in seconds.
-    pub interval_secs: u64,
+    #[serde(alias = "interval_secs")]
+    pub interval_seconds: u64,
     /// Vacuum trigger threshold over free-page ratio (0.0..=1.0).
     pub vacuum_threshold: f64,
+    /// Emit an info-level report after each GC cycle.
+    pub log_report: bool,
 }
 
 impl Default for CacheGcSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            interval_secs: 3600,
+            interval_seconds: 3600,
             vacuum_threshold: 0.20,
+            log_report: true,
         }
+    }
+}
+
+impl CacheGcSettings {
+    /// Validate operator-provided cache GC settings.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled && self.interval_seconds == 0 {
+            return Err("gc.interval_seconds must be >= 1 when gc.enabled=true".to_string());
+        }
+        if !self.vacuum_threshold.is_finite() || !(0.0..=1.0).contains(&self.vacuum_threshold) {
+            return Err(format!(
+                "gc.vacuum_threshold must be in [0.0, 1.0], got {}",
+                self.vacuum_threshold
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -36,12 +59,19 @@ pub struct CacheCompactionStats {
     pub after_len: usize,
     pub after_capacity: usize,
     pub removed_entries: usize,
+    /// Approximate bytes reclaimed based on slot delta and `(u64, V)` size.
+    pub estimated_bytes_freed: usize,
 }
 
 impl CacheCompactionStats {
     #[must_use]
     pub fn freed_slots(self) -> usize {
         self.before_capacity.saturating_sub(self.after_capacity)
+    }
+
+    #[must_use]
+    pub fn estimated_bytes_freed(self) -> usize {
+        self.estimated_bytes_freed
     }
 }
 
@@ -111,6 +141,9 @@ where
 
     let after_len = map.len();
     let after_capacity = map.capacity();
+    let estimated_bytes_freed = before_capacity
+        .saturating_sub(after_capacity)
+        .saturating_mul(std::mem::size_of::<(u64, V)>());
 
     CacheCompactionStats {
         before_len,
@@ -118,6 +151,7 @@ where
         after_len,
         after_capacity,
         removed_entries,
+        estimated_bytes_freed,
     }
 }
 
@@ -177,16 +211,18 @@ mod tests {
     fn gc_settings_default_values() {
         let s = CacheGcSettings::default();
         assert!(s.enabled);
-        assert_eq!(s.interval_secs, 3600);
+        assert_eq!(s.interval_seconds, 3600);
         assert!((s.vacuum_threshold - 0.20).abs() < f64::EPSILON);
+        assert!(s.log_report);
     }
 
     #[test]
     fn gc_settings_clone_eq() {
         let s = CacheGcSettings {
             enabled: false,
-            interval_secs: 600,
+            interval_seconds: 600,
             vacuum_threshold: 0.5,
+            log_report: false,
         };
         let s2 = s;
         assert_eq!(s, s2);
@@ -198,6 +234,31 @@ mod tests {
         let dbg = format!("{s:?}");
         assert!(dbg.contains("CacheGcSettings"));
         assert!(dbg.contains("3600"));
+    }
+
+    #[test]
+    fn gc_settings_validate_rejects_zero_interval_when_enabled() {
+        let s = CacheGcSettings {
+            interval_seconds: 0,
+            ..CacheGcSettings::default()
+        };
+        assert_eq!(
+            s.validate().expect_err("zero interval must be rejected"),
+            "gc.interval_seconds must be >= 1 when gc.enabled=true"
+        );
+    }
+
+    #[test]
+    fn gc_settings_validate_rejects_threshold_out_of_range() {
+        let s = CacheGcSettings {
+            vacuum_threshold: 1.5,
+            ..CacheGcSettings::default()
+        };
+        assert!(
+            s.validate()
+                .expect_err("out-of-range threshold must be rejected")
+                .contains("gc.vacuum_threshold")
+        );
     }
 
     // =====================================================================
@@ -212,6 +273,7 @@ mod tests {
         assert_eq!(s.after_len, 0);
         assert_eq!(s.after_capacity, 0);
         assert_eq!(s.removed_entries, 0);
+        assert_eq!(s.estimated_bytes_freed, 0);
     }
 
     #[test]
@@ -222,8 +284,18 @@ mod tests {
             after_len: 5,
             after_capacity: 8,
             removed_entries: 5,
+            estimated_bytes_freed: 192,
         };
         assert_eq!(s.freed_slots(), 24);
+    }
+
+    #[test]
+    fn compaction_stats_estimated_bytes_freed_accessor() {
+        let s = CacheCompactionStats {
+            estimated_bytes_freed: 96,
+            ..Default::default()
+        };
+        assert_eq!(s.estimated_bytes_freed(), 96);
     }
 
     #[test]
@@ -256,6 +328,7 @@ mod tests {
             after_len: 2,
             after_capacity: 4,
             removed_entries: 1,
+            estimated_bytes_freed: 144,
         };
         let s2 = s;
         assert_eq!(s, s2);

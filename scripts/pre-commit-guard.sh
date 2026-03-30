@@ -1,52 +1,47 @@
-#!/usr/bin/env bash
-# pre-commit-guard.sh — Blocks commits that mass-delete files
-#
-# Install: ln -sf ../../scripts/pre-commit-guard.sh .git/hooks/pre-commit
-# Or: Run scripts/install-hooks.sh
-#
-# This hook prevents the recurring disaster where agents delete
-# crates/frankenterm-core (860+ files, 624K LOC) by "refactoring."
+#!/usr/bin/env python3
+# mcp-agent-mail chain-runner (pre-commit)
+import os
+import sys
+import stat
+import subprocess
+from pathlib import Path
 
-set -euo pipefail
+HOOK_DIR = Path(__file__).parent
+RUN_DIR = HOOK_DIR / 'hooks.d' / 'pre-commit'
+ORIG = HOOK_DIR / 'pre-commit.orig'
 
-# --- Rule 1: NEVER delete anything in crates/frankenterm-core/ ---
-CORE_DELETIONS=$(git diff --cached --diff-filter=D --name-only -- 'crates/frankenterm-core/' 2>/dev/null | wc -l | tr -d ' ')
-if [ "$CORE_DELETIONS" -gt 0 ]; then
-    echo ""
-    echo "=========================================="
-    echo " BLOCKED: Deleting crates/frankenterm-core files"
-    echo "=========================================="
-    echo ""
-    echo " This commit deletes $CORE_DELETIONS files from crates/frankenterm-core/."
-    echo " This crate is PERMANENT and must NEVER be removed."
-    echo ""
-    echo " If files are missing from disk, restore them:"
-    echo "   git checkout -- crates/frankenterm-core/"
-    echo ""
-    echo " To override (ONLY with explicit human approval):"
-    echo "   git commit --no-verify"
-    echo ""
-    exit 1
-fi
+def _is_exec(p: Path) -> bool:
+    try:
+        st = p.stat()
+        return bool(st.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    except Exception:
+        return False
 
-# --- Rule 2: Block commits deleting more than 50 files ---
-TOTAL_DELETIONS=$(git diff --cached --diff-filter=D --name-only 2>/dev/null | wc -l | tr -d ' ')
-if [ "$TOTAL_DELETIONS" -gt 50 ]; then
-    echo ""
-    echo "=========================================="
-    echo " BLOCKED: Mass deletion ($TOTAL_DELETIONS files)"
-    echo "=========================================="
-    echo ""
-    echo " This commit deletes $TOTAL_DELETIONS files."
-    echo " Commits deleting >50 files require explicit human approval."
-    echo ""
-    echo " To override (ONLY with explicit human approval):"
-    echo "   git commit --no-verify"
-    echo ""
-    exit 1
-fi
+def _list_execs() -> list[Path]:
+    if not RUN_DIR.exists() or not RUN_DIR.is_dir():
+        return []
+    items = sorted([p for p in RUN_DIR.iterdir() if p.is_file()], key=lambda p: p.name)
+    # On POSIX, honor exec bit; on Windows, include all files (we'll dispatch .py via python).
+    if os.name == 'posix':
+        try:
+            items = [p for p in items if _is_exec(p)]
+        except Exception:
+            pass
+    return items
 
-# --- Chain to bd hook if present ---
-if command -v bd >/dev/null 2>&1; then
-    bd hooks run pre-commit "$@" 2>/dev/null || true
-fi
+def _run_child(path: Path, * , stdin_bytes=None):
+    # On Windows, prefer 'python' for .py plugins to avoid PATHEXT reliance.
+    if os.name != 'posix' and path.suffix.lower() == '.py':
+        return subprocess.run([sys.executable, str(path)], input=stdin_bytes, check=False).returncode
+    return subprocess.run([str(path)], input=stdin_bytes, check=False).returncode
+
+for exe in _list_execs():
+    rc = _run_child(exe)
+    if rc != 0:
+        sys.exit(rc)
+
+if ORIG.exists():
+    rc = _run_child(ORIG)
+    if rc != 0:
+        sys.exit(rc)
+sys.exit(0)

@@ -1,5 +1,4 @@
 use crate::line::CellRef;
-use core::convert::TryInto;
 use core::num::NonZeroU8;
 use finl_unicode::grapheme_clusters::Graphemes;
 use fixedbitset::FixedBitSet;
