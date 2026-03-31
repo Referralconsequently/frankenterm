@@ -8319,6 +8319,42 @@ fn print_scrollback_restore_summary(
 }
 
 #[cfg(unix)]
+fn restart_operation_lock_path(db_path: &str) -> std::path::PathBuf {
+    let db_path = std::path::Path::new(db_path);
+    let parent = db_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = db_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("ft");
+    parent.join(format!("{stem}.restart.lock"))
+}
+
+#[cfg(unix)]
+fn acquire_restart_operation_lock(
+    db_path: &str,
+) -> anyhow::Result<frankenterm_core::lock::WatcherLock> {
+    let lock_path = restart_operation_lock_path(db_path);
+    match frankenterm_core::lock::WatcherLock::acquire(&lock_path) {
+        Ok(lock) => Ok(lock),
+        Err(frankenterm_core::lock::LockError::AlreadyRunning { pid, started_at }) => {
+            Err(anyhow::anyhow!(
+                "Another snapshot restore or restart operation is already in progress (pid: {pid}, started: {started_at})"
+            ))
+        }
+        Err(frankenterm_core::lock::LockError::AlreadyRunningNoMeta) => Err(anyhow::anyhow!(
+            "Another snapshot restore or restart operation is already in progress"
+        )),
+        Err(err) => Err(anyhow::anyhow!(
+            "Failed to acquire restart operation lock at {}: {err}",
+            lock_path.display()
+        )),
+    }
+}
+
+#[cfg(unix)]
 fn mux_server_pids() -> anyhow::Result<Vec<i32>> {
     let output = std::process::Command::new("pgrep")
         .args(["-f", "frankenterm-mux-server"])
@@ -25103,6 +25139,25 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 use frankenterm_core::snapshot_engine::{SnapshotEngine, SnapshotTrigger};
 
                 let db_path = Arc::new(layout.db_path.to_string_lossy().to_string());
+                let _restart_lock = match acquire_restart_operation_lock(db_path.as_str()) {
+                    Ok(lock) => lock,
+                    Err(e) => {
+                        if emit_json {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "ok": false,
+                                    "phase": "preflight",
+                                    "error": e.to_string(),
+                                    "hint": "Wait for the other snapshot restore or restart to finish, then retry.",
+                                }))?
+                            );
+                        } else {
+                            eprintln!("Restart aborted during preflight: {e}");
+                        }
+                        std::process::exit(1);
+                    }
+                };
                 let snapshot_engine =
                     SnapshotEngine::new(Arc::clone(&db_path), config.snapshots.clone());
                 let wezterm = frankenterm_core::wezterm::wezterm_handle_with_timeout(
@@ -37384,6 +37439,28 @@ async fn handle_snapshot_command(
                 return Ok(());
             }
 
+            #[cfg(unix)]
+            let _restart_lock = match acquire_restart_operation_lock(db_path.as_str()) {
+                Ok(lock) => lock,
+                Err(e) => {
+                    if emit_json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "ok": false,
+                                "phase": "preflight",
+                                "checkpoint_id": checkpoint.checkpoint_id,
+                                "error": e.to_string(),
+                                "hint": "Wait for the other snapshot restore or restart to finish, then retry.",
+                            }))?
+                        );
+                    } else {
+                        eprintln!("Snapshot restore aborted during preflight: {e}");
+                    }
+                    std::process::exit(1);
+                }
+            };
+
             match restore_snapshot_checkpoint(
                 db_path.as_str(),
                 checkpoint.checkpoint_id,
@@ -40671,6 +40748,32 @@ mod tests {
         assert_eq!(payload["outcome"].as_str(), Some("run_failed"));
         assert_eq!(payload["error_code"].as_str(), Some("runtime.run_failed"));
         assert_eq!(payload["timestamp_s"].as_u64(), Some(99));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_operation_lock_path_uses_db_stem() {
+        let path = restart_operation_lock_path("/tmp/ft.db");
+        assert_eq!(path, std::path::PathBuf::from("/tmp/ft.restart.lock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_operation_lock_is_exclusive() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let db_path = tempdir.path().join("ft.db");
+        let db_path = db_path.to_string_lossy().to_string();
+
+        let first = acquire_restart_operation_lock(&db_path).expect("acquire first lock");
+        let err = acquire_restart_operation_lock(&db_path).expect_err("second lock must fail");
+        assert!(
+            err.to_string()
+                .contains("Another snapshot restore or restart operation is already in progress")
+        );
+        drop(first);
+
+        let second = acquire_restart_operation_lock(&db_path).expect("lock should be reusable");
+        drop(second);
     }
 
     fn sample_cli_mission() -> frankenterm_core::plan::Mission {

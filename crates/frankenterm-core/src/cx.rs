@@ -24,6 +24,21 @@
 //!
 //! This keeps capability flow explicit and makes cancellation/budget handling
 //! visible at every layer.
+//!
+//! # Structured Concurrency Guidance
+//!
+//! Use the helpers in this module as the shared migration pattern for
+//! task-oriented code:
+//!
+//! - [`spawn_with_cx`] for child work that must inherit an explicit `Cx`.
+//! - [`spawn_bounded_with_cx`] for `JoinSet`-style fanout with an explicit
+//!   concurrency cap and stable result ordering.
+//! - [`spawn_with_timeout`] when a compatibility seam still needs an awaitable
+//!   child-task timeout boundary.
+//!
+//! New code should avoid detached background work. Long-lived loops should be
+//! attached to an application-owned scope, while legacy detached spawns remain
+//! quarantined behind `runtime_compat` until the owning module is migrated.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -229,6 +244,9 @@ where
 ///
 /// This helper keeps spawn fan-out deterministic and avoids unbounded
 /// task bursts while preserving input order in the collected outputs.
+///
+/// Prefer this helper at migration boundaries that previously used a
+/// `JoinSet` or ad-hoc task vector for bounded fanout.
 pub async fn spawn_bounded_with_cx<F, Fut, T>(
     handle: &RuntimeHandle,
     cx: &Cx,
@@ -653,6 +671,37 @@ mod tests {
 
     #[test]
     #[allow(clippy::type_complexity)]
+    fn spawn_bounded_preserves_order_when_tasks_finish_out_of_order() {
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let cx = for_testing();
+        let handle = runtime.handle();
+
+        let tasks: Vec<
+            Box<dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = u32> + Send>> + Send>,
+        > = [(0_u32, 30_u64), (1, 0), (2, 10), (3, 20)]
+            .into_iter()
+            .map(|(value, delay_ms)| {
+                let closure: Box<
+                    dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = u32> + Send>> + Send,
+                > = Box::new(move |_cx| {
+                    Box::pin(async move {
+                        if delay_ms > 0 {
+                            crate::runtime_compat::sleep(Duration::from_millis(delay_ms)).await;
+                        }
+                        value
+                    })
+                });
+                closure
+            })
+            .collect();
+
+        let results = runtime
+            .block_on(async { spawn_bounded_with_cx(&handle, &cx, tasks.len(), tasks).await });
+        assert_eq!(results, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
     fn spawn_bounded_concurrency_limit_1() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -683,6 +732,46 @@ mod tests {
             runtime.block_on(async { spawn_bounded_with_cx(&handle, &cx, 1, tasks).await });
         assert_eq!(results.len(), 3);
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn spawn_bounded_waits_for_all_children_before_returning() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let cx = for_testing();
+        let handle = runtime.handle();
+
+        let completed = Arc::new(AtomicUsize::new(0));
+        let tasks: Vec<
+            Box<dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = usize> + Send>> + Send>,
+        > = (0..4_usize)
+            .map(|i| {
+                let completed = Arc::clone(&completed);
+                let closure: Box<
+                    dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = usize> + Send>> + Send,
+                > = Box::new(move |_cx| {
+                    Box::pin(async move {
+                        crate::runtime_compat::sleep(Duration::from_millis(5 * (4 - i) as u64))
+                            .await;
+                        completed.fetch_add(1, Ordering::SeqCst);
+                        i
+                    })
+                });
+                closure
+            })
+            .collect();
+
+        let results =
+            runtime.block_on(async { spawn_bounded_with_cx(&handle, &cx, 2, tasks).await });
+        assert_eq!(results, vec![0, 1, 2, 3]);
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            4,
+            "spawn_bounded_with_cx should not return until every child has completed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -741,6 +830,25 @@ mod tests {
             result.is_err(),
             "explicit Cx deadline should win over a looser timeout argument"
         );
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn spawn_with_timeout_supports_nested_runtime_compat_spawn() {
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let cx = for_testing();
+        let handle = runtime.handle();
+
+        let result = runtime.block_on(async {
+            spawn_with_timeout(&handle, &cx, Duration::from_secs(1), |_cx| async move {
+                crate::runtime_compat::task::spawn(async { 41_u32 })
+                    .await
+                    .expect("nested spawn should succeed")
+            })
+            .await
+        });
+
+        assert_eq!(result.unwrap(), 41);
     }
 
     // -----------------------------------------------------------------------
