@@ -54,6 +54,9 @@ pub enum RestoreError {
 
     #[error("wezterm command failed: {0}")]
     Wezterm(String),
+
+    #[error("restore bookkeeping failed: {0}")]
+    Bookkeeping(String),
 }
 
 impl From<rusqlite::Error> for RestoreError {
@@ -469,6 +472,58 @@ fn save_restore_checkpoint(
         "UPDATE mux_sessions SET last_checkpoint_at = ?2 WHERE session_id = ?1",
         rusqlite::params![session_id, now_ms],
     )?;
+    tx.commit()?;
+
+    Ok(checkpoint_id)
+}
+
+/// Persist restore bookkeeping atomically so a successful restore never leaves
+/// a half-written startup checkpoint or clean/unclean transition behind.
+fn finalize_restore(
+    db_path: &str,
+    session_id: &str,
+    pane_id_map: &HashMap<u64, u64>,
+    mark_clean: bool,
+) -> Result<i64, RestoreError> {
+    let mut conn = open_conn(db_path)?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0);
+
+    let metadata = serde_json::json!({
+        "old_to_new": pane_id_map.iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect::<HashMap<String, u64>>(),
+    });
+
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO session_checkpoints
+         (session_id, checkpoint_at, checkpoint_type, state_hash, pane_count, total_bytes, metadata_json)
+         VALUES (?1, ?2, 'startup', 'restore', ?3, 0, ?4)",
+        rusqlite::params![
+            session_id,
+            now_ms,
+            pane_id_map.len() as i64,
+            metadata.to_string(),
+        ],
+    )?;
+    let checkpoint_id = tx.last_insert_rowid();
+    if mark_clean {
+        tx.execute(
+            "UPDATE mux_sessions
+             SET last_checkpoint_at = ?2, shutdown_clean = 1
+             WHERE session_id = ?1",
+            rusqlite::params![session_id, now_ms],
+        )?;
+    } else {
+        tx.execute(
+            "UPDATE mux_sessions SET last_checkpoint_at = ?2 WHERE session_id = ?1",
+            rusqlite::params![session_id, now_ms],
+        )?;
+    }
     tx.commit()?;
 
     Ok(checkpoint_id)
@@ -1067,30 +1122,28 @@ impl SessionRestorer {
             }
         }
 
-        // 5. Record pane ID mapping in a new startup checkpoint
-        match save_restore_checkpoint(
+        // 5. Persist restore bookkeeping atomically so startup checkpoint creation
+        // and clean/unclean session state never diverge.
+        let mark_clean = layout_result.failed_panes.is_empty();
+        let bookkeeping_checkpoint = finalize_restore(
             &self.db_path,
             &session.session_id,
             &layout_result.pane_id_map,
-        ) {
-            Ok(checkpoint_id) => {
-                debug!(checkpoint_id, "Saved restore checkpoint with pane mapping");
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to save restore checkpoint");
-            }
-        }
+            mark_clean,
+        )
+        .map_err(|error| {
+            RestoreError::Bookkeeping(format!(
+                "failed to persist restore bookkeeping for session {}: {error}",
+                session.session_id
+            ))
+        })?;
+        debug!(
+            checkpoint_id = bookkeeping_checkpoint,
+            mark_clean, "Persisted restore bookkeeping"
+        );
 
-        // 6. Mark the source session clean only after a full restore.
-        if layout_result.failed_panes.is_empty() {
-            if let Err(e) = mark_session_restored(&self.db_path, &session.session_id) {
-                warn!(
-                    session_id = %session.session_id,
-                    error = %e,
-                    "Failed to mark session as restored"
-                );
-            }
-        } else {
+        // 6. Partial restores remain retryable even when some panes came back.
+        if !mark_clean {
             warn!(
                 session_id = %session.session_id,
                 restored_panes = layout_result.pane_id_map.len(),
@@ -1944,6 +1997,90 @@ mod tests {
     }
 
     #[test]
+    fn finalize_restore_commits_checkpoint_and_clean_transition_together() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-finalize", false);
+
+        let mut mapping = HashMap::new();
+        mapping.insert(7u64, 70u64);
+
+        let checkpoint_id =
+            finalize_restore(&db_path, "sess-finalize", &mapping, true).expect("finalize restore");
+
+        let (checkpoint_type, metadata_json, last_checkpoint_at, shutdown_clean): (
+            String,
+            String,
+            Option<i64>,
+            bool,
+        ) = conn
+            .query_row(
+                "SELECT c.checkpoint_type, c.metadata_json, s.last_checkpoint_at, s.shutdown_clean
+                 FROM session_checkpoints c
+                 JOIN mux_sessions s ON s.session_id = c.session_id
+                 WHERE c.id = ?1",
+                [checkpoint_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(checkpoint_type, "startup");
+        assert!(metadata_json.contains("\"old_to_new\":{\"7\":70}"));
+        assert!(last_checkpoint_at.is_some());
+        assert!(shutdown_clean);
+    }
+
+    #[test]
+    fn finalize_restore_rolls_back_startup_checkpoint_when_clean_update_fails() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-finalize-rollback", false);
+        conn.execute_batch(
+            "CREATE TRIGGER abort_clean_restore
+             BEFORE UPDATE OF shutdown_clean ON mux_sessions
+             WHEN NEW.shutdown_clean = 1
+             BEGIN
+                 SELECT RAISE(ABORT, 'simulated clean transition failure');
+             END;",
+        )
+        .unwrap();
+
+        let mut mapping = HashMap::new();
+        mapping.insert(8u64, 80u64);
+
+        let err = finalize_restore(&db_path, "sess-finalize-rollback", &mapping, true)
+            .expect_err("finalize restore should fail");
+        assert!(
+            err.to_string()
+                .contains("simulated clean transition failure"),
+            "unexpected finalize error: {err}"
+        );
+
+        let startup_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_checkpoints
+                 WHERE session_id = 'sess-finalize-rollback' AND checkpoint_type = 'startup'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            startup_count, 0,
+            "startup checkpoint insert should roll back when the clean transition aborts"
+        );
+
+        let (last_checkpoint_at, shutdown_clean): (Option<i64>, bool) = conn
+            .query_row(
+                "SELECT last_checkpoint_at, shutdown_clean
+                 FROM mux_sessions
+                 WHERE session_id = 'sess-finalize-rollback'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(last_checkpoint_at.is_none());
+        assert!(!shutdown_clean);
+    }
+
+    #[test]
     fn restore_banner_basic() {
         let banner = restore_banner(42, "sess-test", 1700000000000, None);
         assert!(banner.contains("Session restored"));
@@ -2278,6 +2415,163 @@ mod tests {
 
         let retry_candidate = restorer.detect().unwrap().expect("retryable session");
         assert_eq!(retry_candidate.session_id, "sess-tab-fail");
+    }
+
+    #[test]
+    fn session_restorer_successful_restore_marks_clean_and_keeps_capture_checkpoint_usable() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-success", false);
+        set_single_pane_topology(&conn, "sess-success", 7, "/restore");
+
+        let checkpoint_id = insert_checkpoint(&conn, "sess-success", 5000, 1);
+        insert_pane_state(&conn, checkpoint_id, 7, Some("/restore"), Some("bash"));
+        conn.execute(
+            "UPDATE mux_sessions SET last_checkpoint_at = 5000 WHERE session_id = 'sess-success'",
+            [],
+        )
+        .unwrap();
+
+        let restorer =
+            SessionRestorer::new(Arc::new(db_path.clone()), SessionRestoreConfig::default());
+        let session = restorer.detect().unwrap().expect("restorable session");
+        let checkpoint = restorer.load_checkpoint(&session).unwrap();
+
+        let wezterm = Arc::new(MockWezterm::new());
+        let summary =
+            run_async_test(restorer.restore(&session, &checkpoint, wezterm.clone())).unwrap();
+
+        assert_eq!(summary.restored_count(), 1);
+        assert_eq!(summary.failed_count(), 0);
+        assert_eq!(summary.checkpoint_id, checkpoint_id);
+        assert!(summary.scrollback_result.is_none());
+        assert!(summary.scrollback_error.is_none());
+        assert_eq!(summary.layout_result.pane_id_map.len(), 1);
+
+        let verify_conn = Connection::open(&db_path).expect("open verification db");
+        let shutdown_clean: bool = verify_conn
+            .query_row(
+                "SELECT shutdown_clean FROM mux_sessions WHERE session_id = 'sess-success'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            shutdown_clean,
+            "successful restore should mark the source session clean"
+        );
+
+        let startup_row: (i64, String) = verify_conn
+            .query_row(
+                "SELECT id, metadata_json
+                 FROM session_checkpoints
+                 WHERE session_id = ?1 AND checkpoint_type = 'startup'
+                 ORDER BY checkpoint_at DESC
+                 LIMIT 1",
+                ["sess-success"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("startup checkpoint recorded after restore");
+        assert_ne!(
+            startup_row.0, checkpoint_id,
+            "restore should create a distinct startup checkpoint"
+        );
+
+        let new_pane_id = *summary
+            .layout_result
+            .pane_id_map
+            .get(&7)
+            .expect("old pane mapped to restored pane");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&startup_row.1).expect("parse startup checkpoint metadata");
+        assert_eq!(metadata["old_to_new"]["7"].as_u64(), Some(new_pane_id));
+
+        let latest = load_latest_checkpoint(&db_path, "sess-success")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            latest.checkpoint_id, checkpoint_id,
+            "the original capture checkpoint should remain the preferred manual-restore snapshot"
+        );
+        assert_eq!(latest.pane_states.len(), 1);
+        assert_eq!(latest.pane_states[0].pane_id, 7);
+
+        let banner_text = run_async_test(wezterm.get_text(new_pane_id, false)).unwrap();
+        assert!(
+            banner_text.contains("Session restored"),
+            "restored pane should receive the restore banner"
+        );
+
+        assert!(
+            restorer.detect().unwrap().is_none(),
+            "clean session should not be re-detected after a successful restore"
+        );
+    }
+
+    #[test]
+    fn session_restorer_restore_errors_if_atomic_bookkeeping_fails() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-bookkeeping-fail", false);
+        set_single_pane_topology(&conn, "sess-bookkeeping-fail", 9, "/restore");
+
+        let checkpoint_id = insert_checkpoint(&conn, "sess-bookkeeping-fail", 5000, 1);
+        insert_pane_state(&conn, checkpoint_id, 9, Some("/restore"), Some("bash"));
+        conn.execute(
+            "UPDATE mux_sessions SET last_checkpoint_at = 5000 WHERE session_id = 'sess-bookkeeping-fail'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER abort_bookkeeping_clean
+             BEFORE UPDATE OF shutdown_clean ON mux_sessions
+             WHEN NEW.shutdown_clean = 1
+             BEGIN
+                 SELECT RAISE(ABORT, 'simulated restore bookkeeping failure');
+             END;",
+        )
+        .unwrap();
+
+        let restorer =
+            SessionRestorer::new(Arc::new(db_path.clone()), SessionRestoreConfig::default());
+        let session = restorer.detect().unwrap().expect("restorable session");
+        let checkpoint = restorer.load_checkpoint(&session).unwrap();
+
+        let wezterm = Arc::new(MockWezterm::new());
+        let err = run_async_test(restorer.restore(&session, &checkpoint, wezterm))
+            .expect_err("restore should fail when bookkeeping cannot be committed");
+        assert!(
+            matches!(err, RestoreError::Bookkeeping(_)),
+            "unexpected restore error: {err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("simulated restore bookkeeping failure"),
+            "unexpected restore error: {err}"
+        );
+
+        let startup_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_checkpoints
+                 WHERE session_id = 'sess-bookkeeping-fail' AND checkpoint_type = 'startup'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            startup_count, 0,
+            "failed restore bookkeeping should not leave a startup checkpoint behind"
+        );
+
+        let shutdown_clean: bool = conn
+            .query_row(
+                "SELECT shutdown_clean FROM mux_sessions WHERE session_id = 'sess-bookkeeping-fail'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !shutdown_clean,
+            "failed restore bookkeeping should leave the session unclean for retry"
+        );
     }
 
     #[test]

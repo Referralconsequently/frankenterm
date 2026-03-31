@@ -277,6 +277,8 @@ fn arb_restore_summary() -> impl Strategy<Value = RestoreSummary> {
                 checkpoint_id,
                 layout_result,
                 pane_states,
+                scrollback_result: None,
+                scrollback_error: None,
                 elapsed_ms,
             },
         )
@@ -789,6 +791,55 @@ proptest! {
     }
 
     // ================================================================
+    // 24b. In-memory SQLite: newer startup checkpoint must not shadow
+    //     the latest restorable shutdown capture
+    // ================================================================
+    #[test]
+    fn db_load_latest_checkpoint_prefers_restorable_capture_over_newer_startup_checkpoint(
+        capture_at in 1i64..1_000_000,
+        startup_delta in 1i64..1_000_000,
+        pane_id in 0u64..1000,
+    ) {
+        let (db_path, conn) = setup_test_db();
+        insert_session(&conn, "sess-shadowed", false, 1000, "0.1.0", None);
+
+        let capture_cp = insert_checkpoint(
+            &conn,
+            "sess-shadowed",
+            capture_at,
+            1,
+            1024,
+            Some("shutdown"),
+        );
+        insert_pane_state(&conn, capture_cp, pane_id, Some("/restore"), Some("bash"), None);
+
+        conn.execute(
+            "INSERT INTO session_checkpoints
+             (session_id, checkpoint_at, checkpoint_type, state_hash, pane_count, total_bytes, metadata_json)
+             VALUES (?1, ?2, 'startup', 'restore', ?3, 0, ?4)",
+            params![
+                "sess-shadowed",
+                capture_at + startup_delta,
+                1i64,
+                format!(r#"{{"old_to_new":{{"{pane_id}":{}}}}}"#, pane_id + 10),
+            ],
+        )
+        .unwrap();
+
+        let data = frankenterm_core::session_restore::load_latest_checkpoint(&db_path, "sess-shadowed")
+            .unwrap()
+            .unwrap();
+
+        prop_assert_eq!(
+            data.checkpoint_id, capture_cp,
+            "startup checkpoint without pane state must not shadow the last restorable capture"
+        );
+        prop_assert_eq!(data.checkpoint_at, capture_at as u64);
+        prop_assert_eq!(data.pane_states.len(), 1);
+        prop_assert_eq!(data.pane_states[0].pane_id, pane_id);
+    }
+
+    // ================================================================
     // 25. In-memory SQLite: load_checkpoint_by_id returns correct data
     // ================================================================
     #[test]
@@ -1097,6 +1148,8 @@ proptest! {
             checkpoint_id: 1,
             layout_result: layout,
             pane_states: vec![],
+            scrollback_result: None,
+            scrollback_error: None,
             elapsed_ms: 50,
         };
         let formatted = format_restore_summary(&summary);
