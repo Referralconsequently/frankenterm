@@ -565,24 +565,22 @@ impl SearchIndex {
                 .then_with(|| left.2.cmp(&right.2))
         });
 
-        let ids: HashSet<u64> = ranked
+        let ranked_ids: Vec<u64> = ranked
             .into_iter()
             .take(limit)
             .map(|(_, _, id)| id)
             .collect();
-        let mut output = self
+        let docs_by_id: HashMap<u64, IndexedDocument> = self
             .state
             .documents
             .iter()
-            .filter(|doc| ids.contains(&doc.id))
             .cloned()
+            .map(|doc| (doc.id, doc))
+            .collect();
+        let output = ranked_ids
+            .into_iter()
+            .filter_map(|id| docs_by_id.get(&id).cloned())
             .collect::<Vec<_>>();
-        output.sort_by(|left, right| {
-            right
-                .captured_at_ms
-                .cmp(&left.captured_at_ms)
-                .then_with(|| left.id.cmp(&right.id))
-        });
 
         if !output.is_empty() {
             let _ = self.persist_state();
@@ -1969,6 +1967,38 @@ mod tests {
         assert_eq!(hits.len(), 2);
         // Higher occurrence count should appear first in ranking
         assert!(hits[0].text.matches("rust").count() >= hits[1].text.matches("rust").count());
+    }
+
+    #[test]
+    fn test_search_preserves_relevance_order_over_recency() {
+        let dir = tempdir().expect("tempdir");
+        let mut cfg = make_config(dir.path());
+        cfg.flush_docs_threshold = 1;
+        let mut index = SearchIndex::open(cfg).expect("open");
+
+        let older_more_relevant = make_doc(
+            "panic panic panic in worker",
+            1000,
+            SearchDocumentSource::Scrollback,
+        );
+        let newer_less_relevant = make_doc(
+            "single panic observed",
+            2000,
+            SearchDocumentSource::Scrollback,
+        );
+        let _ = index
+            .ingest_documents(
+                &[older_more_relevant, newer_less_relevant],
+                2100,
+                false,
+                None,
+            )
+            .expect("ingest");
+
+        let hits = index.search("panic", 10, 2200);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].captured_at_ms, 1000);
+        assert!(hits[0].text.matches("panic").count() > hits[1].text.matches("panic").count());
     }
 
     // -----------------------------------------------------------------------

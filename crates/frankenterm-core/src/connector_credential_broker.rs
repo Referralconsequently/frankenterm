@@ -630,6 +630,29 @@ impl ConnectorCredentialBroker {
             });
         }
 
+        // Check that the credential itself permits the requested scope.
+        let scope_allowed_by_credential = credential
+            .permitted_scopes
+            .iter()
+            .any(|scope| requested_scope.is_subset_of(scope));
+        if !scope_allowed_by_credential {
+            self.telemetry.access_denied += 1;
+            self.emit_audit(CredentialAuditEvent {
+                timestamp_ms: now_ms,
+                event_type: CredentialAuditType::AccessDenied,
+                credential_id: credential_id.to_string(),
+                connector_id: Some(connector_id.to_string()),
+                lease_id: None,
+                detail: format!(
+                    "credential {credential_id} does not permit requested scope {requested_scope}"
+                ),
+            });
+            return Err(CredentialBrokerError::NotAuthorized {
+                connector_id: connector_id.to_string(),
+                scope: requested_scope.to_string(),
+            });
+        }
+
         // Check authorization
         if !self.is_authorized(connector_id, &requested_scope, credential.sensitivity) {
             self.telemetry.access_denied += 1;
@@ -881,6 +904,7 @@ impl ConnectorCredentialBroker {
         })?;
         cred.state = CredentialState::Revoked;
         cred.active_lease_count = 0;
+        let provider_id = cred.provider_id.clone();
         self.telemetry.credentials_revoked += 1;
 
         // Revoke all active leases for this credential
@@ -891,6 +915,14 @@ impl ConnectorCredentialBroker {
                 revoked_leases.push(lease_id.clone());
                 self.telemetry.leases_revoked += 1;
             }
+        }
+
+        if let Some(provider) = self.providers.get_mut(&provider_id) {
+            let revoked_count = revoked_leases.len() as u32;
+            provider.active_leases = provider.active_leases.saturating_sub(revoked_count);
+            provider.total_revoked = provider
+                .total_revoked
+                .saturating_add(u64::from(revoked_count));
         }
 
         self.emit_audit(CredentialAuditEvent {
@@ -1321,6 +1353,22 @@ mod tests {
     }
 
     #[test]
+    fn request_lease_denied_when_scope_exceeds_credential_permissions() {
+        let mut broker = setup_broker();
+        let scope = CredentialScope::new("github", "orgs/foo", vec!["read".into()]);
+        let err = broker
+            .request_lease("conn-1", "cred-1", scope, 2000)
+            .unwrap_err();
+        assert!(matches!(err, CredentialBrokerError::NotAuthorized { .. }));
+        assert_eq!(broker.telemetry.access_denied, 1);
+        assert!(broker.active_leases_for_credential("cred-1").is_empty());
+        assert_eq!(
+            broker.get_credential("cred-1").unwrap().active_lease_count,
+            0
+        );
+    }
+
+    #[test]
     fn request_lease_max_leases_exceeded() {
         let mut broker = ConnectorCredentialBroker::new();
         broker
@@ -1463,6 +1511,13 @@ mod tests {
             broker.get_credential("cred-1").unwrap().state,
             CredentialState::Revoked
         );
+        assert_eq!(
+            broker.get_credential("cred-1").unwrap().active_lease_count,
+            0
+        );
+        assert_eq!(broker.get_provider("vault-1").unwrap().active_leases, 0);
+        assert_eq!(broker.get_provider("vault-1").unwrap().total_revoked, 2);
+        assert!(broker.active_leases_for_credential("cred-1").is_empty());
         assert_eq!(broker.telemetry.credentials_revoked, 1);
         assert_eq!(broker.telemetry.leases_revoked, 2);
     }

@@ -95,14 +95,7 @@ impl HyperLogLog {
     /// Insert a hashable element.
     pub fn insert<T: Hash + ?Sized>(&mut self, item: &T) {
         let hash = self.hash_item(item);
-        let idx = (hash >> (64 - self.precision)) as usize;
-        // Count leading zeros in the remaining bits
-        let remaining = if self.precision >= 64 {
-            0u64
-        } else {
-            hash << self.precision
-        };
-        let rho = remaining.leading_zeros() as u8 + 1;
+        let (idx, rho) = self.index_and_rho(hash);
 
         if rho > self.registers[idx] {
             self.registers[idx] = rho;
@@ -112,13 +105,7 @@ impl HyperLogLog {
 
     /// Insert a pre-computed hash value directly.
     pub fn insert_hash(&mut self, hash: u64) {
-        let idx = (hash >> (64 - self.precision)) as usize;
-        let remaining = if self.precision >= 64 {
-            0u64
-        } else {
-            hash << self.precision
-        };
-        let rho = remaining.leading_zeros() as u8 + 1;
+        let (idx, rho) = self.index_and_rho(hash);
 
         if rho > self.registers[idx] {
             self.registers[idx] = rho;
@@ -275,6 +262,21 @@ impl HyperLogLog {
             64 => 0.709,
             _ => 0.7213 / (1.0 + 1.079 / self.m as f64),
         }
+    }
+
+    fn index_and_rho(&self, hash: u64) -> (usize, u8) {
+        let idx = (hash >> (64 - self.precision)) as usize;
+        let remaining = if self.precision >= 64 {
+            0u64
+        } else {
+            hash << self.precision
+        };
+        let rho = if remaining == 0 {
+            65 - self.precision
+        } else {
+            remaining.leading_zeros() as u8 + 1
+        };
+        (idx, rho)
     }
 
     /// Hash an item using a fast 64-bit hash (SplitMix64-based).
@@ -783,6 +785,13 @@ mod tests {
         hll.insert_hash(0);
         assert_eq!(hll.total_inserts(), 1);
         assert!(hll.cardinality() >= 1);
+    }
+
+    #[test]
+    fn insert_hash_zero_caps_rho_to_remaining_bit_width() {
+        let mut hll = HyperLogLog::with_precision(14);
+        hll.insert_hash(0);
+        assert_eq!(hll.registers[0], 51);
     }
 
     #[test]
