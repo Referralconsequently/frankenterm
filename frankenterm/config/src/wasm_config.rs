@@ -16,7 +16,7 @@
 //! If no WASM config is found, returns `None` and the caller falls through
 //! to the next config format.
 
-use crate::{LoadedConfig, CONFIG_DIRS, CONFIG_FILE_OVERRIDE};
+use crate::{merge_dynamic_overrides, LoadedConfig, CONFIG_DIRS, CONFIG_FILE_OVERRIDE};
 use anyhow::{anyhow, Context};
 use frankenterm_dynamic::{FromDynamic, FromDynamicOptions, UnknownFieldAction, Value};
 use std::path::{Path, PathBuf};
@@ -147,13 +147,7 @@ fn try_load_wasm_file(
             let mut dynamic = evaluator(path)
                 .with_context(|| format!("WASM config evaluation failed for {}", path.display()))?;
 
-            // Merge overrides into the dynamic value
-            if let (Value::Object(ref mut base), Value::Object(ref ovr)) = (&mut dynamic, overrides)
-            {
-                for (k, v) in ovr.iter() {
-                    base.insert(k.clone(), v.clone());
-                }
-            }
+            merge_dynamic_overrides(&mut dynamic, overrides);
 
             let cfg = Config::from_dynamic(
                 &dynamic,

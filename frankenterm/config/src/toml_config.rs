@@ -14,7 +14,10 @@
 //! If no TOML config is found, returns `None` and the caller falls through
 //! to Lua config or defaults.
 
-use crate::{toml_to_dynamic, LoadedConfig, CONFIG_DIRS, CONFIG_FILE_OVERRIDE, HOME_DIR};
+use crate::{
+    merge_dynamic_overrides, toml_to_dynamic, LoadedConfig, CONFIG_DIRS, CONFIG_FILE_OVERRIDE,
+    HOME_DIR,
+};
 use anyhow::{anyhow, Context};
 use frankenterm_dynamic::{FromDynamic, FromDynamicOptions, UnknownFieldAction, Value};
 use std::path::{Path, PathBuf};
@@ -118,6 +121,36 @@ fn toml_config_search_paths() -> Vec<PathBuf> {
 ///
 /// Returns `Ok(None)` if the file does not exist, `Ok(Some(loaded))` on
 /// success, or `Err` on parse/conversion failure.
+pub(crate) fn parse_toml_config_with_overrides(
+    content: &str,
+    overrides: &Value,
+) -> anyhow::Result<Config> {
+    let toml_value: toml::Value = content
+        .parse()
+        .context("Error parsing TOML config content")?;
+
+    let mut dynamic = toml_to_dynamic(&toml_value);
+    merge_dynamic_overrides(&mut dynamic, overrides);
+
+    let cfg = Config::from_dynamic(
+        &dynamic,
+        FromDynamicOptions {
+            unknown_fields: UnknownFieldAction::Warn,
+            deprecated_fields: UnknownFieldAction::Warn,
+        },
+    )
+    .context("Error converting TOML config to Config struct")?;
+
+    cfg.check_consistency()
+        .context("check_consistency on TOML config")?;
+
+    // Compute but discard the key bindings here so that we raise any
+    // problems earlier than we use them.
+    let _ = cfg.key_bindings();
+
+    Ok(cfg)
+}
+
 fn try_load_toml_file(path: &Path, overrides: &Value) -> anyhow::Result<Option<LoadedConfig>> {
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -127,40 +160,8 @@ fn try_load_toml_file(path: &Path, overrides: &Value) -> anyhow::Result<Option<L
 
     let (config, warnings) =
         frankenterm_dynamic::Error::capture_warnings(|| -> anyhow::Result<Config> {
-            let toml_value: toml::Value = content
-                .parse()
-                .with_context(|| format!("Error parsing TOML from {}", path.display()))?;
-
-            let mut dynamic = toml_to_dynamic(&toml_value);
-
-            // Merge overrides into the dynamic value
-            if let (Value::Object(ref mut base), Value::Object(ref ovr)) = (&mut dynamic, overrides)
-            {
-                for (k, v) in ovr.iter() {
-                    base.insert(k.clone(), v.clone());
-                }
-            }
-
-            let cfg = Config::from_dynamic(
-                &dynamic,
-                FromDynamicOptions {
-                    unknown_fields: UnknownFieldAction::Warn,
-                    deprecated_fields: UnknownFieldAction::Warn,
-                },
-            )
-            .with_context(|| {
-                format!(
-                    "Error converting TOML config from {} to Config struct",
-                    path.display()
-                )
-            })?;
-
-            cfg.check_consistency()
-                .context("check_consistency on TOML config")?;
-
-            // Compute but discard the key bindings here so that we raise any
-            // problems earlier than we use them.
-            let _ = cfg.key_bindings();
+            let cfg = parse_toml_config_with_overrides(&content, overrides)
+                .with_context(|| format!("Error loading TOML config from {}", path.display()))?;
 
             std::env::set_var("FRANKENTERM_CONFIG_FILE", path);
             if let Some(dir) = path.parent() {
@@ -183,7 +184,12 @@ fn try_load_toml_file(path: &Path, overrides: &Value) -> anyhow::Result<Option<L
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::merge_dynamic_overrides;
+    use frankenterm_dynamic::ToDynamic;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
     use std::ffi::OsString;
+    use std::fmt::Write as _;
     use std::sync::Mutex;
 
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
@@ -230,6 +236,113 @@ mod tests {
                 *guard = self.previous.clone();
             }
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct RoundTripCase {
+        scrollback_lines: u32,
+        scrollback_tiered_enabled: bool,
+        font_size_tenths: u16,
+        enable_scroll_bar: bool,
+        initial_rows: u16,
+        initial_cols: u16,
+        color_scheme: String,
+    }
+
+    fn round_trip_case_strategy() -> impl Strategy<Value = RoundTripCase> {
+        (
+            1u32..200_000,
+            any::<bool>(),
+            80u16..360u16,
+            any::<bool>(),
+            10u16..120u16,
+            10u16..240u16,
+            "[A-Za-z0-9 _-]{1,24}",
+        )
+            .prop_map(
+                |(
+                    scrollback_lines,
+                    scrollback_tiered_enabled,
+                    font_size_tenths,
+                    enable_scroll_bar,
+                    initial_rows,
+                    initial_cols,
+                    color_scheme,
+                )| RoundTripCase {
+                    scrollback_lines,
+                    scrollback_tiered_enabled,
+                    font_size_tenths,
+                    enable_scroll_bar,
+                    initial_rows,
+                    initial_cols,
+                    color_scheme,
+                },
+            )
+    }
+
+    fn render_round_trip_toml(case: &RoundTripCase, presence_mask: u8) -> String {
+        let mut toml = String::new();
+
+        if presence_mask & 0b000001 != 0 {
+            let _ = writeln!(toml, "scrollback_lines = {}", case.scrollback_lines);
+        }
+        if presence_mask & 0b000010 != 0 {
+            let _ = writeln!(
+                toml,
+                "scrollback_tiered_enabled = {}",
+                case.scrollback_tiered_enabled
+            );
+        }
+        if presence_mask & 0b000100 != 0 {
+            let _ = writeln!(
+                toml,
+                "font_size = {:.1}",
+                f64::from(case.font_size_tenths) / 10.0
+            );
+        }
+        if presence_mask & 0b001000 != 0 {
+            let _ = writeln!(toml, "enable_scroll_bar = {}", case.enable_scroll_bar);
+        }
+        if presence_mask & 0b010000 != 0 {
+            let _ = writeln!(toml, "initial_rows = {}", case.initial_rows);
+        }
+        if presence_mask & 0b100000 != 0 {
+            let _ = writeln!(toml, "initial_cols = {}", case.initial_cols);
+        }
+        if presence_mask & 0b1000000 != 0 {
+            let _ = writeln!(toml, "color_scheme = {:?}", case.color_scheme);
+        }
+
+        toml
+    }
+
+    fn override_layer_strategy() -> impl Strategy<Value = Value> {
+        prop::collection::btree_map(
+            prop::sample::select(vec![
+                "scrollback_lines".to_string(),
+                "scrollback_tiered_enabled".to_string(),
+                "font_size".to_string(),
+                "enable_scroll_bar".to_string(),
+                "initial_rows".to_string(),
+                "initial_cols".to_string(),
+            ]),
+            prop_oneof![
+                (1u64..200_000u64).prop_map(|value| value.to_dynamic()),
+                any::<bool>().prop_map(|value| value.to_dynamic()),
+                (80u16..360u16).prop_map(|value| (f64::from(value) / 10.0).to_dynamic()),
+                "[A-Za-z0-9 _-]{1,24}".prop_map(|value| value.to_dynamic()),
+            ],
+            0..7,
+        )
+        .prop_map(|entries| {
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (Value::String(key), value))
+                    .collect::<BTreeMap<_, _>>()
+                    .into(),
+            )
+        })
     }
 
     #[test]
@@ -763,5 +876,126 @@ ssh_config_file = "/tmp/ft-ssh-config"
             domains[0].ssh_config_file.as_deref(),
             Some("/tmp/ft-ssh-config")
         );
+    }
+
+    proptest! {
+        #[test]
+        fn generated_round_trip_fields_are_preserved(case in round_trip_case_strategy()) {
+            let cfg = parse_toml_config_with_overrides(
+                &render_round_trip_toml(&case, 0b111_1111),
+                &Value::default(),
+            )
+            .unwrap()
+            .compute_extra_defaults(None);
+
+            prop_assert_eq!(cfg.scrollback_lines, case.scrollback_lines as usize);
+            prop_assert_eq!(cfg.scrollback_tiered_enabled, case.scrollback_tiered_enabled);
+            prop_assert_eq!(
+                (cfg.font_size * 10.0).round() as u16,
+                case.font_size_tenths
+            );
+            prop_assert_eq!(cfg.enable_scroll_bar, case.enable_scroll_bar);
+            prop_assert_eq!(cfg.initial_rows, case.initial_rows);
+            prop_assert_eq!(cfg.initial_cols, case.initial_cols);
+            prop_assert_eq!(cfg.color_scheme, Some(case.color_scheme));
+        }
+
+        #[test]
+        fn omitted_fields_fall_back_to_defaults(case in round_trip_case_strategy(), presence_mask in 0u8..128u8) {
+            let cfg = parse_toml_config_with_overrides(
+                &render_round_trip_toml(&case, presence_mask),
+                &Value::default(),
+            )
+            .unwrap()
+            .compute_extra_defaults(None);
+            let defaults = Config::default_config();
+
+            prop_assert_eq!(
+                cfg.scrollback_lines,
+                if presence_mask & 0b000001 != 0 {
+                    case.scrollback_lines as usize
+                } else {
+                    defaults.scrollback_lines
+                }
+            );
+            prop_assert_eq!(
+                cfg.scrollback_tiered_enabled,
+                if presence_mask & 0b000010 != 0 {
+                    case.scrollback_tiered_enabled
+                } else {
+                    defaults.scrollback_tiered_enabled
+                }
+            );
+            prop_assert_eq!(
+                (cfg.font_size * 10.0).round() as u16,
+                if presence_mask & 0b000100 != 0 {
+                    case.font_size_tenths
+                } else {
+                    (defaults.font_size * 10.0).round() as u16
+                }
+            );
+            prop_assert_eq!(
+                cfg.enable_scroll_bar,
+                if presence_mask & 0b001000 != 0 {
+                    case.enable_scroll_bar
+                } else {
+                    defaults.enable_scroll_bar
+                }
+            );
+            prop_assert_eq!(
+                cfg.initial_rows,
+                if presence_mask & 0b010000 != 0 {
+                    case.initial_rows
+                } else {
+                    defaults.initial_rows
+                }
+            );
+            prop_assert_eq!(
+                cfg.initial_cols,
+                if presence_mask & 0b100000 != 0 {
+                    case.initial_cols
+                } else {
+                    defaults.initial_cols
+                }
+            );
+            prop_assert_eq!(
+                cfg.color_scheme,
+                if presence_mask & 0b1000000 != 0 {
+                    Some(case.color_scheme.clone())
+                } else {
+                    defaults.color_scheme.clone()
+                }
+            );
+        }
+
+        #[test]
+        fn merge_overrides_is_associative_and_idempotent(
+            base in override_layer_strategy(),
+            file in override_layer_strategy(),
+            env in override_layer_strategy(),
+            cli in override_layer_strategy(),
+        ) {
+            let mut sequential = base.clone();
+            merge_dynamic_overrides(&mut sequential, &file);
+            merge_dynamic_overrides(&mut sequential, &env);
+            merge_dynamic_overrides(&mut sequential, &cli);
+
+            let mut combined = file.clone();
+            merge_dynamic_overrides(&mut combined, &env);
+            merge_dynamic_overrides(&mut combined, &cli);
+
+            let mut grouped = base.clone();
+            merge_dynamic_overrides(&mut grouped, &combined);
+
+            prop_assert_eq!(sequential, grouped);
+
+            let mut once = base.clone();
+            merge_dynamic_overrides(&mut once, &env);
+
+            let mut twice = once.clone();
+            merge_dynamic_overrides(&mut twice, &env);
+
+            prop_assert_eq!(once, twice);
+        }
     }
 }

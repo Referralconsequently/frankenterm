@@ -161,6 +161,21 @@ fn toml_to_dynamic(value: &toml::Value) -> Value {
     }
 }
 
+#[doc(hidden)]
+pub fn merge_dynamic_overrides(base: &mut Value, overrides: &Value) {
+    if let (Value::Object(base_map), Value::Object(override_map)) = (base, overrides) {
+        for (key, value) in override_map.iter() {
+            base_map.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn parse_toml_config_from_str(content: &str, overrides: &Value) -> anyhow::Result<Config> {
+    toml_config::parse_toml_config_with_overrides(content, overrides)
+        .map(|cfg| cfg.compute_extra_defaults(None))
+}
+
 fn json_to_dynamic(value: &serde_json::Value) -> Value {
     match value {
         serde_json::Value::Null => Value::Null,

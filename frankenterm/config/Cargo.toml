@@ -8,7 +8,9 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dev-dependencies]
+criterion.workspace = true
 env_logger.workspace = true
+proptest = "1.8.0"
 tempfile.workspace = true
 
 [features]
@@ -57,3 +59,7 @@ nix = {workspace=true, features=["resource"]}
 
 [target."cfg(windows)".dependencies]
 winapi = { workspace=true, features = ["winuser"]}
+
+[[bench]]
+name = "config_loading"
+harness = false
