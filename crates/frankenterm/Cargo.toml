@@ -62,7 +62,7 @@ default = [
     "asupersync-runtime",
 ]
 frankenterm = ["frankenterm-core/frankenterm"]
-vendored = ["frankenterm"]  # backward compat alias
+vendored = ["frankenterm", "frankenterm-core/vendored"]  # backward compat alias
 browser = ["frankenterm-core/browser"]
 mcp = ["frankenterm-core/mcp"]
 web = ["frankenterm-core/web"]
