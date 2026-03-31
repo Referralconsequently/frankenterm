@@ -16,7 +16,7 @@ use frankenterm_core::session_restore::{
 };
 use frankenterm_core::session_topology::TopologySnapshot;
 use frankenterm_core::snapshot_engine::{SnapshotEngine, SnapshotError, SnapshotTrigger};
-use frankenterm_core::wezterm::{PaneInfo, PaneSize};
+use frankenterm_core::wezterm::{MockWezterm, PaneInfo, PaneSize, WeztermInterface};
 use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -605,6 +605,190 @@ fn e2e_snapshot_dedup_retention_and_detect_cycle() {
             None
         } else {
             Some("dedup/retention/detect assertions failed".to_string())
+        };
+        emit_report(&report);
+        assert!(
+            report.passed,
+            "{}",
+            serde_json::to_string_pretty(&report).expect("pretty report")
+        );
+    });
+}
+
+#[test]
+fn e2e_restore_bookkeeping_preserves_manual_restore_checkpoint() {
+    run_async_test(async {
+        let run_start = Instant::now();
+        let mut report = E2ETestReport {
+            test_name: "e2e_restore_bookkeeping_preserves_manual_restore_checkpoint".to_string(),
+            phases: Vec::new(),
+            total_duration_ms: 0,
+            passed: false,
+            failure_reason: None,
+            pane_reports: Vec::new(),
+        };
+
+        let (_tmp, db_path) = setup_test_db();
+        let engine = SnapshotEngine::new(db_path.clone(), SnapshotConfig::default());
+        let pane = make_pane(7, 0, 0, 24, 80, "restore-agent", "file:///tmp/restore");
+
+        let capture_start = Instant::now();
+        let snapshot = engine
+            .capture(std::slice::from_ref(&pane), SnapshotTrigger::Startup)
+            .await
+            .expect("capture startup snapshot for restore e2e");
+        add_phase(
+            &mut report,
+            "capture",
+            capture_start,
+            "ok",
+            json!({
+                "session_id": snapshot.session_id,
+                "checkpoint_id": snapshot.checkpoint_id,
+                "pane_count": snapshot.pane_count,
+            }),
+        );
+
+        let restorer = SessionRestorer::new(db_path.clone(), SessionRestoreConfig::default());
+        let detect_start = Instant::now();
+        let session = restorer
+            .detect()
+            .expect("detect restore candidate")
+            .expect("candidate should exist before restore");
+        let checkpoint = restorer
+            .load_checkpoint(&session)
+            .expect("load checkpoint for restore");
+        add_phase(
+            &mut report,
+            "detect_and_load",
+            detect_start,
+            "ok",
+            json!({
+                "detected_session": session.session_id,
+                "loaded_checkpoint": checkpoint.checkpoint_id,
+                "loaded_panes": checkpoint.pane_states.len(),
+            }),
+        );
+
+        let wezterm = Arc::new(MockWezterm::new());
+        let restore_start = Instant::now();
+        let summary = restorer
+            .restore(&session, &checkpoint, wezterm.clone())
+            .await
+            .expect("restore should succeed");
+        add_phase(
+            &mut report,
+            "restore",
+            restore_start,
+            "ok",
+            json!({
+                "restored_count": summary.restored_count(),
+                "failed_count": summary.failed_count(),
+                "summary_checkpoint_id": summary.checkpoint_id,
+            }),
+        );
+
+        let verify_start = Instant::now();
+        let latest = load_latest_checkpoint(db_path.as_str(), &snapshot.session_id)
+            .expect("load latest preferred checkpoint")
+            .expect("latest preferred checkpoint should exist");
+        let latest_state = latest
+            .pane_states
+            .iter()
+            .find(|state| state.pane_id == pane.pane_id)
+            .expect("capture checkpoint should retain original pane state");
+        let (_session_info, checkpoints) =
+            show_session(db_path.as_str(), &snapshot.session_id).expect("show restored session");
+
+        let verify_conn = Connection::open(db_path.as_str()).expect("open verification db");
+        let (startup_checkpoint_id, startup_metadata_json, shutdown_clean): (i64, String, i64) =
+            verify_conn
+                .query_row(
+                    "SELECT c.id, c.metadata_json, s.shutdown_clean
+                     FROM session_checkpoints c
+                     JOIN mux_sessions s ON s.session_id = c.session_id
+                     WHERE c.session_id = ?1 AND c.checkpoint_type = 'startup'
+                     ORDER BY c.checkpoint_at DESC
+                     LIMIT 1",
+                    [snapshot.session_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("startup checkpoint should be recorded");
+        let startup_metadata: Value =
+            serde_json::from_str(&startup_metadata_json).expect("parse startup metadata");
+        let restored_new_pane_id = *summary
+            .layout_result
+            .pane_id_map
+            .get(&pane.pane_id)
+            .expect("restored pane mapping must exist");
+        let banner_text = wezterm
+            .get_text(restored_new_pane_id, false)
+            .await
+            .expect("read restore banner");
+        let redetected = restorer
+            .detect()
+            .expect("detect after restore should succeed");
+
+        let old_id_key = pane.pane_id.to_string();
+        let latest_retains_capture = latest.checkpoint_id == snapshot.checkpoint_id;
+        let capture_state_preserved = latest_state.cwd == normalize_cwd(pane.cwd.as_deref())
+            && latest_state
+                .terminal_state
+                .as_ref()
+                .is_some_and(|state| u32::from(state.rows) == pane.effective_rows())
+            && latest_state
+                .terminal_state
+                .as_ref()
+                .is_some_and(|state| u32::from(state.cols) == pane.effective_cols());
+        let startup_checkpoint_exists = checkpoints
+            .iter()
+            .any(|info| info.checkpoint_type.as_deref() == Some("startup"));
+        let startup_checkpoint_distinct = startup_checkpoint_id != snapshot.checkpoint_id;
+        let startup_mapping_matches = startup_metadata["old_to_new"][old_id_key.as_str()].as_u64()
+            == Some(restored_new_pane_id);
+        let session_clean = shutdown_clean == 1;
+        let detect_cleared = redetected.is_none();
+        let banner_written = banner_text.contains("Session restored");
+
+        add_phase(
+            &mut report,
+            "verify_restore_bookkeeping",
+            verify_start,
+            "ok",
+            json!({
+                "preferred_checkpoint_id": latest.checkpoint_id,
+                "startup_checkpoint_id": startup_checkpoint_id,
+                "startup_checkpoint_exists": startup_checkpoint_exists,
+                "startup_checkpoint_distinct": startup_checkpoint_distinct,
+                "startup_mapping_matches": startup_mapping_matches,
+                "session_clean": session_clean,
+                "detect_cleared": detect_cleared,
+                "banner_written": banner_written,
+            }),
+        );
+
+        report.pane_reports.push(PaneTestReport {
+            pane_id: pane.pane_id,
+            original_content_hash: pane_info_hash(&pane),
+            restored_content_hash: restored_state_hash(latest_state),
+            content_match: latest_retains_capture && capture_state_preserved,
+            layout_match: startup_checkpoint_exists
+                && startup_checkpoint_distinct
+                && startup_mapping_matches,
+            process_match: session_clean && detect_cleared && banner_written,
+        });
+
+        let success = report.pane_reports.iter().all(|pane_result| {
+            pane_result.content_match && pane_result.layout_match && pane_result.process_match
+        }) && summary.restored_count() == 1
+            && summary.failed_count() == 0;
+
+        report.total_duration_ms = run_start.elapsed().as_millis() as u64;
+        report.passed = success;
+        report.failure_reason = if success {
+            None
+        } else {
+            Some("restore bookkeeping/manual-restore invariants failed".to_string())
         };
         emit_report(&report);
         assert!(
