@@ -744,6 +744,14 @@ mod tests {
     }
 
     #[test]
+    fn alpha_mode_defaults_to_auto_for_empty_capabilities() {
+        assert_eq!(
+            select_composite_alpha_mode(&[]),
+            wgpu::CompositeAlphaMode::Auto
+        );
+    }
+
+    #[test]
     fn initial_surface_extent_clamps_zero_dimensions_to_one() {
         assert_eq!(
             initial_surface_extent(Dimensions {
@@ -776,6 +784,18 @@ mod tests {
                 dpi: 96,
             }),
             (u32::MAX, u32::MAX)
+        );
+    }
+
+    #[test]
+    fn initial_surface_extent_clamps_each_axis_independently() {
+        assert_eq!(
+            initial_surface_extent(Dimensions {
+                pixel_width: 0,
+                pixel_height: usize::MAX,
+                dpi: 96,
+            }),
+            (1, u32::MAX)
         );
     }
 }

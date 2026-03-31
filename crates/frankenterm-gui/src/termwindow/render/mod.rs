@@ -1065,6 +1065,50 @@ mod tests {
     }
 
     #[test]
+    fn resolve_fg_color_attr_ignores_style_override_for_explicit_palette_color() {
+        let attrs = CellAttributes::default();
+        let palette = ColorPalette::default();
+        let config = ConfigHandle::default_config();
+        let mut style = TextStyle::default();
+        style.foreground = Some((0x12, 0x34, 0x56).into());
+
+        assert_eq!(
+            resolve_fg_color_attr(
+                &attrs,
+                ColorAttribute::PaletteIndex(4),
+                &palette,
+                &config,
+                &style,
+            ),
+            palette
+                .resolve_fg(ColorAttribute::PaletteIndex(4))
+                .to_linear()
+        );
+    }
+
+    #[test]
+    fn resolve_fg_color_attr_keeps_explicit_bright_palette_index_when_bold() {
+        let mut attrs = CellAttributes::default();
+        attrs.set_intensity(Intensity::Bold);
+
+        let palette = ColorPalette::default();
+        let config = ConfigHandle::default_config();
+
+        assert_eq!(
+            resolve_fg_color_attr(
+                &attrs,
+                ColorAttribute::PaletteIndex(9),
+                &palette,
+                &config,
+                &TextStyle::default(),
+            ),
+            palette
+                .resolve_fg(ColorAttribute::PaletteIndex(9))
+                .to_linear()
+        );
+    }
+
+    #[test]
     fn update_next_frame_time_preserves_the_earliest_deadline() {
         let base = Instant::now();
         let first = base + Duration::from_millis(30);
@@ -1136,5 +1180,20 @@ mod tests {
         let bg = LinearRgba::with_components(0.5, 0.5, 0.5, 1.0);
 
         assert!(!should_use_reverse_video_cursor(true, 1.1, true, fg, bg));
+    }
+
+    #[test]
+    fn should_use_reverse_video_cursor_accepts_exact_threshold_match() {
+        let fg = LinearRgba::with_components(0.0, 0.0, 0.0, 1.0);
+        let bg = LinearRgba::with_components(1.0, 1.0, 1.0, 1.0);
+        let exact_threshold = fg.contrast_ratio(&bg);
+
+        assert!(should_use_reverse_video_cursor(
+            true,
+            exact_threshold,
+            true,
+            fg,
+            bg
+        ));
     }
 }
