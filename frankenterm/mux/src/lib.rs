@@ -63,14 +63,14 @@ use crate::ssh_agent::AgentProxy;
 use crate::tab::{SplitRequest, Tab, TabId};
 use crate::tmux::TmuxDomain;
 use crate::window::{Window, WindowId};
-use anyhow::{anyhow, Context, Error};
+use anyhow::{Context, Error, anyhow};
 use config::keyassignment::SpawnTabDomain;
-use config::{configuration, ExitBehavior, GuiPosition};
+use config::{ExitBehavior, GuiPosition, configuration};
 use domain::{Domain, DomainId, DomainState, SplitSource};
-use filedescriptor::{poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescriptor, POLLIN};
+use filedescriptor::{AsRawSocketDescriptor, FileDescriptor, POLLIN, poll, pollfd, socketpair};
 use frankenterm_term::{Clipboard, ClipboardSelection, DownloadHandler, TerminalSize};
 #[cfg(unix)]
-use libc::{c_int, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
+use libc::{SO_RCVBUF, SO_SNDBUF, SOL_SOCKET, c_int};
 use log::error;
 use metrics::histogram;
 use parking_lot::{
@@ -91,7 +91,7 @@ use termwiz::escape::csi::{DecPrivateMode, DecPrivateModeCode, Device, Mode};
 use termwiz::escape::{Action, CSI};
 use thiserror::*;
 #[cfg(windows)]
-use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
+use winapi::um::winsock2::{SO_RCVBUF, SO_SNDBUF, SOL_SOCKET};
 
 pub mod activity;
 pub mod client;
@@ -162,6 +162,14 @@ pub enum MuxNotification {
 
 static SUB_ID: AtomicUsize = AtomicUsize::new(0);
 
+type MuxSubscriber = dyn Fn(MuxNotification) -> bool + Send + Sync;
+
+#[derive(Default)]
+struct PendingPaneOutputNotifications {
+    pane_ids: Vec<PaneId>,
+    queued: HashSet<PaneId>,
+}
+
 pub struct Mux {
     tabs: RwLock<HashMap<TabId, Arc<Tab>>>,
     panes: RwLock<HashMap<PaneId, Arc<dyn Pane>>>,
@@ -169,7 +177,9 @@ pub struct Mux {
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
     domains: RwLock<HashMap<DomainId, Arc<dyn Domain>>>,
     domains_by_name: RwLock<HashMap<String, Arc<dyn Domain>>>,
-    subscribers: RwLock<HashMap<usize, Box<dyn Fn(MuxNotification) -> bool + Send + Sync>>>,
+    subscribers: RwLock<HashMap<usize, Arc<MuxSubscriber>>>,
+    pending_pane_output: Mutex<PendingPaneOutputNotifications>,
+    pane_output_drain_scheduled: AtomicBool,
     banner: RwLock<Option<String>>,
     clients: RwLock<HashMap<ClientId, ClientInfo>>,
     identity: RwLock<Option<Arc<ClientId>>>,
@@ -525,6 +535,8 @@ impl Mux {
             domains_by_name: RwLock::new(domains_by_name),
             domains: RwLock::new(domains),
             subscribers: RwLock::new(HashMap::new()),
+            pending_pane_output: Mutex::new(PendingPaneOutputNotifications::default()),
+            pane_output_drain_scheduled: AtomicBool::new(false),
             banner: RwLock::new(None),
             clients: RwLock::new(HashMap::new()),
             identity: RwLock::new(None),
@@ -779,7 +791,7 @@ impl Mux {
         let sub_id = SUB_ID.fetch_add(1, Ordering::Relaxed);
         self.subscribers
             .write()
-            .insert(sub_id, Box::new(subscriber));
+            .insert(sub_id, Arc::new(subscriber));
         sub_id
     }
 
@@ -788,11 +800,19 @@ impl Mux {
     }
 
     pub fn notify(&self, notification: MuxNotification) {
-        let mut subscribers = self.subscribers.write();
-        subscribers.retain(|_, notify| notify(notification.clone()));
+        match notification {
+            MuxNotification::PaneOutput(pane_id) => self.enqueue_pane_output_notification(pane_id),
+            notification => self.dispatch_notification(notification),
+        }
     }
 
     pub fn notify_from_any_thread(notification: MuxNotification) {
+        if let MuxNotification::PaneOutput(pane_id) = notification {
+            if let Some(mux) = Mux::try_get() {
+                mux.enqueue_pane_output_notification(pane_id);
+            }
+            return;
+        }
         if let Some(mux) = Mux::try_get() {
             if mux.is_main_thread() {
                 mux.notify(notification);
@@ -805,6 +825,76 @@ impl Mux {
             }
         })
         .detach();
+    }
+
+    // Callbacks are invoked without holding the subscribers lock. A callback
+    // removed concurrently may still observe the current notification if it
+    // was present in the snapshot; removals only affect future notifications.
+    fn dispatch_notification(&self, notification: MuxNotification) {
+        let subscribers = self
+            .subscribers
+            .read()
+            .iter()
+            .map(|(id, subscriber)| (*id, Arc::clone(subscriber)))
+            .collect::<Vec<_>>();
+        histogram!("mux.notifications.subscriber_fanout").record(subscribers.len() as f64);
+
+        let mut dead_subscribers = Vec::new();
+        for (id, subscriber) in subscribers {
+            if !subscriber(notification.clone()) {
+                dead_subscribers.push(id);
+            }
+        }
+
+        if !dead_subscribers.is_empty() {
+            let mut subscribers = self.subscribers.write();
+            for id in dead_subscribers {
+                subscribers.remove(&id);
+            }
+        }
+    }
+
+    fn enqueue_pane_output_notification(&self, pane_id: PaneId) {
+        let should_schedule = {
+            let mut pending = self.pending_pane_output.lock();
+            if pending.queued.insert(pane_id) {
+                pending.pane_ids.push(pane_id);
+                histogram!("mux.notifications.pane_output.unique_enqueue_rate").record(1.);
+            }
+            !self
+                .pane_output_drain_scheduled
+                .swap(true, Ordering::AcqRel)
+        };
+
+        if should_schedule {
+            promise::spawn::spawn_into_main_thread(async move {
+                if let Some(mux) = Mux::try_get() {
+                    mux.flush_pending_pane_output_notifications();
+                }
+            })
+            .detach();
+        }
+    }
+
+    fn flush_pending_pane_output_notifications(&self) {
+        loop {
+            let pane_ids = {
+                let mut pending = self.pending_pane_output.lock();
+                if pending.pane_ids.is_empty() {
+                    self.pane_output_drain_scheduled
+                        .store(false, Ordering::Release);
+                    return;
+                }
+                let pane_ids = std::mem::take(&mut pending.pane_ids);
+                pending.queued.clear();
+                pane_ids
+            };
+
+            histogram!("mux.notifications.pane_output.batch_size").record(pane_ids.len() as f64);
+            for pane_id in pane_ids {
+                self.dispatch_notification(MuxNotification::PaneOutput(pane_id));
+            }
+        }
     }
 
     pub fn default_domain(&self) -> Arc<dyn Domain> {
@@ -1597,7 +1687,10 @@ impl frankenterm_term::DownloadHandler for MuxDownloader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     #[test]
     fn default_workspace_value() {
@@ -1666,6 +1759,91 @@ mod tests {
         mux.notify(MuxNotification::Empty);
         assert_eq!(notifications.load(Ordering::Relaxed), 1);
         assert!(!mux.unsubscribe(sub_id));
+    }
+
+    #[test]
+    fn notification_callbacks_can_unsubscribe_without_lock_reentrancy() {
+        let mux = Arc::new(Mux::new(None));
+        let first_notifications = Arc::new(AtomicUsize::new(0));
+        let second_notifications = Arc::new(AtomicUsize::new(0));
+        let second_sub_id = Arc::new(Mutex::new(None));
+
+        let mux_for_first = Arc::clone(&mux);
+        let second_sub_id_for_first = Arc::clone(&second_sub_id);
+        let first_notifications_for_first = Arc::clone(&first_notifications);
+        mux.subscribe(move |_| {
+            first_notifications_for_first.fetch_add(1, Ordering::Relaxed);
+            if let Some(sub_id) = *second_sub_id_for_first.lock() {
+                mux_for_first.unsubscribe(sub_id);
+            }
+            true
+        });
+
+        let second_notifications_for_second = Arc::clone(&second_notifications);
+        let second_id = mux.subscribe(move |_| {
+            second_notifications_for_second.fetch_add(1, Ordering::Relaxed);
+            true
+        });
+        *second_sub_id.lock() = Some(second_id);
+
+        mux.dispatch_notification(MuxNotification::Empty);
+        assert_eq!(first_notifications.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            second_notifications.load(Ordering::Relaxed),
+            1,
+            "snapshot fanout allows already-snapshotted subscribers to observe the current event",
+        );
+
+        mux.dispatch_notification(MuxNotification::Empty);
+        assert_eq!(first_notifications.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            second_notifications.load(Ordering::Relaxed),
+            1,
+            "unsubscribe during callback should remove the subscriber for future notifications",
+        );
+    }
+
+    #[test]
+    fn pane_output_notifications_coalesce_until_flushed() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Mux::new(None);
+        let pane_outputs = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&pane_outputs);
+        mux.subscribe(move |notification| {
+            if let MuxNotification::PaneOutput(pane_id) = notification {
+                observed.lock().push(pane_id);
+            }
+            true
+        });
+
+        mux.enqueue_pane_output_notification(7);
+        mux.enqueue_pane_output_notification(7);
+        mux.enqueue_pane_output_notification(8);
+
+        {
+            let pending = mux.pending_pane_output.lock();
+            assert_eq!(pending.pane_ids, vec![7, 8]);
+            assert!(pending.queued.contains(&7));
+            assert!(pending.queued.contains(&8));
+        }
+        assert!(pane_outputs.lock().is_empty());
+
+        mux.flush_pending_pane_output_notifications();
+
+        assert_eq!(&*pane_outputs.lock(), &[7, 8]);
+        let pending = mux.pending_pane_output.lock();
+        assert!(pending.pane_ids.is_empty());
+        assert!(pending.queued.is_empty());
+        assert!(
+            !mux.pane_output_drain_scheduled.load(Ordering::Relaxed),
+            "flush should clear the scheduled flag once the queue is empty",
+        );
+        drop(pending);
+
+        executor
+            .tick()
+            .expect("scheduled pane-output drain should run");
     }
 
     #[test]
