@@ -8274,6 +8274,21 @@ async fn restore_snapshot_checkpoint(
         .map_err(|e| anyhow::anyhow!("Restore failed: {e}"))
 }
 
+fn snapshot_trigger_from_cli_label(
+    trigger: &str,
+) -> frankenterm_core::snapshot_engine::SnapshotTrigger {
+    use frankenterm_core::snapshot_engine::SnapshotTrigger;
+
+    match trigger {
+        "manual" | "event" => SnapshotTrigger::Manual,
+        // `pre_restart` currently persists as the existing shutdown-class
+        // checkpoint type so restart/save surfaces stay schema-compatible.
+        "pre_restart" | "pre_shutdown" | "shutdown" => SnapshotTrigger::Shutdown,
+        "startup" => SnapshotTrigger::Startup,
+        _ => SnapshotTrigger::Manual,
+    }
+}
+
 fn restore_scrollback_json(
     summary: &frankenterm_core::session_restore::RestoreSummary,
     enabled: bool,
@@ -8352,6 +8367,21 @@ fn acquire_restart_operation_lock(
             lock_path.display()
         )),
     }
+}
+
+#[cfg(unix)]
+fn validate_restart_preflight(mux_server_pids: &[i32], pane_count: usize) -> anyhow::Result<()> {
+    if mux_server_pids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No running `frankenterm-mux-server` process found"
+        ));
+    }
+    if pane_count == 0 {
+        return Err(anyhow::anyhow!(
+            "No panes found; refusing restart without a restorable snapshot"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -25172,31 +25202,50 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                 "{}",
                                 serde_json::to_string_pretty(&serde_json::json!({
                                     "ok": false,
-                                    "phase": "snapshot",
+                                    "phase": "preflight",
                                     "error": format!("Failed to list panes: {e}"),
                                 }))?
                             );
                         } else {
-                            eprintln!("Restart aborted: failed to list panes: {e}");
+                            eprintln!(
+                                "Restart aborted during preflight: failed to list panes: {e}"
+                            );
                         }
                         std::process::exit(1);
                     }
                 };
 
-                if panes.is_empty() {
+                let existing_mux_pids = match mux_server_pids() {
+                    Ok(pids) => pids,
+                    Err(e) => {
+                        if emit_json {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "ok": false,
+                                    "phase": "preflight",
+                                    "error": e.to_string(),
+                                }))?
+                            );
+                        } else {
+                            eprintln!("Restart aborted during preflight: {e}");
+                        }
+                        std::process::exit(1);
+                    }
+                };
+
+                if let Err(e) = validate_restart_preflight(&existing_mux_pids, panes.len()) {
                     if emit_json {
                         println!(
                             "{}",
                             serde_json::to_string_pretty(&serde_json::json!({
                                 "ok": false,
-                                "phase": "snapshot",
-                                "error": "No panes found; refusing restart without a restorable snapshot",
+                                "phase": "preflight",
+                                "error": e.to_string(),
                             }))?
                         );
                     } else {
-                        eprintln!(
-                            "Restart aborted: no panes found; refusing restart without a restorable snapshot."
-                        );
+                        eprintln!("Restart aborted during preflight: {e}");
                     }
                     std::process::exit(1);
                 }
@@ -36955,7 +37004,7 @@ async fn handle_snapshot_command(
     layout: &frankenterm_core::config::WorkspaceLayout,
     config: &frankenterm_core::config::Config,
 ) -> anyhow::Result<()> {
-    use frankenterm_core::snapshot_engine::{SnapshotEngine, SnapshotTrigger};
+    use frankenterm_core::snapshot_engine::SnapshotEngine;
     use std::sync::Arc;
 
     let db_path = Arc::new(layout.db_path.to_string_lossy().to_string());
@@ -36966,12 +37015,7 @@ async fn handle_snapshot_command(
             label: _label,
             format,
         } => {
-            let snap_trigger = match trigger.as_str() {
-                "manual" | "event" => SnapshotTrigger::Manual,
-                "pre_restart" | "pre_shutdown" | "shutdown" => SnapshotTrigger::Shutdown,
-                "startup" => SnapshotTrigger::Startup,
-                _ => SnapshotTrigger::Manual,
-            };
+            let snap_trigger = snapshot_trigger_from_cli_label(trigger.as_str());
 
             let engine = SnapshotEngine::new(db_path, config.snapshots.clone());
 
@@ -40774,6 +40818,63 @@ mod tests {
 
         let second = acquire_restart_operation_lock(&db_path).expect("lock should be reusable");
         drop(second);
+    }
+
+    #[test]
+    fn snapshot_trigger_cli_aliases_preserve_restart_semantics() {
+        use frankenterm_core::snapshot_engine::SnapshotTrigger;
+
+        assert_eq!(
+            snapshot_trigger_from_cli_label("pre_restart"),
+            SnapshotTrigger::Shutdown
+        );
+        assert_eq!(
+            snapshot_trigger_from_cli_label("pre_shutdown"),
+            SnapshotTrigger::Shutdown
+        );
+        assert_eq!(
+            snapshot_trigger_from_cli_label("shutdown"),
+            SnapshotTrigger::Shutdown
+        );
+        assert_eq!(
+            snapshot_trigger_from_cli_label("manual"),
+            SnapshotTrigger::Manual
+        );
+        assert_eq!(
+            snapshot_trigger_from_cli_label("startup"),
+            SnapshotTrigger::Startup
+        );
+        assert_eq!(
+            snapshot_trigger_from_cli_label("unexpected"),
+            SnapshotTrigger::Manual
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_preflight_rejects_missing_mux_server() {
+        let err = validate_restart_preflight(&[], 1).expect_err("missing mux server must fail");
+        assert!(
+            err.to_string()
+                .contains("No running `frankenterm-mux-server` process found")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_preflight_rejects_empty_panes() {
+        let err =
+            validate_restart_preflight(&[1234], 0).expect_err("empty pane set must fail restart");
+        assert!(
+            err.to_string()
+                .contains("No panes found; refusing restart without a restorable snapshot")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_preflight_accepts_running_mux_server_and_panes() {
+        validate_restart_preflight(&[1234], 2).expect("valid restart preflight should pass");
     }
 
     fn sample_cli_mission() -> frankenterm_core::plan::Mission {
