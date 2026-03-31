@@ -509,7 +509,10 @@ mod tests {
             .iter()
             .find(|step| step.step == PipelineStep::Notify)
             .expect("notify step present");
-        assert_eq!(notify.message, "Notification skipped: no webhook_url configured");
+        assert_eq!(
+            notify.message,
+            "Notification skipped: no webhook_url configured"
+        );
     }
 
     #[test]

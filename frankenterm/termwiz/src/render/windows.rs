@@ -284,10 +284,12 @@ impl ScreenBuffer {
                 )?;
             } else {
                 // We're just scrolling a region within the window
-                let top = info.srWindow.Top
+                let top = info
+                    .srWindow
+                    .Top
                     .saturating_add(first_row.min(i16::MAX as usize) as i16);
-                let bottom = top
-                    .saturating_add(region_size.saturating_sub(1).min(i16::MAX as usize) as i16);
+                let bottom =
+                    top.saturating_add(region_size.saturating_sub(1).min(i16::MAX as usize) as i16);
                 out.scroll_region(left, top, right, bottom, dx, dy, self.pending_attr)?;
             }
 
