@@ -154,28 +154,28 @@ fn compatibility_report_with(
 
     if vendored_commit.is_none() {
         return VendoredCompatibilityReport {
-            status: VendoredCompatibilityStatus::Compatible,
+            status: VendoredCompatibilityStatus::Incompatible,
             vendored_enabled,
-            allow_vendored: true,
+            allow_vendored: false,
             local_version,
             local_commit,
             vendored_commit,
             vendored_version,
-            message: "vendored commit not recorded; assuming compatible".to_string(),
-            recommendation: Some("Rebuild wa to refresh vendored metadata".to_string()),
+            message: "vendored commit not recorded; refusing vendored backend until metadata is refreshed".to_string(),
+            recommendation: Some("Rebuild ft to refresh vendored metadata".to_string()),
         };
     }
 
     if local_version.is_none() {
         return VendoredCompatibilityReport {
-            status: VendoredCompatibilityStatus::Compatible,
+            status: VendoredCompatibilityStatus::Incompatible,
             vendored_enabled,
-            allow_vendored: true,
+            allow_vendored: false,
             local_version,
             local_commit,
             vendored_commit,
             vendored_version,
-            message: "local WezTerm version unavailable; assuming compatible".to_string(),
+            message: "local WezTerm version unavailable; refusing vendored backend compatibility probe".to_string(),
             recommendation: Some(
                 "Install WezTerm or ensure the wezterm binary is on PATH".to_string(),
             ),
@@ -186,14 +186,14 @@ fn compatibility_report_with(
 
     if local_commit.is_none() {
         return VendoredCompatibilityReport {
-            status: VendoredCompatibilityStatus::Compatible,
+            status: VendoredCompatibilityStatus::Incompatible,
             vendored_enabled,
-            allow_vendored: true,
+            allow_vendored: false,
             local_version,
             local_commit,
             vendored_commit: Some(vendored_commit),
             vendored_version,
-            message: "unable to parse commit from local WezTerm version; assuming compatible"
+            message: "unable to parse commit from local WezTerm version; refusing vendored backend"
                 .to_string(),
             recommendation: Some(
                 "Use a WezTerm build that includes a commit hash in --version".to_string(),
@@ -228,7 +228,7 @@ fn compatibility_report_with(
             "local WezTerm commit {local_commit} does not match vendored {vendored_commit}"
         ),
         recommendation: Some(format!(
-            "Update WezTerm to {vendored_commit} or rebuild wa with matching vendored commit"
+            "Update WezTerm to {vendored_commit} or rebuild ft with matching vendored commit"
         )),
     }
 }
@@ -311,11 +311,11 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_missing_local_is_warning() {
+    fn compatibility_missing_local_disables_vendored() {
         let meta = meta_with(Some("abcdef12"), true);
         let report = compatibility_report_with(meta, None);
-        assert_eq!(report.status, VendoredCompatibilityStatus::Compatible);
-        assert!(report.allow_vendored);
+        assert_eq!(report.status, VendoredCompatibilityStatus::Incompatible);
+        assert!(!report.allow_vendored);
     }
 
     #[test]
@@ -367,22 +367,22 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_no_vendored_commit_recorded() {
+    fn compatibility_no_vendored_commit_recorded_disables_vendored() {
         let meta = meta_with(None, true);
         let local = WeztermVersion::parse("wezterm 20240101-123456-abcdef12");
         let report = compatibility_report_with(meta, Some(&local));
-        assert_eq!(report.status, VendoredCompatibilityStatus::Compatible);
-        assert!(report.allow_vendored);
+        assert_eq!(report.status, VendoredCompatibilityStatus::Incompatible);
+        assert!(!report.allow_vendored);
         assert!(report.message.contains("not recorded"));
     }
 
     #[test]
-    fn compatibility_local_version_without_commit() {
+    fn compatibility_local_version_without_commit_disables_vendored() {
         let meta = meta_with(Some("abcdef12"), true);
         let local = WeztermVersion::parse("wezterm 20240203");
         let report = compatibility_report_with(meta, Some(&local));
-        assert_eq!(report.status, VendoredCompatibilityStatus::Compatible);
-        assert!(report.allow_vendored);
+        assert_eq!(report.status, VendoredCompatibilityStatus::Incompatible);
+        assert!(!report.allow_vendored);
         assert!(report.message.contains("unable to parse commit"));
     }
 

@@ -897,7 +897,13 @@ impl WeztermClient {
                 match pool.get_pane_render_changes(_pane_id).await {
                     Ok(changes) => {
                         self.mux_circuit_record_success();
-                        return Ok(changes.tiered_scrollback_status.map(Into::into));
+                        if let Some(status) = changes.tiered_scrollback_status {
+                            return Ok(Some(status.into()));
+                        }
+                        return Err(WeztermError::CommandFailed(format!(
+                            "tiered scrollback telemetry unavailable for pane {_pane_id}: vendored mux returned no tiered scrollback status"
+                        ))
+                        .into());
                     }
                     Err(err) => {
                         self.mux_circuit_record_failure(&err);
@@ -908,6 +914,11 @@ impl WeztermClient {
                     }
                 }
             }
+
+            return Err(WeztermError::CommandFailed(format!(
+                "tiered scrollback telemetry unavailable for pane {_pane_id}: vendored mux circuit breaker open and CLI fallback has no tiered scrollback surface"
+            ))
+            .into());
         }
 
         Ok(None)

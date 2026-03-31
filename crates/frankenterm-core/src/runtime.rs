@@ -1798,6 +1798,7 @@ impl ObservationRuntime {
                         let reg = registry.read().await;
                         reg.observed_pane_ids()
                     };
+                    let observed_pane_count = observed_pane_ids.len();
                     let tiered_scrollback_fetch = collect_pane_tiered_scrollback_summaries(
                         &wezterm_handle,
                         &observed_pane_ids,
@@ -1842,6 +1843,31 @@ impl ObservationRuntime {
                     // event so it shows up in diagnostics and audit trail.
                     {
                         let telem = fleet_coordinator.telemetry_snapshot();
+                        let telemetry_blind =
+                            tiered_scrollback_fetch.telemetry_blind(observed_pane_count);
+                        let telemetry_partial =
+                            tiered_scrollback_fetch.telemetry_partial(observed_pane_count);
+                        let blind_reason = telemetry_blind.then_some(
+                            "vendored tiered scrollback telemetry unavailable; runtime is operating without mux-side pane telemetry",
+                        );
+
+                        if telemetry_blind {
+                            warn!(
+                                observed_panes = observed_pane_count,
+                                pane_status_errors = tiered_scrollback_fetch.errors,
+                                error_samples = ?tiered_scrollback_fetch.error_samples,
+                                "Tiered scrollback telemetry is blind; vendored mux compatibility or health has degraded"
+                            );
+                        } else if telemetry_partial {
+                            warn!(
+                                observed_panes = observed_pane_count,
+                                pane_status_snapshots = tiered_scrollback_fetch.summaries.len(),
+                                pane_status_errors = tiered_scrollback_fetch.errors,
+                                error_samples = ?tiered_scrollback_fetch.error_samples,
+                                "Tiered scrollback telemetry is partially unavailable"
+                            );
+                        }
+
                         let metadata = serde_json::json!({
                             "compound_tier": format!("{:?}", fleet_eval.compound_tier),
                             "pages_evicted": fleet_eval.pages_evicted,
@@ -1851,6 +1877,10 @@ impl ObservationRuntime {
                             "observed_panes": observed_panes,
                             "pane_status_snapshots": tiered_scrollback_fetch.summaries.len(),
                             "pane_status_errors": tiered_scrollback_fetch.errors,
+                            "pane_status_error_samples": tiered_scrollback_fetch.error_samples,
+                            "tiered_scrollback_telemetry_blind": telemetry_blind,
+                            "tiered_scrollback_telemetry_partial": telemetry_partial,
+                            "tiered_scrollback_blind_reason": blind_reason,
                             "cumulative_ticks": telem.ticks,
                             "cumulative_elevated_ticks": telem.elevated_ticks,
                             "cumulative_pages_evicted": telem.pages_evicted,
@@ -1860,10 +1890,17 @@ impl ObservationRuntime {
                             .record_maintenance(MaintenanceRecord {
                                 id: 0,
                                 event_type: "fleet_scrollback_coordinator".to_string(),
-                                message: Some(format!(
-                                    "Fleet coordinator tick: tier={:?}, evicted={} pages",
-                                    fleet_eval.compound_tier, fleet_eval.pages_evicted,
-                                )),
+                                message: Some(if telemetry_blind {
+                                    format!(
+                                        "Fleet coordinator tick: tier={:?}, evicted={} pages; tiered scrollback telemetry blind",
+                                        fleet_eval.compound_tier, fleet_eval.pages_evicted,
+                                    )
+                                } else {
+                                    format!(
+                                        "Fleet coordinator tick: tier={:?}, evicted={} pages",
+                                        fleet_eval.compound_tier, fleet_eval.pages_evicted,
+                                    )
+                                }),
                                 metadata: Some(metadata.to_string()),
                                 timestamp: epoch_ms(),
                             })
@@ -3379,6 +3416,24 @@ fn build_fleet_pressure_signals(
 struct PaneTieredScrollbackFetch {
     summaries: HashMap<u64, PaneTieredScrollbackSummary>,
     errors: usize,
+    error_samples: Vec<String>,
+}
+
+impl PaneTieredScrollbackFetch {
+    fn note_error(&mut self, pane_id: u64, err: &impl std::fmt::Display) {
+        self.errors = self.errors.saturating_add(1);
+        if self.error_samples.len() < 4 {
+            self.error_samples.push(format!("pane {pane_id}: {err}"));
+        }
+    }
+
+    fn telemetry_blind(&self, pane_count: usize) -> bool {
+        pane_count > 0 && self.summaries.is_empty() && self.errors > 0
+    }
+
+    fn telemetry_partial(&self, pane_count: usize) -> bool {
+        pane_count > self.summaries.len() && self.errors > 0 && !self.telemetry_blind(pane_count)
+    }
 }
 
 async fn collect_pane_tiered_scrollback_summaries(
@@ -3394,7 +3449,7 @@ async fn collect_pane_tiered_scrollback_summaries(
             }
             Ok(None) => {}
             Err(err) => {
-                fetch.errors = fetch.errors.saturating_add(1);
+                fetch.note_error(pane_id, &err);
                 debug!(
                     pane_id,
                     error = %err,
@@ -5084,6 +5139,28 @@ mod tests {
             let depth = rx.len();
             assert_eq!(depth, 2);
         });
+    }
+
+    #[test]
+    fn pane_tiered_scrollback_fetch_marks_blind_when_all_samples_fail() {
+        let mut fetch = PaneTieredScrollbackFetch::default();
+        fetch.note_error(7, &"mux circuit breaker open");
+        fetch.note_error(9, &"codec mismatch");
+
+        assert!(fetch.telemetry_blind(2));
+        assert!(!fetch.telemetry_partial(2));
+        assert_eq!(fetch.error_samples.len(), 2);
+    }
+
+    #[test]
+    fn pane_tiered_scrollback_fetch_marks_partial_when_some_samples_succeed() {
+        let mut fetch = PaneTieredScrollbackFetch::default();
+        fetch.summaries
+            .insert(11, PaneTieredScrollbackSummary::default());
+        fetch.note_error(12, &"mux telemetry unavailable");
+
+        assert!(!fetch.telemetry_blind(2));
+        assert!(fetch.telemetry_partial(2));
     }
 
     #[test]

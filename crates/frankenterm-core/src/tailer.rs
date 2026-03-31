@@ -1112,23 +1112,41 @@ impl std::fmt::Display for TailerMode {
 
 /// Detect the best available tailer mode at runtime.
 ///
-/// Returns `Streaming` only when the vendored feature is compiled in
-/// and the mux socket is discoverable. Otherwise returns `Polling`.
+/// Returns `Streaming` only when the vendored feature is compiled in, the mux
+/// socket is discoverable, and vendored compatibility is positively
+/// established. Otherwise returns `Polling`.
+#[cfg(feature = "vendored")]
+fn streaming_socket_configured(config: &crate::config::Config) -> bool {
+    let socket_from_config = config
+        .vendored
+        .mux_socket_path
+        .as_deref()
+        .is_some_and(|p| !p.trim().is_empty());
+    let socket_from_env = std::env::var("WEZTERM_UNIX_SOCKET")
+        .ok()
+        .is_some_and(|p| !p.trim().is_empty());
+    socket_from_config || socket_from_env
+}
+
+#[cfg(feature = "vendored")]
+fn detect_tailer_mode_with_allow_vendored(
+    config: &crate::config::Config,
+    allow_vendored: bool,
+) -> TailerMode {
+    if allow_vendored && streaming_socket_configured(config) {
+        TailerMode::Streaming
+    } else {
+        TailerMode::Polling
+    }
+}
+
 #[must_use]
 pub fn detect_tailer_mode(config: &crate::config::Config) -> TailerMode {
     #[cfg(feature = "vendored")]
     {
-        let socket_from_config = config
-            .vendored
-            .mux_socket_path
-            .as_deref()
-            .is_some_and(|p| !p.trim().is_empty());
-        let socket_from_env = std::env::var("WEZTERM_UNIX_SOCKET")
-            .ok()
-            .is_some_and(|p| !p.trim().is_empty());
-        if socket_from_config || socket_from_env {
-            return TailerMode::Streaming;
-        }
+        let local_version = crate::vendored::read_local_wezterm_version();
+        let compatibility = crate::vendored::compatibility_report(local_version.as_ref());
+        return detect_tailer_mode_with_allow_vendored(config, compatibility.allow_vendored);
     }
     let _ = config; // suppress unused warning when vendored is off
     TailerMode::Polling
@@ -2653,11 +2671,20 @@ mod tests {
     fn detect_mode_with_socket_path_config() {
         let mut config = crate::config::Config::default();
         config.vendored.mux_socket_path = Some("/tmp/test-mux.sock".to_string());
-        let mode = detect_tailer_mode(&config);
-        if cfg!(feature = "vendored") {
-            assert_eq!(mode, TailerMode::Streaming);
-        } else {
-            assert_eq!(mode, TailerMode::Polling);
+        #[cfg(feature = "vendored")]
+        {
+            assert_eq!(
+                detect_tailer_mode_with_allow_vendored(&config, true),
+                TailerMode::Streaming
+            );
+            assert_eq!(
+                detect_tailer_mode_with_allow_vendored(&config, false),
+                TailerMode::Polling
+            );
+        }
+        #[cfg(not(feature = "vendored"))]
+        {
+            assert_eq!(detect_tailer_mode(&config), TailerMode::Polling);
         }
     }
 
@@ -2665,14 +2692,17 @@ mod tests {
     fn detect_mode_empty_socket_path_is_polling() {
         let mut config = crate::config::Config::default();
         config.vendored.mux_socket_path = Some("  ".to_string());
-        let mode = detect_tailer_mode(&config);
         // Empty/whitespace path should not trigger streaming
-        if cfg!(feature = "vendored") {
-            // Only Streaming if WEZTERM_UNIX_SOCKET is also set in env
-            // In a clean test env, this should be Polling
-            assert!(mode == TailerMode::Polling || mode == TailerMode::Streaming);
-        } else {
-            assert_eq!(mode, TailerMode::Polling);
+        #[cfg(feature = "vendored")]
+        {
+            assert_eq!(
+                detect_tailer_mode_with_allow_vendored(&config, true),
+                TailerMode::Polling
+            );
+        }
+        #[cfg(not(feature = "vendored"))]
+        {
+            assert_eq!(detect_tailer_mode(&config), TailerMode::Polling);
         }
     }
 
