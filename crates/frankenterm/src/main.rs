@@ -40111,7 +40111,7 @@ fn run_diagnostics(
                 frankenterm_core::vendored::VendoredCompatibilityStatus::Incompatible => {
                     let recommendation = compat
                         .recommendation
-                        .unwrap_or_else(|| "Update WezTerm or rebuild wa".to_string());
+                        .unwrap_or_else(|| "Update WezTerm or rebuild ft".to_string());
                     checks.push(DiagnosticCheck::error(
                         "WezTerm vendored",
                         compat.message,
