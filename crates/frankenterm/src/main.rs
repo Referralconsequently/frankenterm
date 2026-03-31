@@ -8250,7 +8250,7 @@ async fn restore_snapshot_checkpoint(
     db_path: &str,
     checkpoint_id: i64,
     wezterm_timeout_secs: u64,
-    _layout_only: bool,
+    layout_only: bool,
 ) -> anyhow::Result<frankenterm_core::session_restore::RestoreSummary> {
     use frankenterm_core::session_restore::{
         SessionRestoreConfig, SessionRestorer, load_checkpoint_by_id, show_session,
@@ -8262,13 +8262,60 @@ async fn restore_snapshot_checkpoint(
     let wezterm = frankenterm_core::wezterm::wezterm_handle_with_timeout(wezterm_timeout_secs);
     let restorer = SessionRestorer::new(
         Arc::new(db_path.to_string()),
-        SessionRestoreConfig::default(),
+        SessionRestoreConfig {
+            restore_scrollback: !layout_only,
+            ..SessionRestoreConfig::default()
+        },
     );
 
     restorer
         .restore(&session, &checkpoint, wezterm)
         .await
         .map_err(|e| anyhow::anyhow!("Restore failed: {e}"))
+}
+
+fn restore_scrollback_json(
+    summary: &frankenterm_core::session_restore::RestoreSummary,
+    enabled: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "enabled": enabled,
+        "restored_panes": summary.scrollback_restored_count(),
+        "failed_panes": summary.scrollback_failed_count(),
+        "skipped_panes": summary.scrollback_skipped_count(),
+        "bytes_written": summary.scrollback_bytes_written(),
+    });
+
+    if let Some(error) = &summary.scrollback_error
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert("error".to_string(), serde_json::json!(error));
+    }
+
+    payload
+}
+
+fn print_scrollback_restore_summary(
+    summary: &frankenterm_core::session_restore::RestoreSummary,
+    enabled: bool,
+) {
+    if !enabled {
+        println!("Scrollback replay skipped (--layout-only).");
+        return;
+    }
+
+    if let Some(error) = &summary.scrollback_error {
+        println!("Scrollback replay unavailable: {error}");
+        return;
+    }
+
+    println!(
+        "Scrollback replay: {} restored, {} failed, {} skipped, {} bytes",
+        summary.scrollback_restored_count(),
+        summary.scrollback_failed_count(),
+        summary.scrollback_skipped_count(),
+        summary.scrollback_bytes_written(),
+    );
 }
 
 #[cfg(unix)]
@@ -25237,6 +25284,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                         "failed_panes": summary.failed_count(),
                                         "elapsed_ms": summary.elapsed_ms,
                                     },
+                                    "scrollback": restore_scrollback_json(&summary, !layout_only),
                                 }))?
                             );
                         } else {
@@ -25247,6 +25295,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                 summary.elapsed_ms,
                                 summary.checkpoint_id
                             );
+                            print_scrollback_restore_summary(&summary, !layout_only);
                         }
                     }
                     Err(e) => {
@@ -37356,6 +37405,7 @@ async fn handle_snapshot_command(
                                 "failed_panes": summary.failed_count(),
                                 "total_panes": summary.total_count(),
                                 "elapsed_ms": summary.elapsed_ms,
+                                "scrollback": restore_scrollback_json(&summary, !layout_only),
                             }))?
                         );
                     } else {
@@ -37366,6 +37416,7 @@ async fn handle_snapshot_command(
                             summary.elapsed_ms,
                             summary.checkpoint_id
                         );
+                        print_scrollback_restore_summary(&summary, !layout_only);
                     }
                 }
                 Err(e) => {
@@ -51462,6 +51513,132 @@ log_level = "debug"
             },
             _ => panic!("expected Robot command"),
         }
+    }
+
+    #[test]
+    fn batch_get_pane_text_returns_requested_panes_with_tail_metadata() {
+        run_async_test(async {
+            use frankenterm_core::wezterm::{MockWezterm, WeztermHandle};
+
+            let mock = std::sync::Arc::new(MockWezterm::new());
+            mock.add_default_pane(7).await;
+            mock.add_default_pane(11).await;
+            mock.inject_output(7, "alpha\nbeta\ngamma\n")
+                .await
+                .expect("inject pane 7 text");
+            mock.inject_output(11, "one\ntwo\n")
+                .await
+                .expect("inject pane 11 text");
+
+            let handle: WeztermHandle = mock.clone();
+            let results = batch_get_pane_text(handle, &[11, 7], false, 1).await;
+
+            assert_eq!(
+                results.keys().copied().collect::<Vec<_>>(),
+                vec![7, 11],
+                "batch results should contain every requested pane keyed by pane id"
+            );
+
+            match results.get(&7).expect("pane 7 result") {
+                RobotPaneTextResult::Ok {
+                    text,
+                    truncated,
+                    truncation_info,
+                } => {
+                    assert_eq!(text, "gamma\n");
+                    assert!(*truncated, "tail=1 should truncate pane 7");
+                    let info = truncation_info
+                        .as_ref()
+                        .expect("pane 7 truncation metadata");
+                    assert_eq!(info.original_lines, 3);
+                    assert_eq!(info.returned_lines, 1);
+                }
+                RobotPaneTextResult::Error { .. } => {
+                    panic!("pane 7 should have succeeded")
+                }
+            }
+
+            match results.get(&11).expect("pane 11 result") {
+                RobotPaneTextResult::Ok {
+                    text,
+                    truncated,
+                    truncation_info,
+                } => {
+                    assert_eq!(text, "two\n");
+                    assert!(*truncated, "tail=1 should truncate pane 11");
+                    let info = truncation_info
+                        .as_ref()
+                        .expect("pane 11 truncation metadata");
+                    assert_eq!(info.original_lines, 2);
+                    assert_eq!(info.returned_lines, 1);
+                }
+                RobotPaneTextResult::Error { .. } => {
+                    panic!("pane 11 should have succeeded")
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn batch_get_pane_text_isolates_missing_pane_errors() {
+        run_async_test(async {
+            use frankenterm_core::wezterm::{MockWezterm, WeztermHandle};
+
+            let mock = std::sync::Arc::new(MockWezterm::new());
+            mock.add_default_pane(1).await;
+            mock.add_default_pane(2).await;
+            mock.inject_output(1, "ready pane one\n")
+                .await
+                .expect("inject pane 1 text");
+            mock.inject_output(2, "ready pane two\n")
+                .await
+                .expect("inject pane 2 text");
+
+            let handle: WeztermHandle = mock.clone();
+            let results = batch_get_pane_text(handle, &[1, 999, 2], false, 50).await;
+
+            assert_eq!(
+                results.keys().copied().collect::<Vec<_>>(),
+                vec![1, 2, 999],
+                "one pane failure must not drop neighboring pane results"
+            );
+
+            match results.get(&1).expect("pane 1 result") {
+                RobotPaneTextResult::Ok { text, .. } => assert_eq!(text, "ready pane one\n"),
+                RobotPaneTextResult::Error { .. } => {
+                    panic!("pane 1 should have succeeded")
+                }
+            }
+
+            match results.get(&2).expect("pane 2 result") {
+                RobotPaneTextResult::Ok { text, .. } => assert_eq!(text, "ready pane two\n"),
+                RobotPaneTextResult::Error { .. } => {
+                    panic!("pane 2 should have succeeded")
+                }
+            }
+
+            match results.get(&999).expect("pane 999 result") {
+                RobotPaneTextResult::Error {
+                    code,
+                    message,
+                    hint,
+                } => {
+                    assert_eq!(code, "robot.pane_not_found");
+                    assert!(
+                        message.contains("999"),
+                        "missing-pane message should mention the failing pane"
+                    );
+                    assert!(
+                        hint.as_deref()
+                            .is_some_and(|value| value.contains("Pane 999")),
+                        "missing-pane hint should help operators identify the bad selector"
+                    );
+                }
+                RobotPaneTextResult::Ok { .. } => {
+                    panic!("pane 999 should have failed")
+                }
+            }
+        });
     }
 
     #[test]

@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::restore_layout::{LayoutRestorer, RestoreConfig, RestoreResult};
+use crate::restore_scrollback::{
+    InjectionConfig, InjectionReport, ScrollbackData, ScrollbackInjector,
+};
 use crate::session_pane_state::{AgentMetadata, TerminalState};
 use crate::session_topology::TopologySnapshot;
 use crate::wezterm::WeztermHandle;
@@ -153,6 +156,8 @@ pub struct RestoredPaneState {
     pub command: Option<String>,
     pub terminal_state: Option<TerminalState>,
     pub agent_metadata: Option<AgentMetadata>,
+    pub scrollback_checkpoint_seq: Option<u64>,
+    pub last_output_at: Option<u64>,
 }
 
 /// Complete result of a session restore.
@@ -166,6 +171,10 @@ pub struct RestoreSummary {
     pub layout_result: RestoreResult,
     /// Pane states that were loaded.
     pub pane_states: Vec<RestoredPaneState>,
+    /// Scrollback injection report when replay was enabled.
+    pub scrollback_result: Option<InjectionReport>,
+    /// Global scrollback replay error when capture data could not be loaded.
+    pub scrollback_error: Option<String>,
     /// Total time for the restore in milliseconds.
     pub elapsed_ms: u64,
 }
@@ -184,6 +193,34 @@ impl RestoreSummary {
     /// Total panes attempted.
     pub fn total_count(&self) -> usize {
         self.restored_count() + self.failed_count()
+    }
+
+    /// Number of panes whose scrollback was replayed.
+    pub fn scrollback_restored_count(&self) -> usize {
+        self.scrollback_result
+            .as_ref()
+            .map_or(0, InjectionReport::success_count)
+    }
+
+    /// Number of panes whose scrollback replay failed.
+    pub fn scrollback_failed_count(&self) -> usize {
+        self.scrollback_result
+            .as_ref()
+            .map_or(0, InjectionReport::failure_count)
+    }
+
+    /// Number of panes skipped during scrollback replay.
+    pub fn scrollback_skipped_count(&self) -> usize {
+        self.scrollback_result
+            .as_ref()
+            .map_or(0, |report| report.skipped.len())
+    }
+
+    /// Total bytes written during scrollback replay.
+    pub fn scrollback_bytes_written(&self) -> usize {
+        self.scrollback_result
+            .as_ref()
+            .map_or(0, InjectionReport::total_bytes)
     }
 }
 
@@ -313,7 +350,8 @@ pub fn load_checkpoint_by_id(
 
     // Load pane states for this checkpoint ID.
     let mut stmt = conn.prepare(
-        "SELECT pane_id, cwd, command, terminal_state_json, agent_metadata_json
+        "SELECT pane_id, cwd, command, terminal_state_json, agent_metadata_json,
+                scrollback_checkpoint_seq, last_output_at
          FROM mux_pane_state
          WHERE checkpoint_id = ?1",
     )?;
@@ -326,12 +364,23 @@ pub fn load_checkpoint_by_id(
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut pane_states = Vec::with_capacity(raw_pane_states.len());
-    for (pane_id_raw, cwd, command, terminal_json, agent_json) in raw_pane_states {
+    for (
+        pane_id_raw,
+        cwd,
+        command,
+        terminal_json,
+        agent_json,
+        scrollback_checkpoint_seq,
+        last_output_at,
+    ) in raw_pane_states
+    {
         let pane_id = decode_u64(pane_id_raw, "mux_pane_state.pane_id")?;
         let terminal_state =
             serde_json::from_str::<TerminalState>(&terminal_json).map_err(|error| {
@@ -356,6 +405,11 @@ pub fn load_checkpoint_by_id(
             command,
             terminal_state: Some(terminal_state),
             agent_metadata,
+            scrollback_checkpoint_seq: decode_opt_u64(
+                scrollback_checkpoint_seq,
+                "mux_pane_state.scrollback_checkpoint_seq",
+            )?,
+            last_output_at: decode_opt_u64(last_output_at, "mux_pane_state.last_output_at")?,
         });
     }
 
@@ -418,6 +472,54 @@ fn save_restore_checkpoint(
     tx.commit()?;
 
     Ok(checkpoint_id)
+}
+
+fn load_scrollback_data(
+    db_path: &str,
+    pane_states: &[RestoredPaneState],
+    max_lines: usize,
+) -> Result<HashMap<u64, ScrollbackData>, RestoreError> {
+    let conn = open_conn(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT content
+         FROM output_segments
+         WHERE pane_id = ?1 AND seq <= ?2
+         ORDER BY seq ASC",
+    )?;
+
+    let mut scrollbacks = HashMap::new();
+    for pane_state in pane_states {
+        let Some(max_seq) = pane_state.scrollback_checkpoint_seq else {
+            continue;
+        };
+
+        let pane_id_i64 = i64::try_from(pane_state.pane_id).map_err(|_| {
+            RestoreError::CorruptCheckpoint(format!(
+                "pane {} exceeds sqlite integer range",
+                pane_state.pane_id
+            ))
+        })?;
+        let max_seq_i64 = i64::try_from(max_seq).map_err(|_| {
+            RestoreError::CorruptCheckpoint(format!(
+                "pane {} scrollback seq {} exceeds sqlite integer range",
+                pane_state.pane_id, max_seq
+            ))
+        })?;
+
+        let segments = stmt
+            .query_map([pane_id_i64, max_seq_i64], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        if segments.is_empty() {
+            continue;
+        }
+
+        let mut scrollback = ScrollbackData::from_segments(segments);
+        scrollback.truncate(max_lines);
+        scrollbacks.insert(pane_state.pane_id, scrollback);
+    }
+
+    Ok(scrollbacks)
 }
 
 // =============================================================================
@@ -881,13 +983,64 @@ impl SessionRestorer {
             warn!(old_pane_id = old_id, error = %error, "Failed to restore pane");
         }
 
-        // 3. Send restore banners to each restored pane
+        // 3. Optionally replay captured scrollback into restored panes.
         let pane_state_map: HashMap<u64, &RestoredPaneState> = checkpoint
             .pane_states
             .iter()
             .map(|ps| (ps.pane_id, ps))
             .collect();
 
+        let (scrollback_result, scrollback_error) = if self.config.restore_scrollback {
+            match load_scrollback_data(
+                &self.db_path,
+                &checkpoint.pane_states,
+                self.config.restore_max_lines,
+            ) {
+                Ok(scrollback_data) => {
+                    let injector = ScrollbackInjector::new(
+                        wezterm.clone(),
+                        InjectionConfig {
+                            max_lines: self.config.restore_max_lines,
+                            ..InjectionConfig::default()
+                        },
+                    );
+                    let report = injector
+                        .inject(&layout_result.pane_id_map, &scrollback_data)
+                        .await;
+
+                    if report.failure_count() > 0 || !report.skipped.is_empty() {
+                        warn!(
+                            restored = report.success_count(),
+                            failed = report.failure_count(),
+                            skipped = report.skipped.len(),
+                            "Scrollback replay completed with warnings"
+                        );
+                    } else {
+                        info!(
+                            restored = report.success_count(),
+                            bytes = report.total_bytes(),
+                            "Scrollback replay complete"
+                        );
+                    }
+
+                    (Some(report), None)
+                }
+                Err(error) => {
+                    warn!(
+                        session_id = %session.session_id,
+                        checkpoint_id = checkpoint.checkpoint_id,
+                        error = %error,
+                        "Skipping scrollback replay because persisted output could not be loaded"
+                    );
+                    (None, Some(error.to_string()))
+                }
+            }
+        } else {
+            (None, None)
+        };
+
+        // 4. Send restore banners to each restored pane so the banner lands
+        // after any replayed scrollback content.
         for (&old_id, &new_id) in &layout_result.pane_id_map {
             let pane_state = pane_state_map.get(&old_id).copied();
             let banner = restore_banner(
@@ -914,7 +1067,7 @@ impl SessionRestorer {
             }
         }
 
-        // 4. Record pane ID mapping in a new startup checkpoint
+        // 5. Record pane ID mapping in a new startup checkpoint
         match save_restore_checkpoint(
             &self.db_path,
             &session.session_id,
@@ -928,7 +1081,7 @@ impl SessionRestorer {
             }
         }
 
-        // 5. Mark the source session clean only after a full restore.
+        // 6. Mark the source session clean only after a full restore.
         if layout_result.failed_panes.is_empty() {
             if let Err(e) = mark_session_restored(&self.db_path, &session.session_id) {
                 warn!(
@@ -969,6 +1122,8 @@ impl SessionRestorer {
             checkpoint_id: checkpoint.checkpoint_id,
             layout_result,
             pane_states: checkpoint.pane_states.clone(),
+            scrollback_result,
+            scrollback_error,
             elapsed_ms: elapsed,
         })
     }
@@ -1047,6 +1202,23 @@ pub fn format_restore_summary(summary: &RestoreSummary) -> String {
         for (id, err) in &summary.layout_result.failed_panes {
             out.push_str(&format!("  pane {id}: {err}\n"));
         }
+    }
+
+    if let Some(report) = &summary.scrollback_result {
+        out.push_str(&format!(
+            "Scrollback replay: {} restored, {} failed, {} skipped, {} bytes\n",
+            report.success_count(),
+            report.failure_count(),
+            report.skipped.len(),
+            report.total_bytes(),
+        ));
+        for (pane_id, err) in &report.failures {
+            out.push_str(&format!("  scrollback pane {pane_id}: {err}\n"));
+        }
+    }
+
+    if let Some(error) = &summary.scrollback_error {
+        out.push_str(&format!("Scrollback replay unavailable: {error}\n"));
     }
 
     out
@@ -1371,8 +1543,20 @@ mod tests {
                 last_output_at INTEGER
             );
 
+            CREATE TABLE output_segments (
+                id INTEGER PRIMARY KEY,
+                pane_id INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                content_len INTEGER NOT NULL,
+                content_hash TEXT,
+                captured_at INTEGER NOT NULL,
+                UNIQUE(pane_id, seq)
+            );
+
             CREATE INDEX idx_checkpoints_session ON session_checkpoints(session_id, checkpoint_at);
-            CREATE INDEX idx_pane_state_checkpoint ON mux_pane_state(checkpoint_id);",
+            CREATE INDEX idx_pane_state_checkpoint ON mux_pane_state(checkpoint_id);
+            CREATE INDEX idx_output_segments_pane_seq ON output_segments(pane_id, seq);",
         )
         .unwrap();
 
@@ -1411,11 +1595,90 @@ mod tests {
         cwd: Option<&str>,
         command: Option<&str>,
     ) {
+        insert_pane_state_with_scrollback(conn, checkpoint_id, pane_id, cwd, command, None, None);
+    }
+
+    fn insert_pane_state_with_scrollback(
+        conn: &Connection,
+        checkpoint_id: i64,
+        pane_id: u64,
+        cwd: Option<&str>,
+        command: Option<&str>,
+        scrollback_checkpoint_seq: Option<i64>,
+        last_output_at: Option<i64>,
+    ) {
         let terminal_json = r#"{"rows":24,"cols":80,"cursor_row":0,"cursor_col":0,"is_alt_screen":false,"title":"test"}"#;
         conn.execute(
-            "INSERT INTO mux_pane_state (checkpoint_id, pane_id, cwd, command, terminal_state_json)
+            "INSERT INTO mux_pane_state
+             (checkpoint_id, pane_id, cwd, command, terminal_state_json, scrollback_checkpoint_seq, last_output_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                checkpoint_id,
+                pane_id as i64,
+                cwd,
+                command,
+                terminal_json,
+                scrollback_checkpoint_seq,
+                last_output_at
+            ],
+        )
+        .unwrap();
+    }
+
+    fn insert_output_segment(
+        conn: &Connection,
+        pane_id: u64,
+        seq: i64,
+        content: &str,
+        captured_at: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO output_segments (pane_id, seq, content, content_len, captured_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![checkpoint_id, pane_id as i64, cwd, command, terminal_json],
+            params![
+                pane_id as i64,
+                seq,
+                content,
+                content.len() as i64,
+                captured_at
+            ],
+        )
+        .unwrap();
+    }
+
+    fn set_single_pane_topology(conn: &Connection, session_id: &str, pane_id: u64, cwd: &str) {
+        let topology = TopologySnapshot {
+            schema_version: 1,
+            captured_at: 1000,
+            workspace_id: None,
+            windows: vec![WindowSnapshot {
+                window_id: 0,
+                title: None,
+                position: None,
+                size: None,
+                tabs: vec![TabSnapshot {
+                    tab_id: 0,
+                    title: None,
+                    active_pane_id: Some(pane_id),
+                    pane_tree: PaneNode::Leaf {
+                        pane_id,
+                        rows: 24,
+                        cols: 80,
+                        cwd: Some(cwd.to_string()),
+                        title: None,
+                        is_active: true,
+                    },
+                }],
+                active_tab_index: Some(0),
+            }],
+        };
+
+        conn.execute(
+            "UPDATE mux_sessions SET topology_json = ?2 WHERE session_id = ?1",
+            params![
+                session_id,
+                topology.to_json().expect("serialize single-pane topology"),
+            ],
         )
         .unwrap();
     }
@@ -1506,6 +1769,27 @@ mod tests {
         assert_eq!(data.pane_states.len(), 2);
         assert_eq!(data.pane_states[0].cwd.as_deref(), Some("/home/user"));
         assert_eq!(data.pane_states[1].command.as_deref(), Some("vim"));
+    }
+
+    #[test]
+    fn load_checkpoint_with_scrollback_metadata() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-scrollback-meta", false);
+        let cp_id = insert_checkpoint(&conn, "sess-scrollback-meta", 5000, 1);
+        insert_pane_state_with_scrollback(
+            &conn,
+            cp_id,
+            5,
+            Some("/tmp"),
+            Some("bash"),
+            Some(12),
+            Some(5_100),
+        );
+
+        let data = load_checkpoint_by_id(&db_path, cp_id).unwrap().unwrap();
+        let pane = &data.pane_states[0];
+        assert_eq!(pane.scrollback_checkpoint_seq, Some(12));
+        assert_eq!(pane.last_output_at, Some(5_100));
     }
 
     #[test]
@@ -1679,6 +1963,8 @@ mod tests {
                 session_id: Some("abc123".to_string()),
                 state: Some("working".to_string()),
             }),
+            scrollback_checkpoint_seq: None,
+            last_output_at: None,
         };
 
         let banner = restore_banner(1, "sess-agent", 1700000000000, Some(&state));
@@ -1995,6 +2281,116 @@ mod tests {
     }
 
     #[test]
+    fn session_restorer_restore_replays_scrollback_before_banner() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-scrollback", false);
+        set_single_pane_topology(&conn, "sess-scrollback", 1, "/restore");
+
+        let checkpoint_id = insert_checkpoint(&conn, "sess-scrollback", 5000, 1);
+        insert_pane_state_with_scrollback(
+            &conn,
+            checkpoint_id,
+            1,
+            Some("/restore"),
+            Some("bash"),
+            Some(1),
+            Some(5_200),
+        );
+        insert_output_segment(&conn, 1, 0, "first line", 5_100);
+        insert_output_segment(&conn, 1, 1, "second line", 5_200);
+        conn.execute(
+            "UPDATE mux_sessions SET last_checkpoint_at = 5000 WHERE session_id = 'sess-scrollback'",
+            [],
+        )
+        .unwrap();
+
+        let restorer = SessionRestorer::new(
+            Arc::new(db_path.clone()),
+            SessionRestoreConfig {
+                restore_scrollback: true,
+                ..SessionRestoreConfig::default()
+            },
+        );
+        let session = restorer.detect().unwrap().expect("restorable session");
+        let checkpoint = restorer.load_checkpoint(&session).unwrap();
+
+        let wezterm = Arc::new(MockWezterm::new());
+        let summary =
+            run_async_test(restorer.restore(&session, &checkpoint, wezterm.clone())).unwrap();
+
+        assert_eq!(summary.restored_count(), 1);
+        assert_eq!(summary.scrollback_restored_count(), 1);
+        assert_eq!(summary.scrollback_failed_count(), 0);
+        assert_eq!(summary.scrollback_skipped_count(), 0);
+        assert!(summary.scrollback_error.is_none());
+
+        let new_pane_id = *summary
+            .layout_result
+            .pane_id_map
+            .get(&1)
+            .expect("pane mapping for replayed pane");
+        let content = run_async_test(wezterm.get_text(new_pane_id, false)).unwrap();
+        let first_line_offset = content.find("first line").expect("replayed first line");
+        let banner_offset = content
+            .find("Session restored")
+            .expect("restore banner after replay");
+
+        assert!(content.contains("second line"));
+        assert!(
+            first_line_offset < banner_offset,
+            "replayed scrollback should be written before the restore banner"
+        );
+    }
+
+    #[test]
+    fn session_restorer_restore_layout_only_skips_scrollback_replay() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-layout-only", false);
+        set_single_pane_topology(&conn, "sess-layout-only", 7, "/restore");
+
+        let checkpoint_id = insert_checkpoint(&conn, "sess-layout-only", 5000, 1);
+        insert_pane_state_with_scrollback(
+            &conn,
+            checkpoint_id,
+            7,
+            Some("/restore"),
+            Some("bash"),
+            Some(1),
+            Some(5_200),
+        );
+        insert_output_segment(&conn, 7, 0, "first line", 5_100);
+        insert_output_segment(&conn, 7, 1, "second line", 5_200);
+        conn.execute(
+            "UPDATE mux_sessions SET last_checkpoint_at = 5000 WHERE session_id = 'sess-layout-only'",
+            [],
+        )
+        .unwrap();
+
+        let restorer =
+            SessionRestorer::new(Arc::new(db_path.clone()), SessionRestoreConfig::default());
+        let session = restorer.detect().unwrap().expect("restorable session");
+        let checkpoint = restorer.load_checkpoint(&session).unwrap();
+
+        let wezterm = Arc::new(MockWezterm::new());
+        let summary =
+            run_async_test(restorer.restore(&session, &checkpoint, wezterm.clone())).unwrap();
+
+        assert!(summary.scrollback_result.is_none());
+        assert!(summary.scrollback_error.is_none());
+
+        let new_pane_id = *summary
+            .layout_result
+            .pane_id_map
+            .get(&7)
+            .expect("pane mapping for layout-only restore");
+        let content = run_async_test(wezterm.get_text(new_pane_id, false)).unwrap();
+
+        assert!(content.contains("Session restored"));
+        assert!(!content.contains("first line"));
+        assert!(!content.contains("second line"));
+    }
+
+    #[test]
     fn pane_state_parses_terminal_state_json() {
         let (db_path, conn, _dir) = setup_test_db();
         insert_session(&conn, "sess-ts", false);
@@ -2075,6 +2471,8 @@ mod tests {
             checkpoint_id: 1,
             layout_result,
             pane_states: vec![],
+            scrollback_result: None,
+            scrollback_error: None,
             elapsed_ms: 100,
         };
 
@@ -2100,6 +2498,8 @@ mod tests {
             checkpoint_id: 1,
             layout_result,
             pane_states: vec![],
+            scrollback_result: None,
+            scrollback_error: None,
             elapsed_ms: 42,
         };
 
@@ -2129,6 +2529,8 @@ mod tests {
             checkpoint_id: 1,
             layout_result,
             pane_states: vec![],
+            scrollback_result: None,
+            scrollback_error: None,
             elapsed_ms: 42,
         };
 
@@ -2515,6 +2917,8 @@ mod tests {
             command: Some("zsh".to_string()),
             terminal_state: None,
             agent_metadata: None,
+            scrollback_checkpoint_seq: None,
+            last_output_at: None,
         };
         let s2 = s.clone();
         assert_eq!(s2.pane_id, 7);
@@ -2568,6 +2972,8 @@ mod tests {
             command: Some("vim".to_string()),
             terminal_state: None,
             agent_metadata: None,
+            scrollback_checkpoint_seq: None,
+            last_output_at: None,
         };
         let banner = restore_banner(1, "s1", 0, Some(&state));
         assert!(banner.contains("Process: vim"));
@@ -2586,6 +2992,8 @@ mod tests {
                 session_id: Some("agent-sess".to_string()),
                 state: Some("running".to_string()),
             }),
+            scrollback_checkpoint_seq: None,
+            last_output_at: None,
         };
         let banner = restore_banner(2, "s2", 0, Some(&state));
         assert!(banner.contains("Previously running: claude-code"));
