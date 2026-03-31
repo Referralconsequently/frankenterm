@@ -32,20 +32,29 @@ This guide covers the most common snapshot/restore failure modes and how to diag
 
 ## 2) “Restore didn’t happen” after a crash/restart
 
-**Important**: `ft snapshot restore` is not fully wired yet; the supported restore path is via `ft watch` on startup.
+`ft snapshot restore <checkpoint_id>` is wired for manual restores. `ft watch` remains the restore-on-startup path when you want ft to detect unclean shutdowns automatically.
 
 **What to do**
 
-1) Run the watcher:
+1) For restore-on-startup, run the watcher:
    ```bash
    ft watch
    ```
-2) Check whether ft sees unclean sessions:
+2) For a direct/manual restore, list recent checkpoints and restore one explicitly:
+   ```bash
+   ft snapshot list --limit 10
+   ft snapshot restore <checkpoint_id>
+   ```
+3) If you only want the split/tab/window layout and do not want scrollback replay:
+   ```bash
+   ft snapshot restore <checkpoint_id> --layout-only
+   ```
+4) Check whether ft sees unclean sessions:
    ```bash
    ft session doctor
    ft session list
    ```
-3) Inspect the latest checkpoint for a session:
+5) Inspect the latest checkpoint for a session:
    ```bash
    ft session show <session_id>
    ```
@@ -80,6 +89,7 @@ This guide covers the most common snapshot/restore failure modes and how to diag
 
 - Another watcher instance is running and holding locks
 - A previous crash left the DB in a bad state (rare, but possible)
+- Another `ft snapshot restore` or `ft restart` is already holding the restart-operation lock
 
 **What to do**
 
@@ -91,8 +101,9 @@ This guide covers the most common snapshot/restore failure modes and how to diag
    ```bash
    ft stop
    ```
-3) Re-run snapshot/session commands and see if the lock clears
-4) If migrations are involved:
+3) If the error mentions another restore or restart already being in progress, wait for that operation to finish before retrying
+4) Re-run snapshot/session commands and see if the lock clears
+5) If migrations are involved:
    ```bash
    ft db migrate --status
    ft db migrate
