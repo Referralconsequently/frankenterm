@@ -4,6 +4,12 @@
 
 This reference is for operators tuning live fleets. The ranges below are starting points, not promises. Change one subsystem at a time, run `ft config validate`, then watch capture lag, queue depth, SQLite lock timing, memory pressure, search latency, and workflow completion time before moving further.
 
+Before you tune a live deployment:
+
+- For current rollout posture, hardware-tier defaults, and fallback guidance, start with `docs/resize-user-facing-release-tuning-guidance-wa-1u90p.8.5.md`.
+- For incident triage and rollback flow, use `docs/operator-playbook.md`.
+- Treat this file as the knob-level reference, not the release-posture document.
+
 ## Sizing Profiles
 
 - `10 panes`: small local swarm or single-operator setup where low latency matters more than peak throughput.

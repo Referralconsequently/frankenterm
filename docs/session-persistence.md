@@ -20,7 +20,7 @@ What it does **not** (currently) guarantee:
 
 - Restoring interactive in-process state (REPL variables, editor buffers, etc.)
 - Restoring authenticated agent sessions (Claude/Codex/Gemini will start fresh)
-- A working `ft snapshot restore` CLI path (see “Restore behavior” below)
+- Perfect scrollback fidelity when capture data was already missing or truncated before the snapshot
 
 ## Quick start
 
@@ -131,30 +131,37 @@ ft snapshot delete 123 --force
 On startup, `ft watch` checks for sessions that did not shut down cleanly (`shutdown_clean = 0`).
 If it finds one, it will **detect** that an unclean session exists and offer to restore from the latest checkpoint.
 
-This is currently the supported restore path.
+This remains the most automatic restore path.
 
-### `ft snapshot restore` (not wired yet)
+### `ft snapshot restore`
 
-`ft snapshot restore <id>` currently exits with an error and points you to the watcher’s restore-on-startup flow.
+`ft snapshot restore <id>` recreates the saved mux layout from a specific checkpoint.
+By default it also replays captured scrollback for each pane up to the checkpoint’s recorded `scrollback_checkpoint_seq`.
 
-## “Safe restart” workflow (current)
+Use `--layout-only` when you want to restore the pane/window topology without replaying scrollback:
 
-`ft restart` exists, but is not fully wired yet. The current safe workflow is:
+```bash
+ft snapshot restore 123 --layout-only
+```
 
-1) Capture a pre-restart snapshot:
-   ```bash
-   ft snapshot save --trigger pre_restart
-   ```
-2) Stop the watcher (optional, but reduces DB contention):
-   ```bash
-   ft stop
-   ```
-3) Restart WezTerm / mux server using your normal process
-4) Start the watcher:
-   ```bash
-   ft watch
-   ```
-5) If an unclean shutdown is detected, follow the restore prompt
+## `ft restart`
+
+`ft restart` performs the built-in safe restart flow:
+
+1) Capture a pre-restart snapshot
+2) Stop `frankenterm-mux-server`
+3) Start `frankenterm-mux-server`
+4) Restore from the captured snapshot unless `--skip-restore` is set
+
+Examples:
+
+```bash
+ft restart
+ft restart --layout-only
+ft restart --skip-restore
+```
+
+If the mux restart succeeds but the restore phase fails, the snapshot is preserved and the CLI prints the checkpoint ID for manual recovery with `ft snapshot restore <id>`.
 
 ## Configuration
 

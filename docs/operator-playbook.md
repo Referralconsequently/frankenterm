@@ -8,9 +8,16 @@ It focuses on fast diagnosis, safe remediation, and actionable artifacts.
 ```bash
 ft triage
 ft triage -f json
+ft status --health
+ft robot events --limit 20
 ```
 
 If something needs attention, follow the relevant flow below.
+
+Related guides:
+- For release posture and per-tier fallback defaults, use `docs/resize-user-facing-release-tuning-guidance-wa-1u90p.8.5.md`.
+- For exact knob meanings and safe starting ranges, use `docs/tuning-reference.md`.
+- For GUI-specific fleet operation, use `docs/frankenterm-gui-user-guide.md`.
 
 ---
 

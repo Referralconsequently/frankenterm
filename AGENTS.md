@@ -422,7 +422,7 @@ ft robot events --unhandled
 | `ft watch` | Startup detection + restore prompt for unclean shutdowns |
 
 Notes:
-- `ft snapshot restore` and `ft restart` are currently not fully wired; restore is via `ft watch` on startup.
+- `ft snapshot restore` and `ft restart` are wired. Use `--layout-only` to skip scrollback replay, and use `ft watch` when you want restore-on-startup behavior after an unclean shutdown.
 - Most snapshot/session commands accept `-f json` (auto/plain/json) for machine-friendly output.
 
 ### Pattern Rules Tooling

@@ -291,6 +291,8 @@ ft mcp serve
 - If memory pressure rises, lower `scrollback_lines`.
 - If capture load is high, increase `ingest.poll_interval_ms` and/or lower `max_concurrent_captures`.
 - Native event bridge uses bounded buffering; keep `ft watch` running so events drain continuously.
+- For release posture, hardware-tier defaults, and fallback expectations, use `docs/resize-user-facing-release-tuning-guidance-wa-1u90p.8.5.md`.
+- For exact runtime knob ranges, use `docs/tuning-reference.md`.
 
 ### Distributed mode setup (feature-gated)
 

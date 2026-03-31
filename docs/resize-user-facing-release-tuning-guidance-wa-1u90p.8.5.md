@@ -1,8 +1,8 @@
-# Resize/Reflow User Release and Tuning Guidance (`wa-1u90p.8.5`)
+# Resize/Reflow User Release and Tuning Guidance (`ft-1u90p.8.5`)
 
 Date: 2026-03-14
-Status: Draft v2 user/operator guidance by hardware tier; evidence-backed but not yet promotion-ready because `ft-1u90p.8.7` remains `HOLD` as of the 2026-03-14 checkpoint and 2026-03-15 guardrail validation rerun
-Depends on: `wa-1u90p.8.1`, `wa-1u90p.8.2`, `wa-1u90p.8.4`, `wa-1u90p.4.5`, `wa-1u90p.4.7`, `ft-1u90p.8.7`
+Status: Published operator guidance package by hardware tier; evidence-backed but not yet promotion-ready because `ft-1u90p.8.7` remains `HOLD` as of the 2026-03-14 checkpoint and 2026-03-15 guardrail validation rerun
+Depends on: `ft-1u90p.8.1`, `ft-1u90p.8.2`, `ft-1u90p.8.4`, `ft-1u90p.4.5`, `ft-1u90p.4.7`, `ft-1u90p.8.7`
 
 ## Purpose
 
@@ -16,6 +16,21 @@ Read together with:
 - `docs/resize-incident-response-rollback-runbook-wa-1u90p.8.4.md`
 - `docs/resize-performance-slos.md`
 - `docs/resize-controlled-beta-feedback-loop-wa-1u90p.8.7.md`
+- `docs/tuning-reference.md`
+- `docs/operator-playbook.md`
+- `docs/frankenterm-gui-user-guide.md`
+
+## How to Use This Guide
+
+Use this document for operator-facing release posture, hardware-tier defaults, and fallback decisions.
+
+- If you need exact `[tuning]` knob ranges, use `docs/tuning-reference.md`.
+- If you are actively triaging an incident or deciding whether to roll back, use `docs/operator-playbook.md` and `docs/resize-incident-response-rollback-runbook-wa-1u90p.8.4.md`.
+- If you are running the GUI path for large pane fleets, pair this guide with `docs/frankenterm-gui-user-guide.md`.
+
+This document answers "what should we recommend or do on this class of hardware right now?".
+The tuning reference answers "what does each knob mean?".
+The operator playbook answers "what should I run first when something is wrong?".
 
 ## Current Release Posture (2026-03-14 Checkpoint)
 
@@ -241,4 +256,4 @@ If you observe regressions:
 1. User-facing guidance exists for low/mid/high hardware tiers with explicit expectations and current rollout posture.
 2. Tuning profiles are documented with practical tradeoffs plus evidence-backed restrictions while beta remains `HOLD`.
 3. Troubleshooting and fallback paths align with rollout/runbook contracts and point operators to the active evidence artifacts.
-4. Guidance is ready to be referenced by final go/no-go evidence in `wa-1u90p.8.6` once `ft-1u90p.8.7` clears its sample-sufficiency and real-user-feedback blockers.
+4. Guidance is ready to be referenced by final go/no-go evidence in `ft-1u90p.8.6` once `ft-1u90p.8.7` clears its sample-sufficiency and real-user-feedback blockers.
