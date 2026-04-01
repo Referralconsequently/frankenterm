@@ -1030,7 +1030,7 @@ impl WeztermInterface for ShardedWeztermClient {
     fn pane_tiered_scrollback_summary(
         &self,
         pane_id: u64,
-    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+    ) -> WeztermFuture<'_, PaneTieredScrollbackSummary> {
         Box::pin(async move {
             let route = self.route_for_global_pane_id(pane_id).await?;
             let backend = self.backend_for_id(route.shard_id)?;

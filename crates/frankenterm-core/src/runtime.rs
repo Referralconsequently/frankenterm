@@ -3439,20 +3439,11 @@ impl PaneTieredScrollbackFetch {
 fn record_pane_tiered_scrollback_summary_result(
     fetch: &mut PaneTieredScrollbackFetch,
     pane_id: u64,
-    result: std::result::Result<Option<PaneTieredScrollbackSummary>, crate::Error>,
+    result: std::result::Result<PaneTieredScrollbackSummary, crate::Error>,
 ) {
     match result {
-        Ok(Some(summary)) => {
+        Ok(summary) => {
             fetch.summaries.insert(pane_id, summary);
-        }
-        Ok(None) => {
-            const MISSING_SUMMARY: &str = "backend returned no tiered scrollback summary";
-            fetch.note_error(pane_id, &MISSING_SUMMARY);
-            debug!(
-                pane_id,
-                error = MISSING_SUMMARY,
-                "tiered scrollback summary missing despite successful backend call"
-            );
         }
         Err(err) => {
             fetch.note_error(pane_id, &err);
@@ -5184,7 +5175,15 @@ mod tests {
     #[test]
     fn pane_tiered_scrollback_fetch_treats_missing_summary_as_blind_error() {
         let mut fetch = PaneTieredScrollbackFetch::default();
-        record_pane_tiered_scrollback_summary_result(&mut fetch, 7, Ok(None));
+        record_pane_tiered_scrollback_summary_result(
+            &mut fetch,
+            7,
+            Err(crate::Error::Wezterm(
+                crate::error::WeztermError::CommandFailed(
+                    "backend returned no tiered scrollback summary".to_string(),
+                ),
+            )),
+        );
 
         assert!(fetch.telemetry_blind(1));
         assert!(!fetch.telemetry_partial(1));

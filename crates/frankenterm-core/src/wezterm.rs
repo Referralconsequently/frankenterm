@@ -109,7 +109,7 @@ pub trait WeztermInterface: Send + Sync {
     fn pane_tiered_scrollback_summary(
         &self,
         pane_id: u64,
-    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+    ) -> WeztermFuture<'_, PaneTieredScrollbackSummary> {
         Box::pin(async move {
             Err(WeztermError::CommandFailed(format!(
                 "tiered scrollback telemetry unavailable for pane {pane_id}: backend does not expose tiered scrollback status"
@@ -897,7 +897,7 @@ impl WeztermClient {
     pub async fn pane_tiered_scrollback_summary(
         &self,
         pane_id: u64,
-    ) -> Result<Option<PaneTieredScrollbackSummary>> {
+    ) -> Result<PaneTieredScrollbackSummary> {
         #[cfg(all(feature = "vendored", unix))]
         if let Some(ref pool) = self.mux_pool {
             if self.mux_circuit_guard() {
@@ -905,7 +905,7 @@ impl WeztermClient {
                     Ok(changes) => {
                         self.mux_circuit_record_success();
                         if let Some(status) = changes.tiered_scrollback_status {
-                            return Ok(Some(status.into()));
+                            return Ok(status.into());
                         }
                         return Err(WeztermError::CommandFailed(format!(
                             "tiered scrollback telemetry unavailable for pane {pane_id}: vendored mux returned no tiered scrollback status"
@@ -1674,7 +1674,7 @@ impl WeztermInterface for WeztermClient {
     fn pane_tiered_scrollback_summary(
         &self,
         pane_id: u64,
-    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+    ) -> WeztermFuture<'_, PaneTieredScrollbackSummary> {
         Box::pin(async move { WeztermClient::pane_tiered_scrollback_summary(self, pane_id).await })
     }
 }
@@ -1777,7 +1777,7 @@ impl WeztermInterface for Arc<dyn WeztermInterface> {
     fn pane_tiered_scrollback_summary(
         &self,
         pane_id: u64,
-    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+    ) -> WeztermFuture<'_, PaneTieredScrollbackSummary> {
         self.as_ref().pane_tiered_scrollback_summary(pane_id)
     }
 }
@@ -4082,7 +4082,7 @@ impl WeztermInterface for UnifiedClient {
     fn pane_tiered_scrollback_summary(
         &self,
         pane_id: u64,
-    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+    ) -> WeztermFuture<'_, PaneTieredScrollbackSummary> {
         self.inner.pane_tiered_scrollback_summary(pane_id)
     }
 }
@@ -4451,7 +4451,7 @@ impl WeztermInterface for MockWezterm {
     fn pane_tiered_scrollback_summary(
         &self,
         pane_id: u64,
-    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+    ) -> WeztermFuture<'_, PaneTieredScrollbackSummary> {
         Box::pin(async move {
             Err(WeztermError::CommandFailed(format!(
                 "tiered scrollback telemetry unavailable for pane {pane_id}: mock backend does not expose tiered scrollback status"
@@ -4574,7 +4574,7 @@ impl WeztermInterface for FailingMockWezterm {
     fn pane_tiered_scrollback_summary(
         &self,
         _pane_id: u64,
-    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+    ) -> WeztermFuture<'_, PaneTieredScrollbackSummary> {
         Box::pin(async { Err(crate::Error::Wezterm(WeztermError::Timeout(5))) })
     }
 }
