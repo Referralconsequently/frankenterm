@@ -301,6 +301,21 @@ where
 mod tests {
     use super::*;
 
+    fn record_peak(peak: &std::sync::atomic::AtomicUsize, current: usize) {
+        let mut observed = peak.load(std::sync::atomic::Ordering::SeqCst);
+        while current > observed {
+            match peak.compare_exchange(
+                observed,
+                current,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
     // ── DarkBadger wa-1u90p.7.1 ──────────────────────────────────────
 
     #[test]
@@ -771,6 +786,104 @@ mod tests {
             completed.load(Ordering::SeqCst),
             4,
             "spawn_bounded_with_cx should not return until every child has completed"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn spawn_bounded_respects_peak_concurrency_cap() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let cx = for_testing();
+        let handle = runtime.handle();
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tasks: Vec<
+            Box<dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = usize> + Send>> + Send>,
+        > = (0..6_usize)
+            .map(|i| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                let closure: Box<
+                    dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = usize> + Send>> + Send,
+                > = Box::new(move |_cx| {
+                    Box::pin(async move {
+                        let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        record_peak(&peak, now_active);
+                        crate::runtime_compat::sleep(Duration::from_millis(10)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        i
+                    })
+                });
+                closure
+            })
+            .collect();
+
+        let results =
+            runtime.block_on(async { spawn_bounded_with_cx(&handle, &cx, 2, tasks).await });
+
+        assert_eq!(results, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            2,
+            "spawn_bounded_with_cx should never run more than the requested number of children concurrently"
+        );
+        assert_eq!(
+            active.load(Ordering::SeqCst),
+            0,
+            "all child tasks should have drained before spawn_bounded_with_cx returns"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn spawn_bounded_zero_concurrency_is_treated_as_single_slot() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let cx = for_testing();
+        let handle = runtime.handle();
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tasks: Vec<
+            Box<dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = usize> + Send>> + Send>,
+        > = (0..4_usize)
+            .map(|i| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                let closure: Box<
+                    dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = usize> + Send>> + Send,
+                > = Box::new(move |_cx| {
+                    Box::pin(async move {
+                        let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        record_peak(&peak, now_active);
+                        crate::runtime_compat::sleep(Duration::from_millis(10)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        i
+                    })
+                });
+                closure
+            })
+            .collect();
+
+        let results =
+            runtime.block_on(async { spawn_bounded_with_cx(&handle, &cx, 0, tasks).await });
+
+        assert_eq!(results, vec![0, 1, 2, 3]);
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "max_concurrency=0 should be coerced to a single active child rather than allowing unbounded fanout"
+        );
+        assert_eq!(
+            active.load(Ordering::SeqCst),
+            0,
+            "all child tasks should have drained before spawn_bounded_with_cx returns"
         );
     }
 
