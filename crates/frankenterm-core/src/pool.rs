@@ -214,6 +214,11 @@ impl<C: Send + 'static> Pool<C> {
             Ok(Err(crate::runtime_compat::AcquireError::Cancelled)) => {
                 return Err(PoolError::Cancelled);
             }
+            // No permit was acquired, so treat misuse of a completed acquire
+            // future the same as a cancelled acquire at the pool boundary.
+            Ok(Err(crate::runtime_compat::AcquireError::PolledAfterCompletion)) => {
+                return Err(PoolError::Cancelled);
+            }
             Err(_timeout_err) => {
                 self.stats_timeouts.fetch_add(1, Ordering::Relaxed);
                 return Err(PoolError::AcquireTimeout);

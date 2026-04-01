@@ -339,6 +339,7 @@ impl std::error::Error for TryAcquireError {}
 pub enum AcquireError {
     Closed,
     Cancelled,
+    PolledAfterCompletion,
 }
 
 #[cfg(feature = "asupersync-runtime")]
@@ -347,6 +348,9 @@ impl std::fmt::Display for AcquireError {
         match self {
             Self::Closed => write!(f, "semaphore closed"),
             Self::Cancelled => write!(f, "semaphore acquire cancelled"),
+            Self::PolledAfterCompletion => {
+                write!(f, "semaphore acquire future polled after completion")
+            }
         }
     }
 }
@@ -366,6 +370,9 @@ impl Semaphore {
         match err {
             asupersync::sync::AcquireError::Closed => AcquireError::Closed,
             asupersync::sync::AcquireError::Cancelled => AcquireError::Cancelled,
+            asupersync::sync::AcquireError::PolledAfterCompletion => {
+                AcquireError::PolledAfterCompletion
+            }
         }
     }
 
