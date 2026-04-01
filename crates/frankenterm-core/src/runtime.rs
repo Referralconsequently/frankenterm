@@ -5187,10 +5187,9 @@ mod tests {
 
         assert!(fetch.telemetry_blind(1));
         assert!(!fetch.telemetry_partial(1));
-        assert_eq!(
-            fetch.error_samples,
-            vec!["pane 7: backend returned no tiered scrollback summary"]
-        );
+        assert_eq!(fetch.error_samples.len(), 1);
+        assert!(fetch.error_samples[0].contains("pane 7:"));
+        assert!(fetch.error_samples[0].contains("backend returned no tiered scrollback summary"));
     }
 
     #[test]

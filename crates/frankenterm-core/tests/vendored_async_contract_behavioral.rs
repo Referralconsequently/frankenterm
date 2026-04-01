@@ -3393,6 +3393,370 @@ fn b23v_explicit_cx_public_mux_pool_health_check_read_timeout_contract() {
     });
 }
 
+/// B23w: Integration — pooled explicit-Cx get-lines fails fast when cancelled.
+///
+/// Uses only the public `MuxPool` API from an external test crate to prove a
+/// warmed pooled connection surfaces `PoolError::Cancelled` for
+/// `get_lines_with_cx` without sending an extra post-handshake request.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23w_explicit_cx_public_mux_pool_get_lines_cancellation_contract() {
+    run_async_test(async {
+        let cancelled_cx = cancelled_test_cx("behavioral public mux-pool get-lines cancellation");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-mux-pool-get-lines-cancel.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+
+        let server = runtime_compat::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut read_buf = Vec::new();
+            let mut get_lines_requests = 0usize;
+            let mut handshake_complete = false;
+
+            loop {
+                let mut temp = vec![0u8; 4096];
+                let read = match runtime_compat::timeout(
+                    Duration::from_millis(1_000),
+                    runtime_compat::io::read(&mut stream, &mut temp),
+                )
+                .await
+                {
+                    Ok(Ok(read)) => read,
+                    Ok(Err(err)) => panic!("read failed: {err}"),
+                    Err(_) if handshake_complete => break,
+                    Err(_) => panic!("server timed out before handshake completed"),
+                };
+                if read == 0 {
+                    break;
+                }
+                read_buf.extend_from_slice(&temp[..read]);
+
+                while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                    match decoded.pdu {
+                        Pdu::GetCodecVersion(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                    codec_vers: CODEC_VERSION,
+                                    version_string:
+                                        "behavioral-explicit-cx-mux-pool-get-lines-cancel"
+                                            .to_string(),
+                                    executable_path: std::path::PathBuf::from("/bin/wezterm"),
+                                    config_file_path: None,
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SetClientId(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::UnitResponse(UnitResponse {}),
+                            )
+                            .await;
+                            handshake_complete = true;
+                        }
+                        Pdu::ListPanes(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::ListPanesResponse(codec::ListPanesResponse {
+                                    tabs: Vec::new(),
+                                    tab_titles: Vec::new(),
+                                    window_titles: Default::default(),
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::GetLines(_) => {
+                            get_lines_requests += 1;
+                        }
+                        other => panic!("unexpected handshake/request PDU: {}", other.pdu_name()),
+                    }
+                }
+            }
+
+            get_lines_requests
+        });
+
+        let pool = MuxPool::new(behavioral_mux_pool_config(socket_path));
+        pool.list_panes()
+            .await
+            .expect("warmup list_panes should establish a pooled connection");
+
+        let err = pool
+            .get_lines_with_cx(&cancelled_cx, 34, vec![0isize..3isize, 5isize..6isize])
+            .await
+            .expect_err("get_lines_with_cx should fail fast for a pre-cancelled context");
+        assert_cancelled_mux_pool_error(&err);
+
+        drop(pool);
+        let get_lines_requests = runtime_compat::timeout(Duration::from_millis(500), server)
+            .await
+            .expect("server task should finish promptly")
+            .expect("server task should join cleanly");
+        assert_eq!(
+            get_lines_requests, 0,
+            "pre-cancelled pooled get_lines_with_cx should not send an extra post-handshake request frame after warmup"
+        );
+
+        emit_behavioral_log(
+            "b23w",
+            "ABC-CAN-002",
+            "explicit_cx_public_mux_pool_get_lines_cancelled_fast_fail",
+            "pass",
+        );
+    });
+}
+
+/// B23x: Integration — pooled explicit-Cx write-to-pane fails fast when cancelled.
+///
+/// Uses only the public `MuxPool` API from an external test crate to prove a
+/// warmed pooled connection surfaces `PoolError::Cancelled` for
+/// `write_to_pane_with_cx` without sending an extra post-handshake request.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23x_explicit_cx_public_mux_pool_write_to_pane_cancellation_contract() {
+    run_async_test(async {
+        let cancelled_cx =
+            cancelled_test_cx("behavioral public mux-pool write-to-pane cancellation");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-mux-pool-write-to-pane-cancel.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+
+        let server = runtime_compat::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut read_buf = Vec::new();
+            let mut write_requests = 0usize;
+            let mut handshake_complete = false;
+
+            loop {
+                let mut temp = vec![0u8; 4096];
+                let read = match runtime_compat::timeout(
+                    Duration::from_millis(1_000),
+                    runtime_compat::io::read(&mut stream, &mut temp),
+                )
+                .await
+                {
+                    Ok(Ok(read)) => read,
+                    Ok(Err(err)) => panic!("read failed: {err}"),
+                    Err(_) if handshake_complete => break,
+                    Err(_) => panic!("server timed out before handshake completed"),
+                };
+                if read == 0 {
+                    break;
+                }
+                read_buf.extend_from_slice(&temp[..read]);
+
+                while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                    match decoded.pdu {
+                        Pdu::GetCodecVersion(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                    codec_vers: CODEC_VERSION,
+                                    version_string:
+                                        "behavioral-explicit-cx-mux-pool-write-to-pane-cancel"
+                                            .to_string(),
+                                    executable_path: std::path::PathBuf::from("/bin/wezterm"),
+                                    config_file_path: None,
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SetClientId(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::UnitResponse(UnitResponse {}),
+                            )
+                            .await;
+                            handshake_complete = true;
+                        }
+                        Pdu::ListPanes(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::ListPanesResponse(codec::ListPanesResponse {
+                                    tabs: Vec::new(),
+                                    tab_titles: Vec::new(),
+                                    window_titles: Default::default(),
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::WriteToPane(_) => {
+                            write_requests += 1;
+                        }
+                        other => panic!("unexpected handshake/request PDU: {}", other.pdu_name()),
+                    }
+                }
+            }
+
+            write_requests
+        });
+
+        let pool = MuxPool::new(behavioral_mux_pool_config(socket_path));
+        pool.list_panes()
+            .await
+            .expect("warmup list_panes should establish a pooled connection");
+
+        let err = pool
+            .write_to_pane_with_cx(&cancelled_cx, 56, b"hello".to_vec())
+            .await
+            .expect_err("write_to_pane_with_cx should fail fast for a pre-cancelled context");
+        assert_cancelled_mux_pool_error(&err);
+
+        drop(pool);
+        let write_requests = runtime_compat::timeout(Duration::from_millis(500), server)
+            .await
+            .expect("server task should finish promptly")
+            .expect("server task should join cleanly");
+        assert_eq!(
+            write_requests, 0,
+            "pre-cancelled pooled write_to_pane_with_cx should not send an extra post-handshake request frame after warmup"
+        );
+
+        emit_behavioral_log(
+            "b23x",
+            "ABC-CAN-002",
+            "explicit_cx_public_mux_pool_write_to_pane_cancelled_fast_fail",
+            "pass",
+        );
+    });
+}
+
+/// B23y: Integration — pooled explicit-Cx send-paste fails fast when cancelled.
+///
+/// Uses only the public `MuxPool` API from an external test crate to prove a
+/// warmed pooled connection surfaces `PoolError::Cancelled` for
+/// `send_paste_with_cx` without sending an extra post-handshake request.
+#[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
+#[test]
+fn b23y_explicit_cx_public_mux_pool_send_paste_cancellation_contract() {
+    run_async_test(async {
+        let cancelled_cx = cancelled_test_cx("behavioral public mux-pool send-paste cancellation");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp_dir
+            .path()
+            .join("behavioral-explicit-cx-mux-pool-send-paste-cancel.sock");
+        let listener = runtime_compat::unix::bind(&socket_path)
+            .await
+            .expect("bind listener");
+
+        let server = runtime_compat::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut read_buf = Vec::new();
+            let mut send_paste_requests = 0usize;
+            let mut handshake_complete = false;
+
+            loop {
+                let mut temp = vec![0u8; 4096];
+                let read = match runtime_compat::timeout(
+                    Duration::from_millis(1_000),
+                    runtime_compat::io::read(&mut stream, &mut temp),
+                )
+                .await
+                {
+                    Ok(Ok(read)) => read,
+                    Ok(Err(err)) => panic!("read failed: {err}"),
+                    Err(_) if handshake_complete => break,
+                    Err(_) => panic!("server timed out before handshake completed"),
+                };
+                if read == 0 {
+                    break;
+                }
+                read_buf.extend_from_slice(&temp[..read]);
+
+                while let Ok(Some(decoded)) = codec::Pdu::stream_decode(&mut read_buf) {
+                    match decoded.pdu {
+                        Pdu::GetCodecVersion(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::GetCodecVersionResponse(GetCodecVersionResponse {
+                                    codec_vers: CODEC_VERSION,
+                                    version_string:
+                                        "behavioral-explicit-cx-mux-pool-send-paste-cancel"
+                                            .to_string(),
+                                    executable_path: std::path::PathBuf::from("/bin/wezterm"),
+                                    config_file_path: None,
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SetClientId(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::UnitResponse(UnitResponse {}),
+                            )
+                            .await;
+                            handshake_complete = true;
+                        }
+                        Pdu::ListPanes(_) => {
+                            write_mux_response(
+                                &mut stream,
+                                decoded.serial,
+                                Pdu::ListPanesResponse(codec::ListPanesResponse {
+                                    tabs: Vec::new(),
+                                    tab_titles: Vec::new(),
+                                    window_titles: Default::default(),
+                                }),
+                            )
+                            .await;
+                        }
+                        Pdu::SendPaste(_) => {
+                            send_paste_requests += 1;
+                        }
+                        other => panic!("unexpected handshake/request PDU: {}", other.pdu_name()),
+                    }
+                }
+            }
+
+            send_paste_requests
+        });
+
+        let pool = MuxPool::new(behavioral_mux_pool_config(socket_path));
+        pool.list_panes()
+            .await
+            .expect("warmup list_panes should establish a pooled connection");
+
+        let err = pool
+            .send_paste_with_cx(&cancelled_cx, 78, "paste me".to_string())
+            .await
+            .expect_err("send_paste_with_cx should fail fast for a pre-cancelled context");
+        assert_cancelled_mux_pool_error(&err);
+
+        drop(pool);
+        let send_paste_requests = runtime_compat::timeout(Duration::from_millis(500), server)
+            .await
+            .expect("server task should finish promptly")
+            .expect("server task should join cleanly");
+        assert_eq!(
+            send_paste_requests, 0,
+            "pre-cancelled pooled send_paste_with_cx should not send an extra post-handshake request frame after warmup"
+        );
+
+        emit_behavioral_log(
+            "b23y",
+            "ABC-CAN-002",
+            "explicit_cx_public_mux_pool_send_paste_cancelled_fast_fail",
+            "pass",
+        );
+    });
+}
+
 // =============================================================================
 // Serde roundtrip for behavioral evidence types
 // =============================================================================
