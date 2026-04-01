@@ -249,6 +249,37 @@ proptest! {
         prop_assert_eq!(batch_total, chunked_total);
     }
 
+    /// Arbitrary chunk boundaries preserve trigger totals even when
+    /// compression is enabled and the chunked path reuses the compression
+    /// buffer for definitive trigger scanning at flush time.
+    #[test]
+    fn chunked_batch_trigger_parity_arbitrary_boundaries_with_compression(
+        data in terminal_text(),
+        chunk_sizes in prop::collection::vec(0usize..128, 0..16),
+    ) {
+        let pipeline = ScanPipeline::new(ScanPipelineConfig {
+            compression_threshold: 1,
+            ..Default::default()
+        });
+
+        let batch_output = pipeline.process(&data);
+
+        let chunks = arbitrary_chunks(&data, &chunk_sizes);
+        let mut state = ChunkedPipelineState::new(16_777_216);
+        for chunk in &chunks {
+            pipeline.process_chunk(chunk, &mut state);
+        }
+        let chunked_output = pipeline.flush(&mut state);
+
+        let batch_total = batch_output.triggers.as_ref().unwrap().total_matches;
+        let chunked_total = chunked_output.triggers.as_ref().unwrap().total_matches;
+        prop_assert_eq!(batch_total, chunked_total);
+
+        let compressed = chunked_output.compressed.as_ref().unwrap();
+        let decompressed = ByteCompressor::default().decompress(compressed).unwrap();
+        prop_assert_eq!(decompressed, data);
+    }
+
     /// Arbitrary chunk boundaries preserve logical line count.
     #[test]
     fn chunked_batch_logical_line_parity_arbitrary_boundaries(

@@ -155,12 +155,15 @@ pub struct ChunkedPipelineState {
     uncompressed_buffer: Vec<u8>,
     /// Sliding overlap window used to recover trigger matches split across chunks.
     trigger_overlap_buffer: Vec<u8>,
-    /// Accumulated raw data for definitive trigger scan at flush time.
+    /// Accumulated raw data for definitive trigger scan at flush time when
+    /// compression is disabled.
     ///
     /// The incremental overlap-based trigger scan is approximate because
     /// Aho-Corasick LeftmostFirst non-overlapping matching is not composable
-    /// across chunk boundaries. At flush time, we re-scan this buffer in batch
-    /// mode for exact parity with `process()`.
+    /// across chunk boundaries. At flush time, we re-scan the full accumulated
+    /// bytes in batch mode for exact parity with `process()`. When compression
+    /// is enabled, `uncompressed_buffer` already holds those bytes, so this
+    /// buffer stays empty to avoid duplicate accumulation.
     trigger_data_buffer: Vec<u8>,
     /// Maximum buffer size before flushing compression.
     max_buffer_bytes: usize,
@@ -205,8 +208,9 @@ impl ChunkedPipelineState {
 
     /// Whether the buffer is full and should be flushed.
     ///
-    /// Checks both the compression buffer and the trigger accumulation buffer
-    /// to prevent unbounded memory growth when triggers are enabled.
+    /// Checks whichever raw-data buffer is active for the current config:
+    /// `uncompressed_buffer` when compression is enabled, or
+    /// `trigger_data_buffer` when only trigger replay needs full raw bytes.
     #[must_use]
     pub fn should_flush(&self) -> bool {
         self.uncompressed_buffer.len() >= self.max_buffer_bytes
@@ -346,6 +350,14 @@ impl ScanPipeline {
             .saturating_sub(1)
     }
 
+    fn definitive_trigger_bytes<'a>(&self, state: &'a ChunkedPipelineState) -> &'a [u8] {
+        if self.config.enable_compression {
+            &state.uncompressed_buffer
+        } else {
+            &state.trigger_data_buffer
+        }
+    }
+
     fn scan_chunk_triggers_with_overlap(&self, bytes: &[u8], overlap: &[u8]) -> TriggerScanResult {
         if overlap.is_empty() {
             return self.trigger_scanner.scan_counts(bytes);
@@ -451,8 +463,12 @@ impl ScanPipeline {
                 self.trigger_overlap_bytes(),
             );
 
-            // Accumulate raw data for definitive batch scan at flush time
-            state.trigger_data_buffer.extend_from_slice(bytes);
+            // Accumulate raw data for definitive batch scan at flush time only
+            // when compression is disabled. Otherwise the compression buffer
+            // already owns the same bytes and can be reused at flush time.
+            if !self.config.enable_compression {
+                state.trigger_data_buffer.extend_from_slice(bytes);
+            }
         }
 
         // Stage 3: Buffer for batch compression (no per-chunk compression)
@@ -492,7 +508,10 @@ impl ScanPipeline {
             // process(). The incremental overlap-based counts are approximate
             // because Aho-Corasick LeftmostFirst non-overlapping matching is
             // context-dependent and not composable across chunk boundaries.
-            Some(self.trigger_scanner.scan_counts(&state.trigger_data_buffer))
+            Some(
+                self.trigger_scanner
+                    .scan_counts(self.definitive_trigger_bytes(state)),
+            )
         } else {
             None
         };
@@ -731,6 +750,50 @@ mod tests {
         let output = pipeline.flush(&mut state);
         assert!(output.compressed.is_some());
         assert!(output.compression_stats.is_some());
+    }
+
+    #[test]
+    fn chunked_pipeline_reuses_compression_buffer_for_trigger_flush() {
+        let pipeline = ScanPipeline::default();
+        let mut state = ChunkedPipelineState::new(1_048_576);
+        let data = b"ERROR: oops\nCompiling serde\n";
+
+        pipeline.process_chunk(&data[..16], &mut state);
+        pipeline.process_chunk(&data[16..], &mut state);
+
+        assert!(state.trigger_data_buffer.is_empty());
+        assert_eq!(state.uncompressed_buffer, data);
+
+        let batch_output = pipeline.process(data);
+        let chunked_output = pipeline.flush(&mut state);
+
+        assert_eq!(
+            chunked_output.triggers.unwrap().total_matches,
+            batch_output.triggers.unwrap().total_matches
+        );
+    }
+
+    #[test]
+    fn chunked_pipeline_keeps_trigger_buffer_when_compression_disabled() {
+        let pipeline = ScanPipeline::new(ScanPipelineConfig {
+            enable_compression: false,
+            ..Default::default()
+        });
+        let mut state = ChunkedPipelineState::new(1_048_576);
+        let data = b"ERROR: oops\nCompiling serde\n";
+
+        pipeline.process_chunk(data, &mut state);
+
+        assert_eq!(state.trigger_data_buffer, data);
+        assert!(state.uncompressed_buffer.is_empty());
+
+        let batch_output = pipeline.process(data);
+        let chunked_output = pipeline.flush(&mut state);
+
+        assert_eq!(
+            chunked_output.triggers.unwrap().total_matches,
+            batch_output.triggers.unwrap().total_matches
+        );
     }
 
     #[test]
