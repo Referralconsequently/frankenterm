@@ -235,10 +235,9 @@ fn detect_shell_version(shell_type: Option<ShellType>) -> Option<String> {
 }
 
 fn detect_wezterm_socket() -> Option<PathBuf> {
-    std::env::var("WEZTERM_UNIX_SOCKET")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(PathBuf::from)
+    // Use the shared resolver that checks env AND canonical WezTerm
+    // unix-domain defaults when the vendored feature is enabled (GH #48).
+    crate::wezterm::discover_mux_socket(None)
 }
 
 fn detect_wezterm_version() -> Option<String> {

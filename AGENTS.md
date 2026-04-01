@@ -97,17 +97,17 @@ We only use **Cargo** in this project, NEVER any other package manager.
 - **Configuration:** Cargo.toml workspace with `workspace = true` pattern
 - **Unsafe code:** Forbidden (`#![forbid(unsafe_code)]` via `[workspace.lints.rust]`)
 
-### Async Runtime: tokio
+### Async Runtime: asupersync
 
-This project uses **tokio** for async operations. The `frankenterm` CLI binary and `frankenterm-core` library use tokio for I/O, timers, and task spawning.
+This project must use **asupersync** for async operations. The intended runtime model for the `frankenterm` CLI binary and `frankenterm-core` library is `Cx`-aware, structured, cancel-correct async built around asupersync.
 
-**Note:** Some optional features (MCP server mode) bring in `asupersync` and `fastmcp` as dependencies for MCP protocol support, but the primary runtime is tokio.
+**Policy:** direct `tokio` usage is forbidden. Any remaining `tokio` references in manifests, `runtime_compat`, tests, benches, or comments are migration debt to remove, not an accepted runtime choice.
 
 ### Key Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `tokio` | Async runtime (full features) |
+| `asupersync` | Async runtime, structured concurrency, cancel-correct primitives |
 | `serde` + `serde_json` | Serialization |
 | `toon_rust` | Token-Optimized Object Notation (AI-to-AI format) |
 | `clap` | CLI argument parsing |
@@ -240,7 +240,7 @@ frankenterm/
 │   ├── frankenterm-core/             # Core library
 │   │   └── src/
 │   │       ├── runtime.rs            # Observation runtime orchestration
-│   │       ├── runtime_compat.rs     # Runtime bridge (tokio/asupersync adapters)
+│   │       ├── runtime_compat.rs     # Runtime migration seam; remaining quarantine adapters are being removed
 │   │       ├── ingest.rs             # Pane discovery + delta extraction
 │   │       ├── patterns.rs           # Pattern detection engine
 │   │       ├── events.rs             # Event bus and detection fanout

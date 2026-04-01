@@ -235,6 +235,44 @@ fn compatibility_report_with(
     }
 }
 
+/// Discover the canonical WezTerm mux socket path by probing default unix
+/// domain paths from the vendored `config` crate.
+///
+/// This checks, in order:
+/// 1. The first configured unix domain from WezTerm's config file
+/// 2. The default unix domain (typically `$XDG_RUNTIME_DIR/wezterm/sock`)
+///
+/// Returns `Some(path)` if a socket file exists on disk at a canonical
+/// location, `None` otherwise. Proxy-command domains are skipped.
+#[cfg(unix)]
+#[must_use]
+pub fn discover_canonical_mux_socket() -> Option<std::path::PathBuf> {
+    use config as wezterm_config;
+
+    // Try user's WezTerm configuration unix domains first.
+    let handle = wezterm_config::configuration_result()
+        .unwrap_or_else(|_| wezterm_config::ConfigHandle::default_config());
+    if let Some(domain) = handle.unix_domains.first() {
+        if domain.proxy_command.is_none() {
+            let path = domain.socket_path();
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+
+    // Fall back to default unix domains (e.g. /run/user/UID/wezterm/sock).
+    let mut default_domains = wezterm_config::UnixDomain::default_unix_domains();
+    if let Some(domain) = default_domains.pop() {
+        let path = domain.socket_path();
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
 fn commit_matches(vendored: &str, local: &str) -> bool {
     vendored.starts_with(local) || local.starts_with(vendored)
 }

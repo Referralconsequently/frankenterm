@@ -1117,15 +1117,9 @@ impl std::fmt::Display for TailerMode {
 /// established. Otherwise returns `Polling`.
 #[cfg(feature = "vendored")]
 fn streaming_socket_configured(config: &crate::config::Config) -> bool {
-    let socket_from_config = config
-        .vendored
-        .mux_socket_path
-        .as_deref()
-        .is_some_and(|p| !p.trim().is_empty());
-    let socket_from_env = std::env::var("WEZTERM_UNIX_SOCKET")
-        .ok()
-        .is_some_and(|p| !p.trim().is_empty());
-    socket_from_config || socket_from_env
+    // Use the shared resolver that checks config, env, AND canonical WezTerm
+    // unix-domain defaults (GH #48).
+    crate::wezterm::discover_mux_socket(config.vendored.mux_socket_path.as_deref()).is_some()
 }
 
 #[cfg(feature = "vendored")]

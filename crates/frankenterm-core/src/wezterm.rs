@@ -3833,11 +3833,50 @@ pub fn evaluate_backend_selection(inputs: &BackendSelectionInputs) -> BackendSel
     }
 }
 
+/// Discover the WezTerm mux socket path using all available sources.
+///
+/// Resolution order:
+/// 1. Explicit config path (if set, non-empty, and exists on disk)
+/// 2. `WEZTERM_UNIX_SOCKET` environment variable (if set and exists)
+/// 3. *(vendored feature, unix)* Canonical WezTerm unix-domain defaults
+///    (e.g. `$XDG_RUNTIME_DIR/wezterm/sock`)
+///
+/// Returns the first socket path that exists on disk, or `None`.
+#[must_use]
+pub fn discover_mux_socket(config_socket_path: Option<&str>) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+
+    // 1. Explicit config path.
+    if let Some(path) = config_socket_path {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() && Path::new(trimmed).exists() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    // 2. WEZTERM_UNIX_SOCKET env var.
+    if let Ok(path) = std::env::var("WEZTERM_UNIX_SOCKET") {
+        if !path.trim().is_empty() && Path::new(path.trim()).exists() {
+            return Some(PathBuf::from(path.trim()));
+        }
+    }
+
+    // 3. Canonical WezTerm unix-domain discovery (vendored feature, unix only).
+    #[cfg(all(feature = "vendored", unix))]
+    {
+        if let Some(path) = crate::vendored::discover_canonical_mux_socket() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
 /// Build a `UnifiedClient` by probing the runtime environment.
 ///
 /// 1. Check if the `vendored` feature is enabled (compile time).
 /// 2. Run vendored compatibility checks (when feature available).
-/// 3. Attempt mux socket discovery.
+/// 3. Attempt mux socket discovery (config → env → canonical defaults).
 /// 4. If all pass, use vendored backend; else fall back to CLI.
 pub fn build_unified_client(config: &crate::config::Config) -> UnifiedClient {
     let vendored_enabled = cfg!(feature = "vendored");
@@ -3859,14 +3898,9 @@ pub fn build_unified_client(config: &crate::config::Config) -> UnifiedClient {
         (false, "vendored feature not enabled".to_string(), None)
     };
 
-    // Socket discovery: check if a socket path is configured or discoverable.
-    let socket_found = config
-        .vendored
-        .mux_socket_path
-        .as_ref()
-        .is_some_and(|p| !p.trim().is_empty() && std::path::Path::new(p).exists())
-        || std::env::var_os("WEZTERM_UNIX_SOCKET")
-            .is_some_and(|p| !p.is_empty() && std::path::Path::new(&p).exists());
+    // Socket discovery: use the shared resolver that checks config, env, AND
+    // canonical WezTerm unix-domain defaults (GH #48).
+    let socket_found = discover_mux_socket(config.vendored.mux_socket_path.as_deref()).is_some();
 
     let inputs = BackendSelectionInputs {
         vendored_feature_enabled: vendored_enabled,

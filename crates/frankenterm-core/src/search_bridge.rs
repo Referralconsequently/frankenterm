@@ -341,7 +341,7 @@ impl SearchBridge {
                     .build()
                     .map_err(|err| SearchError::InvalidConfig {
                         field: "search_bridge.runtime".to_owned(),
-                        value: "tokio_current_thread".to_owned(),
+                        value: "current_thread".to_owned(),
                         reason: err,
                     })?;
 
@@ -375,7 +375,7 @@ impl SearchBridge {
                 search_result
             },
         );
-        tokio::pin!(worker);
+        let mut worker = std::pin::pin!(worker);
 
         let search_result = loop {
             crate::runtime_compat::select! {
@@ -385,8 +385,8 @@ impl SearchBridge {
                     }
                 }
                 () = cancellation.cancelled() => {
-                    // Tokio documents that abort does not stop a running
-                    // `spawn_blocking` task, so this bridge relies on the
+                    // The current blocking backend does not stop a running
+                    // blocking task on cancellation, so this bridge relies on the
                     // worker cancellation thread to request cooperative exit.
                     let timeout_ms = timeout.map_or(0, |value| value.as_millis() as u64);
                     if timeout_fired.load(Ordering::Acquire) {
