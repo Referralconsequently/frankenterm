@@ -517,8 +517,8 @@ wasmtime-wasi = { version = "41", default-features = false, features = ["p1"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
 
 # FastMCP (optional MCP server dependencies)
-asupersync = { version = "0.2.6" }
-asupersync-macros = { version = "0.2.6" }
+asupersync = { version = "0.2.9" }
+asupersync-macros = { version = "0.2.9" }
 rich_rust = { version = "0.2.0" }
 log = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
@@ -533,7 +533,7 @@ fastapi = { version = "0.2.0", package = "fastapi-rust" }
 
 # FrankenSearch (optional integration, enabled via frankenterm-core feature flag)
 # Pinned to a specific rev of the upstream GitHub repo for reproducibility.
-frankensearch = { git = "https://github.com/Dicklesworthstone/frankensearch", rev = "b47c6b40e3885fb81c09b121c0a612a794c9c7e8", package = "frankensearch", default-features = false, features = ["hybrid"] }
+frankensearch = { git = "https://github.com/Dicklesworthstone/frankensearch", rev = "cba3632a794f73bf0fa4a0e3925963f130b7ba90", package = "frankensearch", default-features = false, features = ["hybrid"] }
 # Agent detection (optional integration, enabled via frankenterm-core feature flag)
 franken-agent-detection = "0.1.0"
 
@@ -555,14 +555,14 @@ strip = true        # Remove debug symbols
 [patch.crates-io]
 # Pin git revs to avoid branch drift and to keep the dependency graph single-sourced.
 rich_rust = { git = "https://github.com/Dicklesworthstone/rich_rust", rev = "478c1be6bb701d583608057e1f1b882119fbaf56" }
-asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "271a1a760aae4731bb27c4754e82cfecc61f5b8c" }
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "bbfaa67fd5a4e266e27a1ca3af0acde5257a4feb" }
 
 [patch."https://github.com/Dicklesworthstone/fastmcp_rust"]
-asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "271a1a760aae4731bb27c4754e82cfecc61f5b8c" }
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "bbfaa67fd5a4e266e27a1ca3af0acde5257a4feb" }
 rich_rust = { git = "https://github.com/Dicklesworthstone/rich_rust", rev = "478c1be6bb701d583608057e1f1b882119fbaf56" }
 
 [patch."https://github.com/Dicklesworthstone/fastapi_rust"]
-asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "271a1a760aae4731bb27c4754e82cfecc61f5b8c" }
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "bbfaa67fd5a4e266e27a1ca3af0acde5257a4feb" }
 
 [patch."https://github.com/Dicklesworthstone/frankensearch"]
-asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "271a1a760aae4731bb27c4754e82cfecc61f5b8c" }
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "bbfaa67fd5a4e266e27a1ca3af0acde5257a4feb" }
