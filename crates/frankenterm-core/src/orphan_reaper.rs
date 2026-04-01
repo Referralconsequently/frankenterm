@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use serde::Serialize;
 use tracing::{debug, info, warn};
 
 use crate::config::CliConfig;
@@ -41,6 +42,19 @@ const REAPABLE_SUBCOMMANDS: &[&str] = &[
     "list-clients",
     "get-pane-direction",
 ];
+
+/// Summary of a single orphan-reaper scan cycle.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ReapReport {
+    /// Number of candidate processes scanned.
+    pub scanned: usize,
+    /// Number of orphan processes successfully killed.
+    pub killed: usize,
+    /// PIDs that were successfully killed.
+    pub killed_pids: Vec<u32>,
+    /// Errors encountered while scanning or killing processes.
+    pub errors: Vec<String>,
+}
 
 /// A process entry parsed from `ps` output.
 #[derive(Debug)]
@@ -76,29 +90,43 @@ pub async fn run_orphan_reaper(config: CliConfig, shutdown_flag: Arc<AtomicBool>
             return;
         }
 
-        match scan_and_reap(max_age).await {
-            Ok((scanned, killed)) => {
-                if killed > 0 {
-                    info!(scanned, killed, "orphan reaper cycle complete");
-                } else {
-                    debug!(scanned, "orphan reaper cycle — no orphans");
-                }
-            }
-            Err(e) => {
-                warn!(error = %e, "orphan reaper scan failed");
-            }
+        let report = reap_orphans(max_age).await;
+        if report.killed > 0 {
+            info!(
+                scanned = report.scanned,
+                killed = report.killed,
+                pids = ?report.killed_pids,
+                "orphan reaper cycle complete"
+            );
+        } else {
+            debug!(scanned = report.scanned, "orphan reaper cycle — no orphans");
+        }
+
+        for err in &report.errors {
+            warn!(error = %err, "orphan reaper error during scan");
         }
     }
 }
 
 /// Scan for orphaned `wezterm cli` processes and kill those exceeding
-/// `max_age_seconds`.  Returns `(scanned, killed)`.
-async fn scan_and_reap(max_age_seconds: u64) -> Result<(usize, usize), String> {
-    let entries = list_wezterm_cli_processes_via_ps().await?;
-    let scanned = entries.len();
-    let mut killed = 0;
+/// `max_age_seconds`, returning a serializable cycle report.
+pub async fn reap_orphans(max_age_seconds: u64) -> ReapReport {
+    scan_and_reap(max_age_seconds).await
+}
 
-    for entry in &entries {
+/// Implementation for a single orphan-reaper cycle.
+async fn scan_and_reap(max_age_seconds: u64) -> ReapReport {
+    let mut report = ReapReport::default();
+    let entries = match list_wezterm_cli_processes_via_ps().await {
+        Ok(entries) => entries,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+    report.scanned = entries.len();
+
+    for entry in entries {
         if entry.age_seconds >= max_age_seconds {
             debug!(
                 pid = entry.pid,
@@ -106,22 +134,42 @@ async fn scan_and_reap(max_age_seconds: u64) -> Result<(usize, usize), String> {
                 cmd = %entry.command,
                 "killing orphaned wezterm cli process"
             );
-            // Best-effort SIGKILL.  We intentionally ignore errors (the
-            // process may have exited between the scan and the kill).
-            // Use runtime_compat::spawn_blocking + std::process::Command
-            // to avoid requiring a Tokio reactor (panics under asupersync).
-            let pid_str = entry.pid.to_string();
-            let _ = crate::runtime_compat::spawn_blocking(move || {
+            // Use runtime_compat::spawn_blocking + std::process::Command to
+            // avoid requiring a Tokio reactor (panics under asupersync).
+            let pid = entry.pid;
+            let pid_str = pid.to_string();
+            let kill_result = crate::runtime_compat::spawn_blocking(move || {
                 std::process::Command::new("kill")
                     .args(["-s", "KILL", &pid_str])
                     .status()
             })
             .await;
-            killed += 1;
+
+            match kill_result {
+                Ok(Ok(status)) if status.success() => {
+                    report.killed += 1;
+                    report.killed_pids.push(pid);
+                }
+                Ok(Ok(status)) => {
+                    report
+                        .errors
+                        .push(format!("kill -s KILL {pid} exited with {status}"));
+                }
+                Ok(Err(error)) => {
+                    report
+                        .errors
+                        .push(format!("failed to run kill for pid {pid}: {error}"));
+                }
+                Err(error) => {
+                    report.errors.push(format!(
+                        "spawn_blocking failed while killing pid {pid}: {error}"
+                    ));
+                }
+            }
         }
     }
 
-    Ok((scanned, killed))
+    report
 }
 
 /// List `wezterm cli` processes that are candidates for reaping.
