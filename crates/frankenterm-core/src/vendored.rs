@@ -175,7 +175,9 @@ fn compatibility_report_with(
             local_commit,
             vendored_commit,
             vendored_version,
-            message: "local WezTerm version unavailable; refusing vendored backend compatibility probe".to_string(),
+            message:
+                "local WezTerm version unavailable; refusing vendored backend compatibility probe"
+                    .to_string(),
             recommendation: Some(
                 "Install WezTerm or ensure the wezterm binary is on PATH".to_string(),
             ),

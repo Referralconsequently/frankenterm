@@ -2263,7 +2263,7 @@ impl ObservationRuntime {
             #[cfg(all(feature = "vendored", unix))]
             let mut vendored_subscription_config = initial_vendored_subscription_config;
             #[cfg(all(feature = "vendored", unix, feature = "asupersync-runtime"))]
-            let (stream_exit_tx, stream_exit_rx) =
+            let (stream_exit_tx, mut stream_exit_rx) =
                 mpsc::channel::<StreamingTaskExit>(vendored_channel_capacity);
             #[cfg(all(feature = "vendored", unix, not(feature = "asupersync-runtime")))]
             let (stream_exit_tx, mut stream_exit_rx) =
@@ -3436,6 +3436,35 @@ impl PaneTieredScrollbackFetch {
     }
 }
 
+fn record_pane_tiered_scrollback_summary_result(
+    fetch: &mut PaneTieredScrollbackFetch,
+    pane_id: u64,
+    result: std::result::Result<Option<PaneTieredScrollbackSummary>, crate::Error>,
+) {
+    match result {
+        Ok(Some(summary)) => {
+            fetch.summaries.insert(pane_id, summary);
+        }
+        Ok(None) => {
+            const MISSING_SUMMARY: &str = "backend returned no tiered scrollback summary";
+            fetch.note_error(pane_id, &MISSING_SUMMARY);
+            debug!(
+                pane_id,
+                error = MISSING_SUMMARY,
+                "tiered scrollback summary missing despite successful backend call"
+            );
+        }
+        Err(err) => {
+            fetch.note_error(pane_id, &err);
+            debug!(
+                pane_id,
+                error = %err,
+                "failed to collect tiered scrollback summary"
+            );
+        }
+    }
+}
+
 async fn collect_pane_tiered_scrollback_summaries(
     wezterm_handle: &WeztermHandle,
     pane_ids: &[u64],
@@ -3443,20 +3472,8 @@ async fn collect_pane_tiered_scrollback_summaries(
     let mut fetch = PaneTieredScrollbackFetch::default();
 
     for &pane_id in pane_ids {
-        match wezterm_handle.pane_tiered_scrollback_summary(pane_id).await {
-            Ok(Some(summary)) => {
-                fetch.summaries.insert(pane_id, summary);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                fetch.note_error(pane_id, &err);
-                debug!(
-                    pane_id,
-                    error = %err,
-                    "failed to collect tiered scrollback summary"
-                );
-            }
-        }
+        let result = wezterm_handle.pane_tiered_scrollback_summary(pane_id).await;
+        record_pane_tiered_scrollback_summary_result(&mut fetch, pane_id, result);
     }
 
     fetch
@@ -5155,12 +5172,26 @@ mod tests {
     #[test]
     fn pane_tiered_scrollback_fetch_marks_partial_when_some_samples_succeed() {
         let mut fetch = PaneTieredScrollbackFetch::default();
-        fetch.summaries
+        fetch
+            .summaries
             .insert(11, PaneTieredScrollbackSummary::default());
         fetch.note_error(12, &"mux telemetry unavailable");
 
         assert!(!fetch.telemetry_blind(2));
         assert!(fetch.telemetry_partial(2));
+    }
+
+    #[test]
+    fn pane_tiered_scrollback_fetch_treats_missing_summary_as_blind_error() {
+        let mut fetch = PaneTieredScrollbackFetch::default();
+        record_pane_tiered_scrollback_summary_result(&mut fetch, 7, Ok(None));
+
+        assert!(fetch.telemetry_blind(1));
+        assert!(!fetch.telemetry_partial(1));
+        assert_eq!(
+            fetch.error_samples,
+            vec!["pane 7: backend returned no tiered scrollback summary"]
+        );
     }
 
     #[test]

@@ -1146,10 +1146,13 @@ pub fn detect_tailer_mode(config: &crate::config::Config) -> TailerMode {
     {
         let local_version = crate::vendored::read_local_wezterm_version();
         let compatibility = crate::vendored::compatibility_report(local_version.as_ref());
-        return detect_tailer_mode_with_allow_vendored(config, compatibility.allow_vendored);
+        detect_tailer_mode_with_allow_vendored(config, compatibility.allow_vendored)
     }
-    let _ = config; // suppress unused warning when vendored is off
-    TailerMode::Polling
+    #[cfg(not(feature = "vendored"))]
+    {
+        let _ = config; // suppress unused warning when vendored is off
+        TailerMode::Polling
+    }
 }
 
 /// Bridges vendored `PaneDelta` events into the existing `StreamIngester`

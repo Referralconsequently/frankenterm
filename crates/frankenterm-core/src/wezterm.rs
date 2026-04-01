@@ -103,12 +103,19 @@ pub trait WeztermInterface: Send + Sync {
     /// Best-effort tiered scrollback summary for a pane.
     ///
     /// This is only available from backends that can expose mux-side pane
-    /// telemetry directly. CLI-only implementations should return `Ok(None)`.
+    /// telemetry directly. Backends without a tiered scrollback surface must
+    /// return an explicit error so runtime maintenance can flag telemetry
+    /// blindness instead of silently assuming the pane had no status.
     fn pane_tiered_scrollback_summary(
         &self,
-        _pane_id: u64,
+        pane_id: u64,
     ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
-        Box::pin(async { Ok(None) })
+        Box::pin(async move {
+            Err(WeztermError::CommandFailed(format!(
+                "tiered scrollback telemetry unavailable for pane {pane_id}: backend does not expose tiered scrollback status"
+            ))
+            .into())
+        })
     }
 }
 
@@ -889,26 +896,26 @@ impl WeztermClient {
     /// not expose the tiered scrollback status.
     pub async fn pane_tiered_scrollback_summary(
         &self,
-        _pane_id: u64,
+        pane_id: u64,
     ) -> Result<Option<PaneTieredScrollbackSummary>> {
         #[cfg(all(feature = "vendored", unix))]
         if let Some(ref pool) = self.mux_pool {
             if self.mux_circuit_guard() {
-                match pool.get_pane_render_changes(_pane_id).await {
+                match pool.get_pane_render_changes(pane_id).await {
                     Ok(changes) => {
                         self.mux_circuit_record_success();
                         if let Some(status) = changes.tiered_scrollback_status {
                             return Ok(Some(status.into()));
                         }
                         return Err(WeztermError::CommandFailed(format!(
-                            "tiered scrollback telemetry unavailable for pane {_pane_id}: vendored mux returned no tiered scrollback status"
+                            "tiered scrollback telemetry unavailable for pane {pane_id}: vendored mux returned no tiered scrollback status"
                         ))
                         .into());
                     }
                     Err(err) => {
                         self.mux_circuit_record_failure(&err);
                         return Err(WeztermError::CommandFailed(format!(
-                            "failed to read tiered scrollback status for pane {_pane_id}: {err}"
+                            "failed to read tiered scrollback status for pane {pane_id}: {err}"
                         ))
                         .into());
                     }
@@ -916,12 +923,15 @@ impl WeztermClient {
             }
 
             return Err(WeztermError::CommandFailed(format!(
-                "tiered scrollback telemetry unavailable for pane {_pane_id}: vendored mux circuit breaker open and CLI fallback has no tiered scrollback surface"
+                "tiered scrollback telemetry unavailable for pane {pane_id}: vendored mux circuit breaker open and CLI fallback has no tiered scrollback surface"
             ))
             .into());
         }
 
-        Ok(None)
+        Err(WeztermError::CommandFailed(format!(
+            "tiered scrollback telemetry unavailable for pane {pane_id}: CLI-only backend does not expose tiered scrollback status"
+        ))
+        .into())
     }
 
     /// Send text to a pane using paste mode (default, faster for multi-char input)
@@ -2411,6 +2421,20 @@ mod tests {
         let client = WeztermClient::new().with_retries(5).with_retry_delay_ms(10);
         assert_eq!(client.retry_attempts, 5);
         assert_eq!(client.retry_delay_ms, 10);
+    }
+
+    #[test]
+    fn pane_tiered_scrollback_summary_reports_cli_only_blindness() {
+        run_async_test(async {
+            let client = WeztermClient::new();
+            let err = client
+                .pane_tiered_scrollback_summary(7)
+                .await
+                .expect_err("CLI-only mode should report blind telemetry");
+            let message = err.to_string();
+            assert!(message.contains("CLI-only backend"));
+            assert!(message.contains("tiered scrollback"));
+        });
     }
 
     #[test]
@@ -4424,6 +4448,18 @@ impl WeztermInterface for MockWezterm {
         Box::pin(async move { Ok(None) })
     }
 
+    fn pane_tiered_scrollback_summary(
+        &self,
+        pane_id: u64,
+    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+        Box::pin(async move {
+            Err(WeztermError::CommandFailed(format!(
+                "tiered scrollback telemetry unavailable for pane {pane_id}: mock backend does not expose tiered scrollback status"
+            ))
+            .into())
+        })
+    }
+
     fn kill_pane(&self, pane_id: u64) -> WeztermFuture<'_, ()> {
         Box::pin(async move {
             let mut panes = self.panes.write().await;
@@ -4533,6 +4569,13 @@ impl WeztermInterface for FailingMockWezterm {
     }
     fn circuit_status(&self) -> CircuitBreakerStatus {
         CircuitBreakerStatus::default()
+    }
+
+    fn pane_tiered_scrollback_summary(
+        &self,
+        _pane_id: u64,
+    ) -> WeztermFuture<'_, Option<PaneTieredScrollbackSummary>> {
+        Box::pin(async { Err(crate::Error::Wezterm(WeztermError::Timeout(5))) })
     }
 }
 
@@ -5078,6 +5121,30 @@ mod unified_tests {
             let unified = UnifiedClient::from_handle(handle, sel);
             let panes = unified.list_panes().await.unwrap();
             assert_eq!(panes.len(), 2);
+        });
+    }
+
+    #[test]
+    fn mock_tiered_scrollback_summary_reports_unavailable() {
+        run_async_test(async {
+            let mock = MockWezterm::new();
+            let err = mock
+                .pane_tiered_scrollback_summary(7)
+                .await
+                .expect_err("mock backend should not silently hide missing telemetry");
+            assert!(err.to_string().contains("mock backend"));
+        });
+    }
+
+    #[test]
+    fn failing_mock_tiered_scrollback_summary_times_out() {
+        run_async_test(async {
+            let mock = FailingMockWezterm;
+            let err = mock
+                .pane_tiered_scrollback_summary(7)
+                .await
+                .expect_err("failing mock should preserve timeout semantics");
+            assert!(err.to_string().contains("timed out"));
         });
     }
 
