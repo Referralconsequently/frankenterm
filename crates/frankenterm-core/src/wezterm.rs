@@ -602,6 +602,7 @@ pub struct WeztermClient {
     /// `wezterm cli list --format json` subprocess.  This cache coalesces those
     /// calls within a [`LIST_PANES_CLI_CACHE_MS`] window so only one subprocess
     /// is spawned per window.
+    #[allow(clippy::type_complexity)]
     list_panes_cache: Arc<Mutex<Option<(Instant, Vec<PaneInfo>)>>>,
 }
 

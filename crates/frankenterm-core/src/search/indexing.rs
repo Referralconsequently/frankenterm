@@ -565,11 +565,6 @@ impl SearchIndex {
                 .then_with(|| left.2.cmp(&right.2))
         });
 
-        let ranked_ids: Vec<u64> = ranked
-            .into_iter()
-            .take(limit)
-            .map(|(_, _, id)| id)
-            .collect();
         let docs_by_id: HashMap<u64, IndexedDocument> = self
             .state
             .documents
@@ -577,8 +572,10 @@ impl SearchIndex {
             .cloned()
             .map(|doc| (doc.id, doc))
             .collect();
-        let output = ranked_ids
+        let output = ranked
             .into_iter()
+            .take(limit)
+            .map(|(_, _, id)| id)
             .filter_map(|id| docs_by_id.get(&id).cloned())
             .collect::<Vec<_>>();
 
