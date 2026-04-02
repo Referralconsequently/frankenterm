@@ -575,9 +575,16 @@ pub mod oneshot {
 }
 
 /// Async notification primitive for the active runtime.
+#[cfg(feature = "asupersync-runtime")]
+pub mod notify {
+    pub use asupersync::sync::Notify;
+}
+
+/// Async notification primitive for the active runtime.
 ///
-/// Note: this remains tokio-backed while the broader sync-primitive migration
-/// is completed; exposing it via runtime_compat centralizes call sites.
+/// Note: this remains tokio-backed only for non-asupersync builds; production
+/// migration targets should route through the active runtime backend here.
+#[cfg(not(feature = "asupersync-runtime"))]
 pub mod notify {
     pub use tokio::sync::Notify;
 }
@@ -914,17 +921,17 @@ pub use tokio::join;
 /// polling infrastructure while the rest of the runtime uses asupersync.
 ///
 /// **Why this works today:** tokio is still a linked dependency because
-/// `broadcast`, `oneshot`, and `Notify` channels have not yet been
-/// migrated to asupersync equivalents. Those channel types initialize
-/// tokio's internal driver context (cooperative budget, waker plumbing)
-/// as a side-effect, which `tokio::select!` relies on. As long as at
-/// least one tokio channel/primitive is alive in the process, the tokio
-/// context is valid and `select!` behaves correctly.
+/// `broadcast` and `oneshot` channels have not yet been migrated to
+/// asupersync equivalents. Those channel types initialize tokio's internal
+/// driver context (cooperative budget, waker plumbing) as a side-effect,
+/// which `tokio::select!` relies on. As long as at least one of those
+/// tokio channel types is alive in the process, the tokio context is valid
+/// and `select!` behaves correctly.
 ///
-/// **When this will break:** once `broadcast`, `oneshot`, and `Notify`
-/// are migrated away from tokio, the tokio internal context will no
-/// longer be initialized, and `tokio::select!` may panic or busy-loop.
-/// At that point this must be replaced with `asupersync::select!` (or a
+/// **When this will break:** once `broadcast` and `oneshot` are migrated
+/// away from tokio, the tokio internal context will no longer be
+/// initialized, and `tokio::select!` may panic or busy-loop. At that
+/// point this must be replaced with `asupersync::select!` (or a
 /// runtime-agnostic implementation such as `futures::select!` with
 /// `pin_mut!`).
 ///
@@ -1051,18 +1058,11 @@ pub mod unix {
     }
 }
 
-/// Async process primitives for the active runtime.
+/// Async process primitives routed through the compat boundary.
 ///
-/// When the asupersync runtime is active, provides a thin wrapper around
-/// `std::process::Command` that runs `.output()` on a blocking thread via
-/// `spawn_blocking`, avoiding the "no reactor running" panic that occurs
-/// when `tokio::process::Command` is used outside a Tokio context.
-#[cfg(not(feature = "asupersync-runtime"))]
-pub mod process {
-    pub use tokio::process::Command;
-}
-
-#[cfg(feature = "asupersync-runtime")]
+/// This wraps `std::process::Command` and runs blocking process I/O on the
+/// runtime's blocking executor so callers can keep a uniform async API
+/// without depending on any backend-native process layer directly.
 pub mod process {
     use std::ffi::OsStr;
     use std::process::{Output, Stdio};
@@ -1074,7 +1074,7 @@ pub mod process {
 
     /// Async-compatible process command wrapper backed by `std::process::Command`.
     ///
-    /// Mirrors the subset of `tokio::process::Command` used by callers:
+    /// Mirrors the subset of the legacy compat command surface used by callers:
     /// `new`, `args`, `arg`, `env`, `kill_on_drop`, and async `output`.
     pub struct Command {
         inner: std::process::Command,
@@ -1977,13 +1977,6 @@ mod tests {
     where
         F: std::future::Future<Output = ()>,
     {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
         let runtime = RuntimeBuilder::current_thread()
             .build()
             .expect("failed to build runtime for async test");
@@ -2456,6 +2449,38 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn compat_channel_bridge_mpsc_try_send_error_maps_full_variant() {
+        let err = mpsc::TrySendError::from(mpsc::SendError::Full("full"));
+        match err {
+            mpsc::TrySendError::Full(value) => assert_eq!(value, "full"),
+            mpsc::TrySendError::Closed(value) => {
+                panic!("expected Full variant, got Closed({value})")
+            }
+        }
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn compat_channel_bridge_mpsc_try_send_error_maps_closed_equivalents() {
+        let disconnected = mpsc::TrySendError::from(mpsc::SendError::Disconnected("gone"));
+        match disconnected {
+            mpsc::TrySendError::Closed(value) => assert_eq!(value, "gone"),
+            mpsc::TrySendError::Full(value) => {
+                panic!("expected Closed variant for disconnected sender, got Full({value})")
+            }
+        }
+
+        let cancelled = mpsc::TrySendError::from(mpsc::SendError::Cancelled("cancelled"));
+        match cancelled {
+            mpsc::TrySendError::Closed(value) => assert_eq!(value, "cancelled"),
+            mpsc::TrySendError::Full(value) => {
+                panic!("expected Closed variant for cancelled sender, got Full({value})")
+            }
+        }
+    }
+
     // ========================================================================
     // Watch channel tests
     // ========================================================================
@@ -2505,6 +2530,44 @@ mod tests {
             tx.send(vec![3u8, 4u8]).expect("send");
             let latest = watch_borrow_and_update_clone(&mut rx);
             assert_eq!(latest, vec![3u8, 4u8]);
+        });
+    }
+
+    #[test]
+    fn compat_channel_bridge_watch_changed_observes_update() {
+        run_async_test(async {
+            let (tx, mut rx) = watch::channel(0u32);
+
+            task::spawn(async move {
+                sleep(Duration::from_millis(5)).await;
+                tx.send(9).expect("send update");
+            });
+
+            watch_changed(&mut rx)
+                .await
+                .expect("watch_changed should observe the update");
+            assert_eq!(watch_borrow_and_update_clone(&mut rx), 9);
+            assert!(
+                !watch_has_changed(&rx),
+                "consuming the update should clear the changed flag"
+            );
+        });
+    }
+
+    #[test]
+    fn compat_channel_bridge_watch_changed_returns_error_when_closed() {
+        run_async_test(async {
+            let (tx, mut rx) = watch::channel(41u32);
+            drop(tx);
+
+            let err = watch_changed(&mut rx)
+                .await
+                .expect_err("watch_changed should report closure when no further updates exist");
+            let display = err.to_string();
+            assert!(
+                !display.is_empty(),
+                "watch_changed closure error should have a meaningful display form"
+            );
         });
     }
 

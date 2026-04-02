@@ -176,6 +176,7 @@ fn arb_session_restore_config() -> impl Strategy<Value = SessionRestoreConfig> {
             auto_restore,
             restore_scrollback,
             restore_max_lines,
+            ..SessionRestoreConfig::default()
         },
     )
 }

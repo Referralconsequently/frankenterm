@@ -20,10 +20,11 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::restore_layout::{LayoutRestorer, RestoreConfig, RestoreResult};
+use crate::restore_process::{LaunchConfig, ProcessLauncher};
 use crate::restore_scrollback::{
     InjectionConfig, InjectionReport, ScrollbackData, ScrollbackInjector,
 };
-use crate::session_pane_state::{AgentMetadata, TerminalState};
+use crate::session_pane_state::{AgentMetadata, PaneStateSnapshot, ProcessInfo, TerminalState};
 use crate::session_topology::TopologySnapshot;
 use crate::wezterm::WeztermHandle;
 
@@ -113,6 +114,8 @@ pub struct SessionRestoreConfig {
     pub restore_scrollback: bool,
     /// Maximum scrollback lines to replay per pane.
     pub restore_max_lines: usize,
+    /// Process re-launch behavior after a fully successful restore.
+    pub process_relaunch: LaunchConfig,
 }
 
 impl Default for SessionRestoreConfig {
@@ -121,6 +124,7 @@ impl Default for SessionRestoreConfig {
             auto_restore: false,
             restore_scrollback: false,
             restore_max_lines: 5000,
+            process_relaunch: LaunchConfig::default(),
         }
     }
 }
@@ -437,6 +441,7 @@ fn mark_session_restored(db_path: &str, session_id: &str) -> Result<(), RestoreE
 }
 
 /// Record the pane ID mapping from restore in a new startup checkpoint.
+#[cfg(test)]
 fn save_restore_checkpoint(
     db_path: &str,
     session_id: &str,
@@ -575,6 +580,41 @@ fn load_scrollback_data(
     }
 
     Ok(scrollbacks)
+}
+
+fn launch_snapshot_from_restored_state(
+    state: &RestoredPaneState,
+    checkpoint_at: u64,
+) -> PaneStateSnapshot {
+    let terminal = state
+        .terminal_state
+        .clone()
+        .unwrap_or_else(|| TerminalState {
+            rows: 24,
+            cols: 80,
+            cursor_row: 0,
+            cursor_col: 0,
+            is_alt_screen: false,
+            title: String::new(),
+        });
+
+    let mut snapshot = PaneStateSnapshot::new(state.pane_id, checkpoint_at, terminal);
+    if let Some(cwd) = &state.cwd {
+        snapshot = snapshot.with_cwd(cwd.clone());
+    }
+    if let Some(command) = &state.command
+        && !command.is_empty()
+    {
+        snapshot = snapshot.with_process(ProcessInfo {
+            name: command.clone(),
+            pid: None,
+            argv: None,
+        });
+    }
+    if let Some(agent) = &state.agent_metadata {
+        snapshot = snapshot.with_agent(agent.clone());
+    }
+    snapshot
 }
 
 // =============================================================================
@@ -1150,6 +1190,37 @@ impl SessionRestorer {
                 failed_panes = layout_result.failed_panes.len(),
                 "Session restore incomplete; leaving source session unclean for retry"
             );
+        } else {
+            let launch_snapshots: Vec<_> = checkpoint
+                .pane_states
+                .iter()
+                .map(|state| launch_snapshot_from_restored_state(state, checkpoint.checkpoint_at))
+                .collect();
+            let launcher =
+                ProcessLauncher::new(wezterm.clone(), self.config.process_relaunch.clone());
+            let plans = launcher.plan(&layout_result.pane_id_map, &launch_snapshots);
+            if !plans.is_empty() {
+                let report = launcher.execute(&plans).await;
+                if report.failed > 0 || report.manual > 0 {
+                    warn!(
+                        session_id = %session.session_id,
+                        shells_launched = report.shells_launched,
+                        agents_launched = report.agents_launched,
+                        manual = report.manual,
+                        skipped = report.skipped,
+                        failed = report.failed,
+                        "Process relaunch completed with follow-up required"
+                    );
+                } else {
+                    info!(
+                        session_id = %session.session_id,
+                        shells_launched = report.shells_launched,
+                        agents_launched = report.agents_launched,
+                        skipped = report.skipped,
+                        "Process relaunch complete"
+                    );
+                }
+            }
         }
 
         let elapsed = start.elapsed().as_millis() as u64;
@@ -2508,6 +2579,68 @@ mod tests {
     }
 
     #[test]
+    fn session_restorer_successful_restore_relaunches_agent_command_when_enabled() {
+        let (db_path, conn, _dir) = setup_test_db();
+        insert_session(&conn, "sess-agent-launch", false);
+        set_single_pane_topology(&conn, "sess-agent-launch", 7, "/agents");
+
+        let checkpoint_id = insert_checkpoint(&conn, "sess-agent-launch", 5000, 1);
+        let terminal_json = r#"{"rows":24,"cols":80,"cursor_row":0,"cursor_col":0,"is_alt_screen":false,"title":"agent"}"#;
+        let agent_json = r#"{"agent_type":"codex","session_id":"sess-42","state":"running"}"#;
+        conn.execute(
+            "INSERT INTO mux_pane_state
+             (checkpoint_id, pane_id, cwd, command, terminal_state_json, agent_metadata_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                checkpoint_id,
+                7i64,
+                "/agents",
+                "codex",
+                terminal_json,
+                agent_json
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE mux_sessions SET last_checkpoint_at = 5000 WHERE session_id = 'sess-agent-launch'",
+            [],
+        )
+        .unwrap();
+
+        let restorer = SessionRestorer::new(
+            Arc::new(db_path.clone()),
+            SessionRestoreConfig {
+                process_relaunch: LaunchConfig {
+                    launch_agents: true,
+                    agent_commands: HashMap::from([(
+                        "codex".to_string(),
+                        "codex --resume".to_string(),
+                    )]),
+                    ..LaunchConfig::default()
+                },
+                ..SessionRestoreConfig::default()
+            },
+        );
+        let session = restorer.detect().unwrap().expect("restorable session");
+        let checkpoint = restorer.load_checkpoint(&session).unwrap();
+
+        let wezterm = Arc::new(MockWezterm::new());
+        let summary =
+            run_async_test(restorer.restore(&session, &checkpoint, wezterm.clone())).unwrap();
+
+        assert_eq!(summary.restored_count(), 1);
+        let new_pane_id = *summary
+            .layout_result
+            .pane_id_map
+            .get(&7)
+            .expect("old pane mapped to restored pane");
+        let content = run_async_test(wezterm.get_text(new_pane_id, false)).unwrap();
+        assert!(content.contains("Session restored"));
+        assert!(content.contains("cd /agents\r"));
+        assert!(content.contains("codex --resume\r"));
+    }
+
+    #[test]
     fn session_restorer_restore_errors_if_atomic_bookkeeping_fails() {
         let (db_path, conn, _dir) = setup_test_db();
         insert_session(&conn, "sess-bookkeeping-fail", false);
@@ -3066,6 +3199,8 @@ mod tests {
         assert!(!cfg.auto_restore);
         assert!(!cfg.restore_scrollback);
         assert_eq!(cfg.restore_max_lines, 5000);
+        assert!(cfg.process_relaunch.launch_shells);
+        assert!(!cfg.process_relaunch.launch_agents);
     }
 
     #[test]
@@ -3074,12 +3209,28 @@ mod tests {
             auto_restore: true,
             restore_scrollback: true,
             restore_max_lines: 10_000,
+            process_relaunch: LaunchConfig {
+                launch_shells: false,
+                launch_agents: true,
+                launch_delay_ms: 250,
+                agent_commands: HashMap::from([(
+                    "codex".to_string(),
+                    "codex --resume".to_string(),
+                )]),
+            },
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: SessionRestoreConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.auto_restore, true);
         assert_eq!(parsed.restore_scrollback, true);
         assert_eq!(parsed.restore_max_lines, 10_000);
+        assert!(!parsed.process_relaunch.launch_shells);
+        assert!(parsed.process_relaunch.launch_agents);
+        assert_eq!(parsed.process_relaunch.launch_delay_ms, 250);
+        assert_eq!(
+            parsed.process_relaunch.agent_commands.get("codex"),
+            Some(&"codex --resume".to_string())
+        );
     }
 
     #[test]
@@ -3089,6 +3240,8 @@ mod tests {
         assert!(!parsed.auto_restore);
         assert!(!parsed.restore_scrollback);
         assert_eq!(parsed.restore_max_lines, 5000);
+        assert!(parsed.process_relaunch.launch_shells);
+        assert!(!parsed.process_relaunch.launch_agents);
     }
 
     #[test]
@@ -3097,10 +3250,15 @@ mod tests {
             auto_restore: true,
             restore_scrollback: false,
             restore_max_lines: 100,
+            ..SessionRestoreConfig::default()
         };
         let c = cfg.clone();
         assert_eq!(c.auto_restore, true);
         assert_eq!(c.restore_max_lines, 100);
+        assert_eq!(
+            c.process_relaunch.launch_agents,
+            cfg.process_relaunch.launch_agents
+        );
     }
 
     #[test]

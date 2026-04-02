@@ -291,7 +291,7 @@ pub fn build_canonical_map() -> VendoredMigrationMap {
             difficulty: MigrationDifficulty::AlreadyCompat,
             criticality: Criticality::Medium,
             wave: MigrationWave::Wave0AlreadyCompat,
-            recommended_target: "async-asupersync feature gate (already present)".into(),
+            recommended_target: "default-on async-asupersync with explicit async-io fallback".into(),
             feature_gates: FeatureGateConfig {
                 has_async_smol: false,
                 has_async_asupersync: true,
@@ -302,7 +302,7 @@ pub fn build_canonical_map() -> VendoredMigrationMap {
             depends_on: vec![],
             depended_by: vec![VendoredCrateId::new("ssh")],
             affected_workflows: vec!["ssh-transport".into(), "tls-connections".into()],
-            notes: "Most mature vendored crate for dual-runtime. Has async-io default + async-asupersync optional.".into(),
+            notes: "Most mature vendored wrapper crate. Default runtime is now async-asupersync; legacy smol consumers opt into async-io explicitly.".into(),
         },
     );
 
@@ -318,7 +318,7 @@ pub fn build_canonical_map() -> VendoredMigrationMap {
             difficulty: MigrationDifficulty::AlreadyCompat,
             criticality: Criticality::Medium,
             wave: MigrationWave::Wave0AlreadyCompat,
-            recommended_target: "async-asupersync feature gate (already present)".into(),
+            recommended_target: "default-on async-asupersync with explicit async-io fallback".into(),
             feature_gates: FeatureGateConfig {
                 has_async_smol: false,
                 has_async_asupersync: true,
@@ -329,7 +329,7 @@ pub fn build_canonical_map() -> VendoredMigrationMap {
             depends_on: vec![],
             depended_by: vec![VendoredCrateId::new("ssh")],
             affected_workflows: vec!["unix-ipc".into(), "mux-transport".into()],
-            notes: "Minimal surface. Has async-io default + async-asupersync optional.".into(),
+            notes: "Minimal surface wrapper crate. Default runtime is now async-asupersync; legacy smol consumers opt into async-io explicitly.".into(),
         },
     );
 
@@ -369,29 +369,30 @@ pub fn build_canonical_map() -> VendoredMigrationMap {
         VendoredCrateEntry {
             crate_id: VendoredCrateId::new("codec"),
             cargo_toml_path: "frankenterm/codec/Cargo.toml".into(),
-            total_smol_refs: 12,
-            total_asupersync_refs: 1,
-            total_async_refs: 13,
+            total_smol_refs: 6,
+            total_asupersync_refs: 3,
+            total_async_refs: 9,
             difficulty: MigrationDifficulty::Medium,
             criticality: Criticality::High,
             wave: MigrationWave::Wave1Codec,
-            recommended_target: "asupersync adapter over smol I/O traits".into(),
+            recommended_target: "default-on async-asupersync with smol kept as a temporary fallback".into(),
             feature_gates: FeatureGateConfig {
                 has_async_smol: true,
                 has_async_asupersync: true,
-                default_includes_smol: true,
+                default_includes_smol: false,
                 transitive_activations: vec![],
             },
             file_references: vec![FileReference {
                 path: "frankenterm/codec/src/lib.rs".into(),
-                smol_refs: 12,
-                asupersync_refs: 1,
+                smol_refs: 6,
+                asupersync_refs: 3,
                 async_io_refs: 0,
                 futures_refs: 0,
                 primary_patterns: vec![
-                    "smol::block_on".into(),
-                    "smol::io::AsyncReadExt".into(),
+                    "runtime::block_on".into(),
+                    "smol::io::Cursor".into(),
                     "smol::io::AsyncWriteExt".into(),
+                    "smol::prelude::*".into(),
                     "encode_async".into(),
                     "decode_async".into(),
                 ],
@@ -399,7 +400,7 @@ pub fn build_canonical_map() -> VendoredMigrationMap {
             depends_on: vec![],
             depended_by: vec![VendoredCrateId::new("ssh")],
             affected_workflows: vec!["sftp-protocol".into(), "mux-wire-format".into()],
-            notes: "SFTP protocol PDU serialization. Isolated module; good first migration target after Wave 0.".into(),
+            notes: "SFTP protocol PDU serialization. Default runtime is now async-asupersync; mixed graphs still fall back to smol while legacy vendored clients use smol::Async streams.".into(),
         },
     );
 
@@ -482,7 +483,7 @@ pub fn build_canonical_map() -> VendoredMigrationMap {
                 "sftp-file-transfer".into(),
                 "remote-mux-connection".into(),
             ],
-            notes: "Highest concentration of smol refs (44). R6 risk owner. Test harness uses 37 smol::block_on calls. async-asupersync feature exists but pulls async-smol transitively.".into(),
+            notes: "Highest concentration of smol refs (44). R6 risk owner. Test harness uses 37 smol::block_on calls. async-asupersync no longer drags wrapper async-io features, but the crate still defaults to async-smol.".into(),
         },
     );
 

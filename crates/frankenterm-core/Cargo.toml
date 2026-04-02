@@ -58,7 +58,7 @@ shlex.workspace = true
 shell-words.workspace = true
 
 # FrankenTerm crates (optional, in-tree ex-WezTerm)
-codec = { workspace = true, optional = true }
+codec = { workspace = true, optional = true, features = ["async-asupersync"] }
 config = { workspace = true, optional = true }
 mux = { workspace = true, optional = true }
 frankenterm-term = { workspace = true, optional = true }

@@ -887,6 +887,36 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn spawn_bounded_supports_nested_runtime_compat_spawn() {
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let cx = for_testing();
+        let handle = runtime.handle();
+
+        let tasks: Vec<
+            Box<dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = u32> + Send>> + Send>,
+        > = (0..4_u32)
+            .map(|value| {
+                let closure: Box<
+                    dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = u32> + Send>> + Send,
+                > = Box::new(move |_cx| {
+                    Box::pin(async move {
+                        crate::runtime_compat::task::spawn(async move { value + 10 })
+                            .await
+                            .expect("nested spawn should succeed")
+                    })
+                });
+                closure
+            })
+            .collect();
+
+        let results =
+            runtime.block_on(async { spawn_bounded_with_cx(&handle, &cx, 2, tasks).await });
+        assert_eq!(results, vec![10, 11, 12, 13]);
+    }
+
     // -----------------------------------------------------------------------
     // spawn_with_timeout tests
     // -----------------------------------------------------------------------
@@ -962,6 +992,57 @@ mod tests {
         });
 
         assert_eq!(result.unwrap(), 41);
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn spawn_with_timeout_supports_nested_spawn_bounded_with_cx() {
+        let runtime = CxRuntimeBuilder::current_thread().build().expect("runtime");
+        let cx = for_testing();
+        let handle = runtime.handle();
+        let nested_handle = handle.clone();
+
+        let result = runtime.block_on(async {
+            spawn_with_timeout(&handle, &cx, Duration::from_secs(1), move |nested_cx| {
+                let nested_handle = nested_handle.clone();
+                async move {
+                    let tasks: Vec<
+                        Box<
+                            dyn FnOnce(Cx) -> std::pin::Pin<Box<dyn Future<Output = u32> + Send>>
+                                + Send,
+                        >,
+                    > = [(0_u32, 10_u64), (1, 0), (2, 5)]
+                        .into_iter()
+                        .map(|(value, delay_ms)| {
+                            let closure: Box<
+                                dyn FnOnce(
+                                        Cx,
+                                    )
+                                        -> std::pin::Pin<Box<dyn Future<Output = u32> + Send>>
+                                    + Send,
+                            > = Box::new(move |_cx| {
+                                Box::pin(async move {
+                                    if delay_ms > 0 {
+                                        crate::runtime_compat::sleep(Duration::from_millis(
+                                            delay_ms,
+                                        ))
+                                        .await;
+                                    }
+                                    value
+                                })
+                            });
+                            closure
+                        })
+                        .collect();
+
+                    spawn_bounded_with_cx(&nested_handle, &nested_cx, 2, tasks).await
+                }
+            })
+            .await
+        });
+
+        assert_eq!(result.unwrap(), vec![0, 1, 2]);
     }
 
     // -----------------------------------------------------------------------

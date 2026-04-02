@@ -19,7 +19,7 @@ jemalloc = ["dep:frankenterm-alloc", "frankenterm-alloc/jemalloc"]
 
 [dependencies]
 anyhow.workspace = true
-async_ossl.workspace = true
+async_ossl = { workspace = true, default-features = false, features = ["async-io"] }
 clap.workspace = true
 config.workspace = true
 frankenterm-alloc = { workspace = true, optional = true }

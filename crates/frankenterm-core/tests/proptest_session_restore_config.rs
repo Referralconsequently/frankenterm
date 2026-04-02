@@ -45,6 +45,7 @@ fn arb_session_restore_config() -> impl Strategy<Value = SessionRestoreConfig> {
             auto_restore,
             restore_scrollback,
             restore_max_lines,
+            ..SessionRestoreConfig::default()
         },
     )
 }
@@ -174,6 +175,7 @@ proptest! {
                     auto_restore: auto,
                     restore_scrollback: scrollback,
                     restore_max_lines: 1000,
+                    ..SessionRestoreConfig::default()
                 };
                 let json = serde_json::to_string(&config).unwrap();
                 let back: SessionRestoreConfig = serde_json::from_str(&json).unwrap();
@@ -193,6 +195,7 @@ proptest! {
             auto_restore: auto,
             restore_scrollback: scrollback,
             restore_max_lines: 0,
+            ..SessionRestoreConfig::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let back: SessionRestoreConfig = serde_json::from_str(&json).unwrap();
@@ -209,6 +212,7 @@ proptest! {
             auto_restore: true,
             restore_scrollback: true,
             restore_max_lines: max_lines,
+            ..SessionRestoreConfig::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let back: SessionRestoreConfig = serde_json::from_str(&json).unwrap();
@@ -397,6 +401,7 @@ proptest! {
             auto_restore: !config.auto_restore,
             restore_scrollback: !config.restore_scrollback,
             restore_max_lines: config.restore_max_lines,
+            ..SessionRestoreConfig::default()
         };
         let json = serde_json::to_string(&negated).unwrap();
         let back: SessionRestoreConfig = serde_json::from_str(&json).unwrap();

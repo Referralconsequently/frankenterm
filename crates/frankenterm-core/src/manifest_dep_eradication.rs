@@ -368,15 +368,15 @@ impl EradicationPlan {
                 dep_name: "async-io".into(),
                 runtime: ForbiddenRuntime::AsyncIo,
                 section: DepSection::Dependencies,
-                condition: DepCondition::DefaultFeature("async-io-support".into()),
+                condition: DepCondition::DefaultFeature("async-io".into()),
                 features_enabled: vec![],
                 severity: ViolationSeverity::Warning,
             },
             action: EradicationAction::FeatureGate,
-            rationale: "Already feature-gated but default=on; flip default to off so \
-                        asupersync-only builds exclude async-io without extra configuration."
+            rationale: "Wrapper crate now defaults to async-asupersync; legacy smol consumers \
+                        must opt into async-io explicitly."
                 .into(),
-            migration_feature: Some("async-io-support".into()),
+            migration_feature: Some("async-asupersync".into()),
             completed: false,
         });
 
@@ -390,13 +390,15 @@ impl EradicationPlan {
                 dep_name: "async-io".into(),
                 runtime: ForbiddenRuntime::AsyncIo,
                 section: DepSection::Dependencies,
-                condition: DepCondition::DefaultFeature("async-io-backend".into()),
+                condition: DepCondition::DefaultFeature("async-io".into()),
                 features_enabled: vec![],
                 severity: ViolationSeverity::Warning,
             },
             action: EradicationAction::FeatureGate,
-            rationale: "UDS crate gated behind default-on feature; flip default to off.".into(),
-            migration_feature: Some("async-io-backend".into()),
+            rationale: "UDS wrapper now defaults to async-asupersync; legacy smol consumers \
+                        must opt into async-io explicitly."
+                .into(),
+            migration_feature: Some("async-asupersync".into()),
             completed: false,
         });
 
@@ -410,14 +412,14 @@ impl EradicationPlan {
                 dep_name: "smol".into(),
                 runtime: ForbiddenRuntime::Smol,
                 section: DepSection::Dependencies,
-                condition: DepCondition::DefaultFeature("smol-compat".into()),
+                condition: DepCondition::DefaultFeature("async-smol".into()),
                 features_enabled: vec![],
                 severity: ViolationSeverity::Warning,
             },
             action: EradicationAction::FeatureGate,
-            rationale: "Codec crate gated behind default-on smol-compat; flip default to off."
+            rationale: "Codec crate now defaults to async-asupersync, but mixed graphs still honor the async-smol fallback until legacy vendored stream users migrate."
                 .into(),
-            migration_feature: Some("smol-compat".into()),
+            migration_feature: Some("async-asupersync".into()),
             completed: false,
         });
 
@@ -674,12 +676,12 @@ pub fn standard_feature_alignments() -> Vec<FeatureAlignment> {
     vec![
         FeatureAlignment {
             crate_name: "codec".into(),
-            legacy_feature: "smol-compat".into(),
+            legacy_feature: "async-smol".into(),
             migration_feature: "async-asupersync".into(),
             legacy_exists: true,
-            migration_exists: false,
-            default_is_legacy: true,
-            aligned: false,
+            migration_exists: true,
+            default_is_legacy: false,
+            aligned: true,
         },
         FeatureAlignment {
             crate_name: "ssh".into(),
@@ -710,21 +712,21 @@ pub fn standard_feature_alignments() -> Vec<FeatureAlignment> {
         },
         FeatureAlignment {
             crate_name: "uds".into(),
-            legacy_feature: "async-io-backend".into(),
+            legacy_feature: "async-io".into(),
             migration_feature: "async-asupersync".into(),
             legacy_exists: true,
-            migration_exists: false,
-            default_is_legacy: true,
-            aligned: false,
+            migration_exists: true,
+            default_is_legacy: false,
+            aligned: true,
         },
         FeatureAlignment {
             crate_name: "async_ossl".into(),
-            legacy_feature: "async-io-support".into(),
+            legacy_feature: "async-io".into(),
             migration_feature: "async-asupersync".into(),
             legacy_exists: true,
-            migration_exists: false,
-            default_is_legacy: true,
-            aligned: false,
+            migration_exists: true,
+            default_is_legacy: false,
+            aligned: true,
         },
         FeatureAlignment {
             crate_name: "mux".into(),
@@ -910,7 +912,7 @@ mod tests {
         let unconditional = DepCondition::Unconditional;
         let gated = DepCondition::FeatureGated("mcp".into());
         let platform = DepCondition::PlatformConditional("cfg(unix)".into());
-        let default = DepCondition::DefaultFeature("smol-compat".into());
+        let default = DepCondition::DefaultFeature("async-smol".into());
 
         assert_ne!(unconditional, gated);
         assert_ne!(gated, platform);
@@ -1178,13 +1180,27 @@ mod tests {
             );
         }
 
-        // None of the standard alignments should be aligned yet (baseline state)
+        // Codec, uds, and async_ossl are already defaulted to async-asupersync;
+        // the rest remain pending.
         for a in &alignments {
-            assert!(
-                !a.aligned,
-                "crate {} should not be aligned in baseline state",
-                a.crate_name
-            );
+            if matches!(a.crate_name.as_str(), "codec" | "uds" | "async_ossl") {
+                assert!(
+                    a.aligned,
+                    "{} should be aligned after the default flip",
+                    a.crate_name
+                );
+                assert!(
+                    !a.default_is_legacy,
+                    "{} should no longer default to the legacy runtime",
+                    a.crate_name
+                );
+            } else {
+                assert!(
+                    !a.aligned,
+                    "crate {} should not be aligned in baseline state",
+                    a.crate_name
+                );
+            }
         }
     }
 

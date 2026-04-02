@@ -89,7 +89,7 @@ fn config_update_pending(rx: &watch::Receiver<HotReloadableConfig>) -> bool {
     }
 }
 
-#[allow(clippy::needless_pass_by_ref_mut)] // tokio requires &mut for borrow_and_update
+#[allow(clippy::needless_pass_by_ref_mut)] // update-taking watch APIs require &mut here
 fn config_take_update(rx: &mut watch::Receiver<HotReloadableConfig>) -> HotReloadableConfig {
     #[cfg(feature = "asupersync-runtime")]
     {
@@ -4091,13 +4091,6 @@ mod tests {
     where
         F: std::future::Future<Output = ()>,
     {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
         let runtime = crate::runtime_compat::RuntimeBuilder::current_thread()
             .build()
             .expect("failed to build runtime for runtime tests");

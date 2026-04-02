@@ -12,8 +12,8 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 async-io.workspace = true
-async_ossl.workspace = true
-codec.workspace = true
+async_ossl = { workspace = true, default-features = false, features = ["async-io"] }
+codec = { workspace = true, default-features = false, features = ["async-smol"] }
 config.workspace = true
 dns-lookup.workspace = true
 futures.workspace = true
@@ -32,7 +32,7 @@ termwiz = { workspace=true, features=["use_serde"] }
 url.workspace = true
 wezterm-client.workspace = true
 wezterm-term = { workspace=true, features=["use_serde"] }
-wezterm-uds.workspace = true
+wezterm-uds = { workspace = true, default-features = false, features = ["async-io"] }
 
 [target."cfg(windows)".dependencies]
 winapi = { workspace=true, features = [ "winuser" ]}
