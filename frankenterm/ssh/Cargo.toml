@@ -12,7 +12,7 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["libssh-rs", "ssh2", "async-smol"]
+default = ["libssh-rs", "ssh2", "async-asupersync"]
 async-smol = ["dep:smol", "async_ossl/async-io", "frankenterm-uds/async-io"]
 async-asupersync = [
     "dep:asupersync",
