@@ -2482,7 +2482,7 @@ impl Default for StreamIngester {
 
 /// Simulates a bounded channel with overflow tracking for testing.
 ///
-/// In production, this will be backed by `tokio::sync::mpsc` with
+/// In production, this is backed by the compat mpsc channel with
 /// `try_send` for non-blocking overflow detection. This sync version
 /// exists for property testing without a runtime.
 pub struct StreamChannel {

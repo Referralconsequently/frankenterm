@@ -291,7 +291,7 @@ pub trait QueryClient: Send + Sync {
 /// Production implementation of QueryClient
 ///
 /// Uses the actual frankenterm-core storage and wezterm client to query data.
-/// Owns a dedicated tokio runtime for async operations, avoiding
+/// Owns a dedicated compat runtime for async operations, avoiding
 /// "cannot start a runtime from within a runtime" panics when the TUI
 /// runs in a separate thread from the main async context.
 pub struct ProductionQueryClient {
@@ -307,7 +307,7 @@ pub struct ProductionQueryClient {
 }
 
 impl ProductionQueryClient {
-    /// Create a new production query client with a dedicated tokio runtime.
+    /// Create a new production query client with a dedicated compat runtime.
     ///
     /// The runtime is used to bridge sync TUI code with async operations,
     /// avoiding "cannot start a runtime from within a runtime" panics.
@@ -329,7 +329,7 @@ impl ProductionQueryClient {
         }
     }
 
-    /// Create with an existing storage handle and a dedicated tokio runtime.
+    /// Create with an existing storage handle and a dedicated compat runtime.
     ///
     /// The runtime is used to bridge sync TUI code with async operations,
     /// avoiding "cannot start a runtime from within a runtime" panics.

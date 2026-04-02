@@ -103,16 +103,43 @@ fn allocator_status_payload() -> serde_json::Value {
     payload
 }
 
-async fn mpsc_recv_next<T>(rx: &mut mpsc::Receiver<T>) -> Option<T> {
+#[derive(Debug, PartialEq, Eq)]
+enum MpscRecvState<T> {
+    Value(T),
+    Disconnected,
+    #[cfg(feature = "asupersync-runtime")]
+    Cancelled,
+}
+
+#[cfg(any(not(unix), not(feature = "asupersync-runtime")))]
+async fn mpsc_recv_state<T>(rx: &mut mpsc::Receiver<T>) -> MpscRecvState<T> {
     #[cfg(feature = "asupersync-runtime")]
     {
         let cx = crate::cx::for_request();
-        rx.recv(&cx).await.ok()
+        mpsc_recv_state_with_cx(rx, &cx).await
     }
 
     #[cfg(not(feature = "asupersync-runtime"))]
     {
-        rx.recv().await
+        match rx.recv().await {
+            Some(value) => MpscRecvState::Value(value),
+            None => MpscRecvState::Disconnected,
+        }
+    }
+}
+
+#[cfg(feature = "asupersync-runtime")]
+async fn mpsc_recv_state_with_cx<T>(
+    rx: &mut mpsc::Receiver<T>,
+    cx: &crate::cx::Cx,
+) -> MpscRecvState<T> {
+    match rx.recv(cx).await {
+        Ok(value) => MpscRecvState::Value(value),
+        Err(mpsc::RecvError::Disconnected) => MpscRecvState::Disconnected,
+        // `recv()` should not surface `Empty`, but treat any non-message
+        // transient state as "not a shutdown signal" rather than conflating it
+        // with channel closure.
+        Err(mpsc::RecvError::Cancelled | mpsc::RecvError::Empty) => MpscRecvState::Cancelled,
     }
 }
 
@@ -121,7 +148,15 @@ async fn mpsc_send_value<T>(tx: &mpsc::Sender<T>, value: T) -> Result<(), mpsc::
     #[cfg(feature = "asupersync-runtime")]
     {
         let cx = crate::cx::for_testing();
-        tx.send(&cx, value).await
+        match tx.reserve(&cx).await {
+            Ok(permit) => {
+                permit.send(value);
+                Ok(())
+            }
+            Err(mpsc::SendError::Disconnected(())) => Err(mpsc::SendError::Disconnected(value)),
+            Err(mpsc::SendError::Cancelled(())) => Err(mpsc::SendError::Cancelled(value)),
+            Err(mpsc::SendError::Full(())) => Err(mpsc::SendError::Full(value)),
+        }
     }
 
     #[cfg(not(feature = "asupersync-runtime"))]
@@ -820,10 +855,36 @@ impl IpcServer {
 
 #[cfg(unix)]
 async fn shutdown_signal_pending(shutdown_rx: &mut mpsc::Receiver<()>) -> bool {
-    match crate::runtime_compat::timeout(IPC_SHUTDOWN_POLL_INTERVAL, mpsc_recv_next(shutdown_rx))
-        .await
+    #[cfg(feature = "asupersync-runtime")]
     {
-        Ok(Some(()) | None) => true,
+        let cx = crate::cx::for_request();
+        return shutdown_signal_pending_with_cx(shutdown_rx, &cx).await;
+    }
+
+    #[cfg(not(feature = "asupersync-runtime"))]
+    {
+        match crate::runtime_compat::timeout(IPC_SHUTDOWN_POLL_INTERVAL, mpsc_recv_state(shutdown_rx))
+            .await
+        {
+            Ok(MpscRecvState::Value(()) | MpscRecvState::Disconnected) => true,
+            Err(_elapsed) => false,
+        }
+    }
+}
+
+#[cfg(all(unix, feature = "asupersync-runtime"))]
+async fn shutdown_signal_pending_with_cx(
+    shutdown_rx: &mut mpsc::Receiver<()>,
+    cx: &crate::cx::Cx,
+) -> bool {
+    match crate::runtime_compat::timeout(
+        IPC_SHUTDOWN_POLL_INTERVAL,
+        mpsc_recv_state_with_cx(shutdown_rx, cx),
+    )
+    .await
+    {
+        Ok(MpscRecvState::Value(()) | MpscRecvState::Disconnected) => true,
+        Ok(MpscRecvState::Cancelled) => false,
         Err(_elapsed) => false,
     }
 }
@@ -857,7 +918,7 @@ impl IpcServer {
     }
 
     async fn recv_shutdown(shutdown_rx: &mut mpsc::Receiver<()>) {
-        let _ = mpsc_recv_next(shutdown_rx).await;
+        let _ = mpsc_recv_state(shutdown_rx).await;
     }
 
     /// Run the IPC server (no-op on non-unix platforms).
@@ -1591,17 +1652,35 @@ mod tests {
         let _ = mpsc_send_value(shutdown_tx, ()).await;
     }
 
+    #[test]
+    fn shutdown_signal_pending_reports_closed_channel() {
+        run_async_test(async {
+            let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+            drop(shutdown_tx);
+
+            assert!(shutdown_signal_pending(&mut shutdown_rx).await);
+        });
+    }
+
+    #[cfg(feature = "asupersync-runtime")]
+    #[test]
+    fn shutdown_signal_pending_with_cx_ignores_cancelled_receive() {
+        run_async_test(async {
+            let (_shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+            let cx = crate::cx::for_testing();
+            cx.cancel_with(
+                crate::outcome::CancelKind::User,
+                Some("test shutdown cancellation"),
+            );
+
+            assert!(!shutdown_signal_pending_with_cx(&mut shutdown_rx, &cx).await);
+        });
+    }
+
     fn run_async_test<F>(future: F)
     where
         F: std::future::Future<Output = ()>,
     {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
         let runtime = RuntimeBuilder::current_thread()
             .build()
             .expect("failed to build runtime for ipc tests");

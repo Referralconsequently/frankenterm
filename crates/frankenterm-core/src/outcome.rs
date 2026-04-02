@@ -271,7 +271,7 @@ pub fn cancel_shutdown(message: &'static str) -> CancelReason {
 /// Demonstrates the recommended pattern for migrating an existing async
 /// function from `Result<T, Error>` to `Outcome<T, Error>`.
 ///
-/// # Before (tokio + Result)
+/// # Before (legacy async + Result)
 ///
 /// ```ignore
 /// async fn fetch_pane_text(pane_id: u64) -> crate::Result<String> {

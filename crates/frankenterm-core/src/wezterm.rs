@@ -903,14 +903,10 @@ impl WeztermClient {
             if self.mux_circuit_guard() {
                 match pool.get_pane_render_changes(pane_id).await {
                     Ok(changes) => {
-                        self.mux_circuit_record_success();
-                        if let Some(status) = changes.tiered_scrollback_status {
-                            return Ok(status.into());
-                        }
-                        return Err(WeztermError::CommandFailed(format!(
-                            "tiered scrollback telemetry unavailable for pane {pane_id}: vendored mux returned no tiered scrollback status"
-                        ))
-                        .into());
+                        return self.map_mux_tiered_scrollback_summary(
+                            pane_id,
+                            changes.tiered_scrollback_status,
+                        );
                     }
                     Err(err) => {
                         self.mux_circuit_record_failure(&err);
@@ -1493,6 +1489,36 @@ impl WeztermClient {
             Err(poisoned) => poisoned.into_inner(),
         };
         guard.record_failure();
+    }
+
+    #[cfg(all(feature = "vendored", unix))]
+    fn mux_circuit_record_contract_failure(&self) {
+        let mut guard = match self.mux_circuit_breaker.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.record_failure();
+    }
+
+    #[cfg(all(feature = "vendored", unix))]
+    fn map_mux_tiered_scrollback_summary(
+        &self,
+        pane_id: u64,
+        status: Option<mux::renderable::PaneTieredScrollbackStatus>,
+    ) -> Result<PaneTieredScrollbackSummary> {
+        match status {
+            Some(status) => {
+                self.mux_circuit_record_success();
+                Ok(status.into())
+            }
+            None => {
+                self.mux_circuit_record_contract_failure();
+                Err(WeztermError::CommandFailed(format!(
+                    "tiered scrollback telemetry unavailable for pane {pane_id}: vendored mux returned no tiered scrollback status"
+                ))
+                .into())
+            }
+        }
     }
 
     async fn run_cli_with_pane_check_retry(&self, args: &[&str], pane_id: u64) -> Result<String> {
@@ -2194,13 +2220,6 @@ mod tests {
     where
         F: std::future::Future<Output = ()>,
     {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
         use crate::runtime_compat::CompatRuntime;
         let runtime = crate::runtime_compat::RuntimeBuilder::current_thread()
             .enable_all()
@@ -2435,6 +2454,32 @@ mod tests {
             assert!(message.contains("CLI-only backend"));
             assert!(message.contains("tiered scrollback"));
         });
+    }
+
+    #[cfg(all(feature = "vendored", unix))]
+    #[test]
+    fn missing_tiered_scrollback_status_counts_as_mux_circuit_failure() {
+        let mut client = WeztermClient::new();
+        client.mux_circuit_breaker = Arc::new(Mutex::new(CircuitBreaker::with_name(
+            "mux_connection_missing_tiered_scrollback_status_test",
+            CircuitBreakerConfig::new(1, 1, std::time::Duration::from_secs(10)),
+        )));
+
+        let err = client
+            .map_mux_tiered_scrollback_summary(7, None)
+            .expect_err("missing vendored tiered scrollback telemetry should be fail-closed");
+
+        assert!(
+            err.to_string()
+                .contains("vendored mux returned no tiered scrollback status")
+        );
+
+        let status = match client.mux_circuit_breaker.lock() {
+            Ok(guard) => guard.status(),
+            Err(poisoned) => poisoned.into_inner().status(),
+        };
+        assert_eq!(status.state, CircuitStateKind::Open);
+        assert_eq!(status.consecutive_failures, 1);
     }
 
     #[test]
@@ -4628,13 +4673,6 @@ mod mock_tests {
     where
         F: std::future::Future<Output = ()>,
     {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
         use crate::runtime_compat::CompatRuntime;
         let runtime = crate::runtime_compat::RuntimeBuilder::current_thread()
             .enable_all()
@@ -5073,13 +5111,6 @@ mod unified_tests {
     where
         F: std::future::Future<Output = ()>,
     {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
         use crate::runtime_compat::CompatRuntime;
         let runtime = crate::runtime_compat::RuntimeBuilder::current_thread()
             .enable_all()

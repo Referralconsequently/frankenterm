@@ -406,7 +406,7 @@ pub fn spawn_watchdog(
                 }
             }
 
-            // Use the dual-runtime sleep helper during the tokio -> asupersync migration.
+            // Use the dual-runtime sleep helper during the runtime migration.
             crate::runtime_compat::sleep(check_interval).await;
         }
     });
@@ -739,7 +739,7 @@ pub fn spawn_mux_watchdog(
                 }
             }
 
-            // Use the dual-runtime sleep helper during the tokio -> asupersync migration.
+            // Use the dual-runtime sleep helper during the runtime migration.
             crate::runtime_compat::sleep(check_interval).await;
         }
     })

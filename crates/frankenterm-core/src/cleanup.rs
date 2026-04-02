@@ -314,7 +314,7 @@ mod tests {
         StorageHandle, StoredEvent, UsageMetricRecord,
     };
 
-    /// Helper: build a current-thread tokio runtime and block on the given future.
+    /// Helper: build a current-thread compat runtime and block on the given future.
     fn run_async_test<F>(future: F)
     where
         F: std::future::Future<Output = ()>,

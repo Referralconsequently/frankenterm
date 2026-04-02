@@ -590,7 +590,7 @@ impl Player {
 }
 
 /// Poll the control channel for the latest signal (non-blocking).
-#[allow(clippy::needless_pass_by_ref_mut)] // &mut required by tokio path, not asupersync
+#[allow(clippy::needless_pass_by_ref_mut)] // &mut required by the update-taking watch path
 fn check_control(rx: &mut watch::Receiver<PlayerControl>) -> Option<PlayerControl> {
     #[cfg(feature = "asupersync-runtime")]
     {

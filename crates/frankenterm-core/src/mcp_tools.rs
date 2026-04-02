@@ -5371,14 +5371,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cass_search_tool_executes_cass_with_expected_args() {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
-
         let env = CassToolTestEnv::install(
             r#"printf '%s' '{"query":"agent context","count":1,"hits":[{"source_path":"/tmp/session.md","line_number":42,"agent":"codex","content":"needle hit"}]}'"#,
         );
@@ -5436,14 +5428,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cass_view_tool_executes_cass_with_expected_args() {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
-
         let env = CassToolTestEnv::install(
             r#"printf '%s' '{"source_path":"/tmp/session.md","line_number":42,"match_line":{"line_number":42,"content":"needle hit","role":"assistant"},"context_before":[{"line_number":41,"content":"before","role":"user"}],"context_after":[{"line_number":43,"content":"after","role":"assistant"}]}'"#,
         );
@@ -5475,14 +5459,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cass_status_tool_executes_cass_with_expected_args() {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
-
         let env = CassToolTestEnv::install(
             r#"printf '%s' '{"healthy":true,"index_path":"/tmp/.cass/index","total_sessions":150,"stale":false}'"#,
         );
@@ -5508,14 +5484,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cass_status_tool_maps_nonzero_exit_to_mcp_error() {
-        #[cfg(feature = "asupersync-runtime")]
-        let _tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        #[cfg(feature = "asupersync-runtime")]
-        let _guard = _tokio_rt.enter();
-
         let _env = CassToolTestEnv::install(
             r"printf '%s\n' 'cass exploded' >&2
 exit 17",

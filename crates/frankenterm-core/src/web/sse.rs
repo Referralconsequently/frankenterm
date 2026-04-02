@@ -170,7 +170,7 @@ where
 }
 
 /// Returns a future that completes when the receiver side of the channel is
-/// dropped (i.e. the client disconnected). This bridges the tokio
+/// dropped (i.e. the client disconnected). This bridges the richer
 /// `Sender::closed()` API for runtimes that only expose `is_closed()`.
 async fn sender_closed<T>(tx: &mpsc::Sender<T>) {
     // Poll periodically rather than truly registering a waker, since

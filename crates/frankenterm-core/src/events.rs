@@ -410,7 +410,7 @@ pub struct EventBusStats {
 
 /// Event bus for distributing events to subscribers via broadcast fanout
 ///
-/// Uses tokio broadcast channel for multi-consumer delivery. The bus is
+/// Uses the compat broadcast channel for multi-consumer delivery. The bus is
 /// bounded to provide backpressure - if a subscriber falls behind, it
 /// will receive a lag error and miss intermediate messages.
 pub struct EventBus {
