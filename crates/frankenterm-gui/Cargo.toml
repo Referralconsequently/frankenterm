@@ -26,7 +26,7 @@ anyhow.workspace = true
 frankenterm-core.workspace = true
 
 # Vendored FrankenTerm crates (ex-WezTerm)
-codec = { workspace = true, features = ["async-smol"] }
+codec = { workspace = true, features = ["async-asupersync"] }
 config.workspace = true
 filedescriptor.workspace = true
 frecency.workspace = true
