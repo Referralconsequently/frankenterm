@@ -267,10 +267,10 @@ serde_yaml = "0.9.34"
 toon_rust = { version = "0.2.0", git = "https://github.com/Dicklesworthstone/toon_rust", rev = "d48c5b55caeedc99368a1461535b7e0c143afe06", package = "tru" }
 
 # FrankenTerm crates (in-tree, ex-WezTerm)
-async_ossl = { path = "frankenterm/async_ossl" }
+async_ossl = { path = "frankenterm/async_ossl", default-features = false }
 base91 = { path = "frankenterm/base91" }
 bintree = { path = "frankenterm/bintree" }
-codec = { path = "frankenterm/codec" }
+codec = { path = "frankenterm/codec", default-features = false }
 config = { path = "frankenterm/config" }
 filedescriptor = { version = "0.8.3", path = "frankenterm/filedescriptor" }
 luahelper = { path = "frankenterm/luahelper" }
@@ -297,7 +297,7 @@ frankenterm-ssh = { path = "frankenterm/ssh" }
 frankenterm-scripting = { path = "frankenterm/scripting" }
 frankenterm-surface = { path = "frankenterm/surface" }
 frankenterm-term = { path = "frankenterm/term" }
-frankenterm-uds = { path = "frankenterm/uds" }
+frankenterm-uds = { path = "frankenterm/uds", default-features = false }
 frecency = { path = "frankenterm/frecency" }
 lfucache = { path = "frankenterm/lfucache" }
 ratelim = { path = "frankenterm/ratelim" }
@@ -317,7 +317,7 @@ wezterm-input-types = { path = "frankenterm/input-types", package = "frankenterm
 wezterm-dynamic = { path = "frankenterm/dynamic", package = "frankenterm-dynamic" }
 wezterm-blob-leases = { path = "frankenterm/blob-leases", package = "frankenterm-blob-leases" }
 wezterm-ssh = { path = "frankenterm/ssh", package = "frankenterm-ssh" }
-wezterm-uds = { path = "frankenterm/uds", package = "frankenterm-uds" }
+wezterm-uds = { path = "frankenterm/uds", package = "frankenterm-uds", default-features = false }
 
 # External deps needed by FrankenTerm crates
 assert_fs = "1.0.4"
