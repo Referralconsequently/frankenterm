@@ -627,6 +627,7 @@ SEE ALSO:
     ft restart --dry-run              Show what would happen
     ft restart --skip-restore         Restart without restoring layout
     ft restart --layout-only          Only restore split layout (no scrollback)
+    ft restart --launch-agents        Re-launch agent commands after restore
     ft restart --stop-timeout 30      Custom stop timeout
 
 SEE ALSO:
@@ -649,6 +650,10 @@ SEE ALSO:
         /// Only restore layout (skip scrollback injection)
         #[arg(long)]
         layout_only: bool,
+
+        /// Re-launch agent commands in restored panes (starts new agent sessions)
+        #[arg(long)]
+        launch_agents: bool,
 
         /// Show what would happen without executing
         #[arg(long)]
@@ -4202,6 +4207,10 @@ enum SnapshotCommands {
         /// Only restore layout (skip scrollback injection)
         #[arg(long)]
         layout_only: bool,
+
+        /// Re-launch agent commands in restored panes (starts new agent sessions)
+        #[arg(long)]
+        launch_agents: bool,
 
         /// Show what would be restored without executing
         #[arg(long)]
@@ -8251,6 +8260,8 @@ async fn restore_snapshot_checkpoint(
     checkpoint_id: i64,
     wezterm_timeout_secs: u64,
     layout_only: bool,
+    process_relaunch: &frankenterm_core::config::ProcessRelaunchConfig,
+    launch_agents: bool,
 ) -> anyhow::Result<frankenterm_core::session_restore::RestoreSummary> {
     use frankenterm_core::session_restore::{
         SessionRestoreConfig, SessionRestorer, load_checkpoint_by_id, show_session,
@@ -8260,10 +8271,16 @@ async fn restore_snapshot_checkpoint(
         .ok_or_else(|| anyhow::anyhow!("Snapshot {checkpoint_id} not found"))?;
     let (session, _) = show_session(db_path, &checkpoint.session_id)?;
     let wezterm = frankenterm_core::wezterm::wezterm_handle_with_timeout(wezterm_timeout_secs);
+    let mut process_relaunch_cfg: frankenterm_core::restore_process::LaunchConfig =
+        process_relaunch.clone().into();
+    if launch_agents {
+        process_relaunch_cfg.launch_agents = true;
+    }
     let restorer = SessionRestorer::new(
         Arc::new(db_path.to_string()),
         SessionRestoreConfig {
             restore_scrollback: !layout_only,
+            process_relaunch: process_relaunch_cfg,
             ..SessionRestoreConfig::default()
         },
     );
@@ -10969,9 +10986,12 @@ impl frankenterm_core::webhook::WebhookTransport for AsupersyncWebhookTransport 
                 request_headers.push((key.clone(), value.clone()));
             }
 
+            let cx = frankenterm_core::cx::Cx::current()
+                .unwrap_or_else(frankenterm_core::cx::for_request);
             match self
                 .client
                 .request(
+                    &cx,
                     asupersync::http::h1::Method::Post,
                     url,
                     request_headers,
@@ -11685,6 +11705,61 @@ async fn distributed_publish_security_error<S>(
 }
 
 #[cfg(feature = "distributed")]
+fn distributed_wire_error_code(
+    err: &frankenterm_core::wire_protocol::WireProtocolError,
+) -> &'static str {
+    match err {
+        frankenterm_core::wire_protocol::WireProtocolError::InvalidJson(_)
+        | frankenterm_core::wire_protocol::WireProtocolError::InvalidSender { .. } => {
+            "dist.invalid_message"
+        }
+        frankenterm_core::wire_protocol::WireProtocolError::MessageTooLarge { .. } => {
+            "dist.message_too_large"
+        }
+        frankenterm_core::wire_protocol::WireProtocolError::VersionMismatch { .. } => {
+            "dist.version_mismatch"
+        }
+        frankenterm_core::wire_protocol::WireProtocolError::TooManyAgents { .. } => {
+            "dist.session_limit"
+        }
+    }
+}
+
+#[cfg(feature = "distributed")]
+async fn distributed_publish_wire_error<S>(
+    reader: &mut asupersync::io::BufReader<S>,
+    err: &frankenterm_core::wire_protocol::WireProtocolError,
+) where
+    S: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
+{
+    use asupersync::io::AsyncWriteExt;
+
+    let mut payload = serde_json::Map::new();
+    payload.insert("ok".to_string(), serde_json::Value::Bool(false));
+    if matches!(
+        err,
+        frankenterm_core::wire_protocol::WireProtocolError::VersionMismatch { .. }
+    ) {
+        payload.insert(
+            "protocol_version".to_string(),
+            serde_json::Value::from(frankenterm_core::wire_protocol::PROTOCOL_VERSION),
+        );
+    }
+    payload.insert(
+        "error".to_string(),
+        serde_json::json!({
+            "code": distributed_wire_error_code(err),
+            "message": err.to_string()
+        }),
+    );
+    if let Ok(encoded) = serde_json::to_string(&serde_json::Value::Object(payload)) {
+        let _ = reader.get_mut().write_all(encoded.as_bytes()).await;
+        let _ = reader.get_mut().write_all(b"\n").await;
+        let _ = reader.get_mut().flush().await;
+    }
+}
+
+#[cfg(feature = "distributed")]
 async fn distributed_publish_handshake_ok<S>(reader: &mut asupersync::io::BufReader<S>)
 where
     S: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
@@ -12261,6 +12336,7 @@ async fn distributed_handle_connection<S>(
             Ok(envelope) => envelope,
             Err(err) => {
                 tracing::warn!(peer = %peer_addr, error = %err, "Invalid distributed wire envelope");
+                distributed_publish_wire_error(&mut reader, &err).await;
                 continue;
             }
         };
@@ -12349,6 +12425,7 @@ async fn distributed_handle_connection<S>(
                 }
             }
             Err(err) => {
+                distributed_publish_wire_error(&mut reader, &err).await;
                 tracing::warn!(peer = %peer_addr, error = %err, "Distributed ingest rejected envelope");
             }
         }
@@ -25111,6 +25188,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
             start_timeout,
             skip_restore,
             layout_only,
+            launch_agents,
             dry_run,
             format,
         }) => {
@@ -25130,6 +25208,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                 "start_timeout_secs": start_timeout,
                                 "skip_restore": skip_restore,
                                 "layout_only": layout_only,
+                                "launch_agents": launch_agents,
                             },
                             "version": frankenterm_core::VERSION,
                         }))?
@@ -25144,7 +25223,9 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     if skip_restore {
                         println!("  4. Skip restore phase (--skip-restore)");
                     } else {
-                        println!("  4. Restore from captured snapshot (layout_only={layout_only})");
+                        println!(
+                            "  4. Restore from captured snapshot (layout_only={layout_only}, launch_agents={launch_agents})"
+                        );
                     }
                     println!("Dry-run requested; no actions were executed.");
                 }
@@ -25158,6 +25239,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     start_timeout,
                     skip_restore,
                     layout_only,
+                    launch_agents,
                     emit_json,
                 );
                 eprintln!("ft restart is currently supported only on Unix platforms.");
@@ -25364,6 +25446,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     snapshot.checkpoint_id,
                     config.cli.timeout_seconds,
                     layout_only,
+                    &config.snapshots.process_relaunch,
+                    launch_agents,
                 )
                 .await
                 {
@@ -37407,6 +37491,7 @@ async fn handle_snapshot_command(
         SnapshotCommands::Restore {
             snapshot_id,
             layout_only,
+            launch_agents,
             dry_run,
             format,
         } => {
@@ -37467,6 +37552,7 @@ async fn handle_snapshot_command(
                                 "pane_count": checkpoint.pane_count,
                             },
                             "layout_only": layout_only,
+                            "launch_agents": launch_agents,
                         }))?
                     );
                 } else {
@@ -37478,6 +37564,7 @@ async fn handle_snapshot_command(
                     );
                     println!("  Pane count: {}", checkpoint.pane_count);
                     println!("  layout_only={layout_only}");
+                    println!("  launch_agents={launch_agents}");
                     println!("Dry-run requested; no actions were executed.");
                 }
                 return Ok(());
@@ -37510,6 +37597,8 @@ async fn handle_snapshot_command(
                 checkpoint.checkpoint_id,
                 config.cli.timeout_seconds,
                 layout_only,
+                &config.snapshots.process_relaunch,
+                launch_agents,
             )
             .await
             {
@@ -40875,6 +40964,34 @@ mod tests {
     #[test]
     fn restart_preflight_accepts_running_mux_server_and_panes() {
         validate_restart_preflight(&[1234], 2).expect("valid restart preflight should pass");
+    }
+
+    #[test]
+    fn restart_and_snapshot_restore_cli_parse_launch_agents() {
+        let restart_cli =
+            Cli::try_parse_from(["ft", "restart", "--launch-agents"]).expect("restart parses");
+        match restart_cli.command.map(|cmd| *cmd) {
+            Some(Commands::Restart { launch_agents, .. }) => assert!(launch_agents),
+            _ => panic!("unexpected restart parse result"),
+        }
+
+        let restore_cli =
+            Cli::try_parse_from(["ft", "snapshot", "restore", "latest", "--launch-agents"])
+                .expect("snapshot restore parses");
+        match restore_cli.command.map(|cmd| *cmd) {
+            Some(Commands::Snapshot {
+                command:
+                    SnapshotCommands::Restore {
+                        snapshot_id,
+                        launch_agents,
+                        ..
+                    },
+            }) => {
+                assert_eq!(snapshot_id, "latest");
+                assert!(launch_agents);
+            }
+            _ => panic!("unexpected snapshot restore parse result"),
+        }
     }
 
     fn sample_cli_mission() -> frankenterm_core::plan::Mission {
@@ -44938,6 +45055,190 @@ recorder_backend = "frankensqlite"
                     remote_records.is_empty(),
                     "invalid-token session must not persist remote pane metadata"
                 );
+
+                shutdown_flag.store(true, Ordering::SeqCst);
+                let _ = listener_handle.await;
+
+                {
+                    let storage_handle = storage.lock().await.clone(); // ubs:ignore
+                    storage_handle.shutdown().await.expect("shutdown storage");
+                }
+                drop(storage);
+                let _ = std::fs::remove_file(&db_path);
+                let _ = std::fs::remove_file(format!("{db_path}-wal"));
+                let _ = std::fs::remove_file(format!("{db_path}-shm"));
+            });
+    }
+
+    #[cfg(feature = "distributed")]
+    #[test]
+    fn distributed_listener_reports_malformed_post_handshake_envelope_and_recovers() {
+        frankenterm_core::runtime_compat::RuntimeBuilder::current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                use asupersync::io::AsyncWriteExt;
+                use asupersync::net::TcpStream;
+                use frankenterm_core::wire_protocol::{PaneMeta, WireEnvelope, WirePayload};
+                use std::sync::atomic::Ordering;
+
+                let (storage_handle, db_path) =
+                    setup_storage("distributed_listener_invalid_wire_recovery").await;
+                let storage = std::sync::Arc::new(frankenterm_core::runtime_compat::Mutex::new(
+                    storage_handle,
+                ));
+                let event_bus = std::sync::Arc::new(frankenterm_core::events::EventBus::new(64));
+                let shutdown_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+                let bind_probe =
+                    std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
+                let bind_addr = bind_probe.local_addr().expect("probe listener addr");
+                drop(bind_probe);
+
+                let mut distributed_config = frankenterm_core::config::DistributedConfig::default();
+                distributed_config.enabled = true;
+                distributed_config.bind_addr = bind_addr.to_string();
+                distributed_config.auth_mode = frankenterm_core::config::DistributedAuthMode::Token;
+                distributed_config.token = Some("dist-invalid-wire-token".to_string());
+
+                let listener_handle = spawn_distributed_listener(
+                    distributed_config.clone(),
+                    std::sync::Arc::clone(&storage),
+                    std::sync::Arc::clone(&event_bus),
+                    std::sync::Arc::clone(&shutdown_flag),
+                )
+                .await
+                .expect("spawn distributed listener");
+
+                let mut stream = TcpStream::connect(distributed_config.bind_addr.clone())
+                    .await
+                    .expect("connect distributed listener");
+
+                let sender = "agent-invalid-wire";
+                let source_pane_id = 97_u64;
+                let remote_pane_id = distributed_remote_pane_id(sender, source_pane_id);
+                let handshake = DistributedHandshake {
+                    protocol_version: Some(frankenterm_core::wire_protocol::PROTOCOL_VERSION),
+                    token: distributed_config.token.clone(),
+                    agent_id: Some(sender.to_string()),
+                    session_id: Some("session-invalid-wire".to_string()),
+                };
+                let handshake_json =
+                    serde_json::to_string(&handshake).expect("serialize handshake");
+                stream
+                    .write_all(handshake_json.as_bytes())
+                    .await
+                    .expect("write handshake");
+                stream
+                    .write_all(b"\n")
+                    .await
+                    .expect("write handshake newline");
+                stream.flush().await.expect("flush handshake");
+
+                let mut reader = asupersync::io::BufReader::new(stream);
+                let mut line = String::new();
+                let read_size = frankenterm_core::runtime_compat::timeout(
+                    std::time::Duration::from_secs(1),
+                    distributed_read_line(
+                        &mut reader,
+                        &mut line,
+                        frankenterm_core::wire_protocol::MAX_MESSAGE_SIZE,
+                    ),
+                )
+                .await
+                .expect("read handshake acknowledgement within timeout")
+                .expect("read handshake acknowledgement");
+                assert!(
+                    read_size > 0,
+                    "listener should emit handshake acknowledgement"
+                );
+
+                reader
+                    .get_mut()
+                    .write_all(br#"{"version":1,"seq":"oops"}"#)
+                    .await
+                    .expect("write malformed envelope");
+                reader
+                    .get_mut()
+                    .write_all(b"\n")
+                    .await
+                    .expect("write malformed envelope newline");
+                reader
+                    .get_mut()
+                    .flush()
+                    .await
+                    .expect("flush malformed envelope");
+
+                line.clear();
+                let read_size = frankenterm_core::runtime_compat::timeout(
+                    std::time::Duration::from_secs(1),
+                    distributed_read_line(
+                        &mut reader,
+                        &mut line,
+                        frankenterm_core::wire_protocol::MAX_MESSAGE_SIZE,
+                    ),
+                )
+                .await
+                .expect("read malformed-envelope response within timeout")
+                .expect("read malformed-envelope response");
+                assert!(
+                    read_size > 0,
+                    "listener should emit structured error for malformed wire payload"
+                );
+                let payload: serde_json::Value =
+                    serde_json::from_str(line.trim()).expect("parse malformed-envelope response");
+                assert_eq!(payload["ok"], serde_json::Value::Bool(false));
+                assert_eq!(payload["error"]["code"], "dist.invalid_message");
+                assert!(
+                    payload.get("protocol_version").is_none(),
+                    "invalid-message responses should not pretend protocol negotiation failed"
+                );
+
+                let pane_meta = PaneMeta {
+                    pane_id: source_pane_id,
+                    pane_uuid: Some("pane-invalid-wire-uuid".to_string()),
+                    domain: "prod".to_string(),
+                    title: Some("recovered-pane".to_string()),
+                    cwd: Some("/remote/recovered".to_string()),
+                    rows: Some(40),
+                    cols: Some(120),
+                    observed: true,
+                    timestamp_ms: now_ms(),
+                };
+                let envelope = WireEnvelope::new(1, sender, WirePayload::PaneMeta(pane_meta));
+                let bytes = envelope.to_json().expect("serialize recovery envelope");
+                reader
+                    .get_mut()
+                    .write_all(&bytes)
+                    .await
+                    .expect("write recovery envelope");
+                reader
+                    .get_mut()
+                    .write_all(b"\n")
+                    .await
+                    .expect("write recovery envelope newline");
+                reader
+                    .get_mut()
+                    .flush()
+                    .await
+                    .expect("flush recovery envelope");
+                drop(reader);
+
+                frankenterm_core::runtime_compat::sleep(std::time::Duration::from_millis(150))
+                    .await;
+
+                {
+                    let storage_handle = storage.lock().await.clone(); // ubs:ignore
+                    let remote = storage_handle
+                        .get_pane(remote_pane_id)
+                        .await
+                        .expect("query recovered remote pane");
+                    assert!(
+                        remote.is_some(),
+                        "listener should continue accepting valid envelopes after malformed input"
+                    );
+                }
 
                 shutdown_flag.store(true, Ordering::SeqCst);
                 let _ = listener_handle.await;

@@ -12,7 +12,9 @@
 #![allow(clippy::range_plus_one)]
 
 // Both async-smol and async-asupersync may be enabled simultaneously due to Cargo
-// workspace feature unification. When both are active, asupersync takes priority.
+// workspace feature unification. While legacy vendored clients still pass
+// smol Async streams into codec async APIs, mixed graphs must continue to use
+// the smol path until those callers migrate.
 
 use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
@@ -27,7 +29,7 @@ use portable_pty::CommandBuilder;
 use rangeset::*;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "async-asupersync")]
+#[cfg(all(feature = "async-asupersync", not(feature = "async-smol")))]
 use asupersync::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 #[cfg(feature = "async-smol")]
@@ -45,6 +47,33 @@ use termwiz::hyperlink::Hyperlink;
 use termwiz::image::{ImageData, TextureCoordinate};
 use termwiz::surface::{Line, SequenceNo};
 use thiserror::Error;
+
+#[cfg(test)]
+mod runtime {
+    #[cfg(all(feature = "async-asupersync", not(feature = "async-smol")))]
+    static ASUPERSYNC_RUNTIME: std::sync::LazyLock<asupersync::runtime::Runtime> =
+        std::sync::LazyLock::new(|| {
+            asupersync::runtime::RuntimeBuilder::current_thread()
+                .build()
+                .expect("failed to build codec asupersync runtime")
+        });
+
+    #[cfg(all(feature = "async-asupersync", not(feature = "async-smol")))]
+    pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        ASUPERSYNC_RUNTIME.block_on(future)
+    }
+
+    #[cfg(feature = "async-smol")]
+    pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        smol::block_on(future)
+    }
+
+    #[cfg(all(feature = "async-asupersync", not(feature = "async-smol")))]
+    pub type Cursor<T> = std::io::Cursor<T>;
+
+    #[cfg(feature = "async-smol")]
+    pub type Cursor<T> = smol::io::Cursor<T>;
+}
 
 #[derive(Error, Debug)]
 #[error("Corrupt Response: {0}")]
@@ -2235,8 +2264,8 @@ mod test {
 
     #[test]
     fn encode_raw_async_roundtrip_uncompressed() {
-        smol::block_on(async {
-            let mut writer = smol::io::Cursor::new(Vec::<u8>::new());
+        runtime::block_on(async {
+            let mut writer = runtime::Cursor::new(Vec::<u8>::new());
             encode_raw_async(17, 23, b"async-raw", false, &mut writer)
                 .await
                 .expect("encode_raw_async");
@@ -2252,11 +2281,11 @@ mod test {
 
     #[test]
     fn decode_raw_async_roundtrip_uncompressed() {
-        smol::block_on(async {
+        runtime::block_on(async {
             let mut encoded = Vec::new();
             encode_raw(11, 13, b"decode-async", false, &mut encoded).expect("encode_raw");
 
-            let mut reader = smol::io::Cursor::new(encoded);
+            let mut reader = runtime::Cursor::new(encoded);
             let decoded = decode_raw_async(&mut reader, None)
                 .await
                 .expect("decode_raw_async");
@@ -2269,11 +2298,11 @@ mod test {
 
     #[test]
     fn decode_raw_async_roundtrip_compressed_flag() {
-        smol::block_on(async {
+        runtime::block_on(async {
             let mut encoded = Vec::new();
             encode_raw(31, 9, b"decode-async-compressed", true, &mut encoded).expect("encode_raw");
 
-            let mut reader = smol::io::Cursor::new(encoded);
+            let mut reader = runtime::Cursor::new(encoded);
             let decoded = decode_raw_async(&mut reader, None)
                 .await
                 .expect("decode_raw_async");
@@ -2286,11 +2315,11 @@ mod test {
 
     #[test]
     fn decode_raw_async_rejects_serial_over_max() {
-        smol::block_on(async {
+        runtime::block_on(async {
             let mut encoded = Vec::new();
             encode_raw(3, 99, b"x", false, &mut encoded).expect("encode_raw");
 
-            let mut reader = smol::io::Cursor::new(encoded);
+            let mut reader = runtime::Cursor::new(encoded);
             let err = decode_raw_async(&mut reader, Some(10))
                 .await
                 .expect_err("serial should be rejected");
@@ -2305,8 +2334,8 @@ mod test {
 
     #[test]
     fn read_u64_async_returns_eof_on_empty_input() {
-        smol::block_on(async {
-            let mut reader = smol::io::Cursor::new(Vec::<u8>::new());
+        runtime::block_on(async {
+            let mut reader = runtime::Cursor::new(Vec::<u8>::new());
             let err = read_u64_async(&mut reader)
                 .await
                 .expect_err("empty stream should error");
@@ -2314,6 +2343,31 @@ mod test {
                 .downcast_ref::<std::io::Error>()
                 .expect("expected io::Error");
             assert_eq!(io_err.kind(), std::io::ErrorKind::UnexpectedEof);
+        });
+    }
+
+    #[cfg(all(feature = "async-smol", feature = "async-asupersync"))]
+    #[test]
+    fn mixed_feature_mode_still_accepts_smol_cursors() {
+        fn assert_smol_cursor(_: &smol::io::Cursor<Vec<u8>>) {}
+
+        runtime::block_on(async {
+            let mut writer = runtime::Cursor::new(Vec::<u8>::new());
+            assert_smol_cursor(&writer);
+
+            encode_raw_async(19, 29, b"mixed-features", false, &mut writer)
+                .await
+                .expect("encode_raw_async");
+
+            let mut reader = smol::io::Cursor::new(writer.into_inner());
+            let decoded = decode_raw_async(&mut reader, None)
+                .await
+                .expect("decode_raw_async");
+
+            assert_eq!(decoded.ident, 19);
+            assert_eq!(decoded.serial, 29);
+            assert_eq!(decoded.data, b"mixed-features");
+            assert!(!decoded.is_compressed);
         });
     }
 

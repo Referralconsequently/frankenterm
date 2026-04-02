@@ -19,7 +19,7 @@ openssl.workspace = true
 openssl = { workspace = true, features=["vendored"] }
 
 [features]
-default = ["async-io"]
+default = ["async-asupersync"]
 
 async-io = ["dep:async-io"]
 async-asupersync = ["dep:asupersync"]

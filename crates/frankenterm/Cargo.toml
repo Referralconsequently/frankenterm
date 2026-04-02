@@ -84,4 +84,3 @@ jemalloc = ["dep:frankenterm-alloc", "frankenterm-alloc/jemalloc"]
 assert_cmd = "2.1.2"
 predicates = "3.1.3"
 tempfile = "3.23.0"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

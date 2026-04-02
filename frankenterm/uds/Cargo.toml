@@ -14,7 +14,7 @@ asupersync = { workspace = true, optional = true }
 uds_windows.workspace = true
 
 [features]
-default = ["async-io"]
+default = ["async-asupersync"]
 
 async-io = ["dep:async-io"]
 async-asupersync = ["dep:asupersync"]

@@ -29,7 +29,7 @@ zstd.workspace = true
 base91.workspace = true
 
 [features]
-default = ["async-smol"]
+default = ["async-asupersync"]
 
 async-smol = ["dep:smol"]
 async-asupersync = ["dep:asupersync"]

@@ -390,9 +390,63 @@ capture_remote_service() {
     ssh "$alias" "cat ~/.config/systemd/user/wezterm-mux-server.service" > "$out_file"
 }
 
+remote_file_exists() {
+    local alias="$1"
+    local path="$2"
+    ssh "$alias" "test -f $path" >/dev/null 2>&1
+}
+
+capture_remote_service_if_present() {
+    local alias="$1"
+    local out_file="$2"
+    if remote_file_exists "$alias" "~/.config/systemd/user/wezterm-mux-server.service"; then
+        capture_remote_service "$alias" "$out_file"
+    else
+        printf '# service unit absent on remote host %s\n' "$alias" > "$out_file"
+    fi
+}
+
+capture_remote_service_status() {
+    local alias="$1"
+    local out_file="$2"
+    ssh "$alias" "systemctl --user status wezterm-mux-server" > "$out_file" 2>&1 || true
+}
+
 assert_remote_state() {
     local alias="$1"
     ssh "$alias" "test -f ~/.ft-e2e-state/service-enabled && test -f ~/.ft-e2e-state/linger-enabled"
+}
+
+capture_remote_state_report() {
+    local alias="$1"
+    local out_file="$2"
+    local service_enabled="false"
+    local linger_enabled="false"
+    local failure_injected="false"
+    local service_unit_present="false"
+
+    if remote_file_exists "$alias" "~/.ft-e2e-state/service-enabled"; then
+        service_enabled="true"
+    fi
+    if remote_file_exists "$alias" "~/.ft-e2e-state/linger-enabled"; then
+        linger_enabled="true"
+    fi
+    if remote_file_exists "$alias" "~/.ft-e2e-state/fail-enable"; then
+        failure_injected="true"
+    fi
+    if remote_file_exists "$alias" "~/.config/systemd/user/wezterm-mux-server.service"; then
+        service_unit_present="true"
+    fi
+
+    cat > "$out_file" <<EOF
+{
+  "host_alias": "$alias",
+  "service_enabled": $service_enabled,
+  "linger_enabled": $linger_enabled,
+  "failure_injected": $failure_injected,
+  "service_unit_present": $service_unit_present
+}
+EOF
 }
 
 capture_remote_snapshot() {
@@ -400,6 +454,13 @@ capture_remote_snapshot() {
     local out_tar="$2"
     ssh "$alias" \
         "cd ~ && tar -cf - .config/systemd/user .ft-e2e-state 2>/dev/null || true" > "$out_tar"
+}
+
+assert_failure_rollback_state() {
+    local alias="$1"
+    if remote_file_exists "$alias" "~/.ft-e2e-state/service-enabled"; then
+        die "Failure injection left wezterm-mux-server enabled on $alias"
+    fi
 }
 
 main() {
@@ -488,8 +549,13 @@ main() {
     if run_ft_setup "apply" "$bad_alias" "$SCENARIO_DIR/setup_remote_failure_injected.log"; then
         die "Failure injection run unexpectedly succeeded"
     fi
+    capture_remote_service_if_present "$bad_alias" "$SCENARIO_DIR/service_unit_after_failure.service"
+    capture_remote_service_status "$bad_alias" "$SCENARIO_DIR/service_status_after_failure.txt"
+    capture_remote_state_report "$bad_alias" "$SCENARIO_DIR/failure_remote_state.json"
+    capture_remote_snapshot "$bad_alias" "$SCENARIO_DIR/failure_remote_filesystem_snapshot.tar"
     grep -qi "rollback" "$SCENARIO_DIR/setup_remote_failure_injected.log" \
         || die "Failure-injection output missing rollback guidance"
+    assert_failure_rollback_state "$bad_alias"
 
     cat > "$SCENARIO_DIR/setup_remote_docker_summary.json" <<EOF
 {
@@ -507,6 +573,12 @@ main() {
     "service_unit_after_apply_2.service"
   ],
   "remote_snapshot": "remote_filesystem_snapshot.tar"
+  ,
+  "failure_service_unit": "service_unit_after_failure.service",
+  "failure_service_status": "service_status_after_failure.txt",
+  "failure_remote_state": "failure_remote_state.json",
+  "failure_remote_snapshot": "failure_remote_filesystem_snapshot.tar",
+  "failure_rollback_validated": true
 }
 EOF
 
