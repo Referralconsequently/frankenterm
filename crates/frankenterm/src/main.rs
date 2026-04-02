@@ -8351,6 +8351,127 @@ fn print_scrollback_restore_summary(
 }
 
 #[cfg(unix)]
+fn restart_snapshot_json(
+    snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
+    include_pane_count: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "session_id": snapshot.session_id,
+        "checkpoint_id": snapshot.checkpoint_id,
+    });
+
+    if include_pane_count && let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "pane_count".to_string(),
+            serde_json::json!(snapshot.pane_count),
+        );
+    }
+
+    payload
+}
+
+#[cfg(unix)]
+fn restart_abort_json(
+    phase: &'static str,
+    error: impl std::fmt::Display,
+    snapshot: Option<&frankenterm_core::snapshot_engine::SnapshotResult>,
+    stopped_mux_pids: Option<&[i32]>,
+    hint: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "ok": false,
+        "phase": phase,
+        "error": error.to_string(),
+    });
+
+    if let Some(snapshot) = snapshot
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert(
+            "snapshot".to_string(),
+            restart_snapshot_json(snapshot, false),
+        );
+    }
+    if let Some(stopped_mux_pids) = stopped_mux_pids
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert(
+            "stopped_mux_pids".to_string(),
+            serde_json::json!(stopped_mux_pids),
+        );
+    }
+    if let Some(hint) = hint
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert("hint".to_string(), serde_json::json!(hint));
+    }
+
+    payload
+}
+
+#[cfg(unix)]
+fn restart_restore_summary_json(
+    summary: &frankenterm_core::session_restore::RestoreSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": summary.session_id,
+        "checkpoint_id": summary.checkpoint_id,
+        "restored_panes": summary.restored_count(),
+        "failed_panes": summary.failed_count(),
+        "elapsed_ms": summary.elapsed_ms,
+    })
+}
+
+#[cfg(unix)]
+fn restart_skip_restore_json(
+    snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
+    layout_only: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "phase": "complete",
+        "restored": false,
+        "skip_restore": true,
+        "layout_only": layout_only,
+        "snapshot": restart_snapshot_json(snapshot, true),
+    })
+}
+
+#[cfg(unix)]
+fn restart_complete_json(
+    snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
+    summary: &frankenterm_core::session_restore::RestoreSummary,
+    layout_only: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "phase": "complete",
+        "restored": true,
+        "layout_only": layout_only,
+        "snapshot": restart_snapshot_json(snapshot, true),
+        "restore": restart_restore_summary_json(summary),
+        "scrollback": restore_scrollback_json(summary, !layout_only),
+    })
+}
+
+#[cfg(unix)]
+fn restart_restore_failed_json(
+    snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
+    layout_only: bool,
+    error: impl std::fmt::Display,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "phase": "restore_failed",
+        "restored": false,
+        "layout_only": layout_only,
+        "error": error.to_string(),
+        "snapshot": restart_snapshot_json(snapshot, false),
+        "hint": "Mux restarted. Run `ft snapshot restore <checkpoint_id>` to retry restore.",
+    })
+}
+
+#[cfg(unix)]
 fn restart_operation_lock_path(db_path: &str) -> std::path::PathBuf {
     let db_path = std::path::Path::new(db_path);
     let parent = db_path
@@ -25257,12 +25378,15 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&serde_json::json!({
-                                    "ok": false,
-                                    "phase": "preflight",
-                                    "error": e.to_string(),
-                                    "hint": "Wait for the other snapshot restore or restart to finish, then retry.",
-                                }))?
+                                serde_json::to_string_pretty(&restart_abort_json(
+                                    "preflight",
+                                    &e,
+                                    None,
+                                    None,
+                                    Some(
+                                        "Wait for the other snapshot restore or restart to finish, then retry.",
+                                    ),
+                                ))?
                             );
                         } else {
                             eprintln!("Restart aborted during preflight: {e}");
@@ -25282,11 +25406,13 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&serde_json::json!({
-                                    "ok": false,
-                                    "phase": "preflight",
-                                    "error": format!("Failed to list panes: {e}"),
-                                }))?
+                                serde_json::to_string_pretty(&restart_abort_json(
+                                    "preflight",
+                                    format!("Failed to list panes: {e}"),
+                                    None,
+                                    None,
+                                    None,
+                                ))?
                             );
                         } else {
                             eprintln!(
@@ -25303,11 +25429,13 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&serde_json::json!({
-                                    "ok": false,
-                                    "phase": "preflight",
-                                    "error": e.to_string(),
-                                }))?
+                                serde_json::to_string_pretty(&restart_abort_json(
+                                    "preflight",
+                                    &e,
+                                    None,
+                                    None,
+                                    None,
+                                ))?
                             );
                         } else {
                             eprintln!("Restart aborted during preflight: {e}");
@@ -25320,11 +25448,13 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     if emit_json {
                         println!(
                             "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "ok": false,
-                                "phase": "preflight",
-                                "error": e.to_string(),
-                            }))?
+                            serde_json::to_string_pretty(&restart_abort_json(
+                                "preflight",
+                                &e,
+                                None,
+                                None,
+                                None,
+                            ))?
                         );
                     } else {
                         eprintln!("Restart aborted during preflight: {e}");
@@ -25341,11 +25471,9 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&serde_json::json!({
-                                    "ok": false,
-                                    "phase": "snapshot",
-                                    "error": format!("{e}"),
-                                }))?
+                                serde_json::to_string_pretty(&restart_abort_json(
+                                    "snapshot", &e, None, None, None,
+                                ))?
                             );
                         } else {
                             eprintln!("Restart aborted: snapshot capture failed: {e}");
@@ -25362,16 +25490,15 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&serde_json::json!({
-                                    "ok": false,
-                                    "phase": "stop",
-                                    "error": format!("{e}"),
-                                    "snapshot": {
-                                        "session_id": snapshot.session_id,
-                                        "checkpoint_id": snapshot.checkpoint_id,
-                                    },
-                                    "hint": "Snapshot captured successfully; restart after fixing mux shutdown issue.",
-                                }))?
+                                serde_json::to_string_pretty(&restart_abort_json(
+                                    "stop",
+                                    &e,
+                                    Some(&snapshot),
+                                    None,
+                                    Some(
+                                        "Snapshot captured successfully; restart after fixing mux shutdown issue.",
+                                    ),
+                                ))?
                             );
                         } else {
                             eprintln!("Restart aborted during mux shutdown: {e}");
@@ -25393,17 +25520,15 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     if emit_json {
                         println!(
                             "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "ok": false,
-                                "phase": "start",
-                                "error": format!("{e}"),
-                                "snapshot": {
-                                    "session_id": snapshot.session_id,
-                                    "checkpoint_id": snapshot.checkpoint_id,
-                                },
-                                "stopped_mux_pids": stopped_pids,
-                                "hint": "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
-                            }))?
+                            serde_json::to_string_pretty(&restart_abort_json(
+                                "start",
+                                &e,
+                                Some(&snapshot),
+                                Some(&stopped_pids),
+                                Some(
+                                    "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
+                                ),
+                            ))?
                         );
                     } else {
                         eprintln!("Restart failed while starting mux server: {e}");
@@ -25419,18 +25544,10 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     if emit_json {
                         println!(
                             "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "ok": true,
-                                "phase": "complete",
-                                "restored": false,
-                                "skip_restore": true,
-                                "layout_only": layout_only,
-                                "snapshot": {
-                                    "session_id": snapshot.session_id,
-                                    "checkpoint_id": snapshot.checkpoint_id,
-                                    "pane_count": snapshot.pane_count,
-                                },
-                            }))?
+                            serde_json::to_string_pretty(&restart_skip_restore_json(
+                                &snapshot,
+                                layout_only,
+                            ))?
                         );
                     } else {
                         println!(
@@ -25455,25 +25572,11 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&serde_json::json!({
-                                    "ok": true,
-                                    "phase": "complete",
-                                    "restored": true,
-                                    "layout_only": layout_only,
-                                    "snapshot": {
-                                        "session_id": snapshot.session_id,
-                                        "checkpoint_id": snapshot.checkpoint_id,
-                                        "pane_count": snapshot.pane_count,
-                                    },
-                                    "restore": {
-                                        "session_id": summary.session_id,
-                                        "checkpoint_id": summary.checkpoint_id,
-                                        "restored_panes": summary.restored_count(),
-                                        "failed_panes": summary.failed_count(),
-                                        "elapsed_ms": summary.elapsed_ms,
-                                    },
-                                    "scrollback": restore_scrollback_json(&summary, !layout_only),
-                                }))?
+                                serde_json::to_string_pretty(&restart_complete_json(
+                                    &snapshot,
+                                    &summary,
+                                    layout_only,
+                                ))?
                             );
                         } else {
                             println!(
@@ -25491,18 +25594,11 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&serde_json::json!({
-                                    "ok": true,
-                                    "phase": "restore_failed",
-                                    "restored": false,
-                                    "layout_only": layout_only,
-                                    "error": e.to_string(),
-                                    "snapshot": {
-                                        "session_id": snapshot.session_id,
-                                        "checkpoint_id": snapshot.checkpoint_id,
-                                    },
-                                    "hint": "Mux restarted. Run `ft snapshot restore <checkpoint_id>` to retry restore.",
-                                }))?
+                                serde_json::to_string_pretty(&restart_restore_failed_json(
+                                    &snapshot,
+                                    layout_only,
+                                    &e,
+                                ))?
                             );
                         } else {
                             eprintln!("Mux restarted, but restore failed: {e}");
@@ -40964,6 +41060,151 @@ mod tests {
     #[test]
     fn restart_preflight_accepts_running_mux_server_and_panes() {
         validate_restart_preflight(&[1234], 2).expect("valid restart preflight should pass");
+    }
+
+    #[cfg(unix)]
+    fn sample_restart_snapshot_result() -> frankenterm_core::snapshot_engine::SnapshotResult {
+        use frankenterm_core::snapshot_engine::{SnapshotResult, SnapshotTrigger};
+
+        SnapshotResult {
+            session_id: "session-restart".to_string(),
+            checkpoint_id: 42,
+            pane_count: 3,
+            total_bytes: 4096,
+            trigger: SnapshotTrigger::Shutdown,
+        }
+    }
+
+    #[cfg(unix)]
+    fn sample_restart_restore_summary() -> frankenterm_core::session_restore::RestoreSummary {
+        use frankenterm_core::restore_layout::RestoreResult;
+        use frankenterm_core::restore_scrollback::{InjectionReport, PaneInjectionStats};
+        use frankenterm_core::session_restore::RestoreSummary;
+        use std::collections::HashMap;
+
+        let mut pane_id_map = HashMap::new();
+        pane_id_map.insert(1, 101);
+        pane_id_map.insert(2, 102);
+
+        RestoreSummary {
+            session_id: "session-restart".to_string(),
+            checkpoint_id: 42,
+            layout_result: RestoreResult {
+                pane_id_map,
+                failed_panes: vec![(3, "split failed".to_string())],
+                windows_created: 1,
+                tabs_created: 1,
+                panes_created: 2,
+            },
+            pane_states: Vec::new(),
+            scrollback_result: Some(InjectionReport {
+                successes: vec![PaneInjectionStats {
+                    old_pane_id: 1,
+                    new_pane_id: 101,
+                    lines_injected: 12,
+                    bytes_written: 256,
+                    chunks_sent: 2,
+                }],
+                failures: vec![(2, "write failed".to_string())],
+                skipped: vec![3],
+            }),
+            scrollback_error: None,
+            elapsed_ms: 2500,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_stop_failure_json_preserves_snapshot_and_hint() {
+        let snapshot = sample_restart_snapshot_result();
+        let payload = restart_abort_json(
+            "stop",
+            "mux shutdown timed out",
+            Some(&snapshot),
+            None,
+            Some("Snapshot captured successfully; restart after fixing mux shutdown issue."),
+        );
+
+        assert_eq!(payload["ok"].as_bool(), Some(false));
+        assert_eq!(payload["phase"].as_str(), Some("stop"));
+        assert_eq!(payload["error"].as_str(), Some("mux shutdown timed out"));
+        assert_eq!(
+            payload["snapshot"]["session_id"].as_str(),
+            Some("session-restart")
+        );
+        assert_eq!(payload["snapshot"]["checkpoint_id"].as_i64(), Some(42));
+        assert!(payload.get("stopped_mux_pids").is_none());
+        assert_eq!(
+            payload["hint"].as_str(),
+            Some("Snapshot captured successfully; restart after fixing mux shutdown issue."),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_start_failure_json_reports_stopped_mux_pids() {
+        let snapshot = sample_restart_snapshot_result();
+        let payload = restart_abort_json(
+            "start",
+            "mux failed to daemonize",
+            Some(&snapshot),
+            Some(&[111, 222]),
+            Some(
+                "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
+            ),
+        );
+
+        assert_eq!(payload["ok"].as_bool(), Some(false));
+        assert_eq!(payload["phase"].as_str(), Some("start"));
+        assert_eq!(payload["snapshot"]["checkpoint_id"].as_i64(), Some(42));
+        assert_eq!(
+            payload["stopped_mux_pids"].as_array().map(Vec::len),
+            Some(2),
+        );
+        assert_eq!(payload["stopped_mux_pids"][0].as_i64(), Some(111));
+        assert_eq!(payload["stopped_mux_pids"][1].as_i64(), Some(222));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_complete_json_includes_restore_and_scrollback_metrics() {
+        let snapshot = sample_restart_snapshot_result();
+        let summary = sample_restart_restore_summary();
+        let payload = restart_complete_json(&snapshot, &summary, false);
+
+        assert_eq!(payload["ok"].as_bool(), Some(true));
+        assert_eq!(payload["phase"].as_str(), Some("complete"));
+        assert_eq!(payload["restored"].as_bool(), Some(true));
+        assert_eq!(payload["snapshot"]["pane_count"].as_u64(), Some(3));
+        assert_eq!(payload["restore"]["restored_panes"].as_u64(), Some(2));
+        assert_eq!(payload["restore"]["failed_panes"].as_u64(), Some(1));
+        assert_eq!(payload["scrollback"]["enabled"].as_bool(), Some(true));
+        assert_eq!(payload["scrollback"]["restored_panes"].as_u64(), Some(1));
+        assert_eq!(payload["scrollback"]["failed_panes"].as_u64(), Some(1));
+        assert_eq!(payload["scrollback"]["skipped_panes"].as_u64(), Some(1));
+        assert_eq!(payload["scrollback"]["bytes_written"].as_u64(), Some(256));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_restore_failed_json_preserves_retry_metadata() {
+        let snapshot = sample_restart_snapshot_result();
+        let payload = restart_restore_failed_json(&snapshot, true, "restore planner mismatch");
+
+        assert_eq!(payload["ok"].as_bool(), Some(true));
+        assert_eq!(payload["phase"].as_str(), Some("restore_failed"));
+        assert_eq!(payload["restored"].as_bool(), Some(false));
+        assert_eq!(payload["layout_only"].as_bool(), Some(true));
+        assert_eq!(payload["error"].as_str(), Some("restore planner mismatch"));
+        assert_eq!(
+            payload["snapshot"]["session_id"].as_str(),
+            Some("session-restart")
+        );
+        assert_eq!(payload["snapshot"]["checkpoint_id"].as_i64(), Some(42));
+        assert_eq!(
+            payload["hint"].as_str(),
+            Some("Mux restarted. Run `ft snapshot restore <checkpoint_id>` to retry restore."),
+        );
     }
 
     #[test]

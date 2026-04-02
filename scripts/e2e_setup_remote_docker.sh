@@ -143,9 +143,9 @@ fi
 echo "wezterm stub"
 EOF
 
-    cat > "$stubs_dir/wezterm-mux-server" <<'EOF'
+    cat > "$stubs_dir/frankenterm-mux-server" <<'EOF'
 #!/usr/bin/env bash
-echo "wezterm-mux-server stub"
+echo "frankenterm-mux-server stub"
 EOF
 
     cat > "$stubs_dir/sudo" <<'EOF'
@@ -171,10 +171,10 @@ case "$cmd" in
         exit 0
         ;;
     enable)
-        if [[ "${2:-}" == "--now" && "${3:-}" == "wezterm-mux-server" ]]; then
+        if [[ "${2:-}" == "--now" && "${3:-}" == "frankenterm-mux-server" ]]; then
             if [[ -f "$state_dir/fail-enable" ]]; then
                 echo "simulated systemctl enable failure" >&2
-                echo "rollback: systemctl --user disable --now wezterm-mux-server" >&2
+                echo "rollback: systemctl --user disable --now frankenterm-mux-server" >&2
                 exit 42
             fi
             touch "$state_dir/service-enabled"
@@ -182,13 +182,13 @@ case "$cmd" in
         fi
         ;;
     disable)
-        if [[ "${2:-}" == "--now" && "${3:-}" == "wezterm-mux-server" ]]; then
+        if [[ "${2:-}" == "--now" && "${3:-}" == "frankenterm-mux-server" ]]; then
             rm -f "$state_dir/service-enabled"
             exit 0
         fi
         ;;
     is-active)
-        if [[ "${2:-}" == "wezterm-mux-server" ]]; then
+        if [[ "${2:-}" == "frankenterm-mux-server" ]]; then
             if [[ -f "$state_dir/service-enabled" ]]; then
                 echo "active"
                 exit 0
@@ -198,12 +198,12 @@ case "$cmd" in
         fi
         ;;
     status)
-        if [[ "${2:-}" == "wezterm-mux-server" ]]; then
+        if [[ "${2:-}" == "frankenterm-mux-server" ]]; then
             if [[ -f "$state_dir/service-enabled" ]]; then
-                echo "wezterm-mux-server.service - active (stub)"
+                echo "frankenterm-mux-server.service - active (stub)"
                 exit 0
             fi
-            echo "wezterm-mux-server.service - inactive (stub)"
+            echo "frankenterm-mux-server.service - inactive (stub)"
             exit 3
         fi
         ;;
@@ -387,7 +387,7 @@ run_ft_setup() {
 capture_remote_service() {
     local alias="$1"
     local out_file="$2"
-    ssh "$alias" "cat ~/.config/systemd/user/wezterm-mux-server.service" > "$out_file"
+    ssh "$alias" "cat ~/.config/systemd/user/frankenterm-mux-server.service" > "$out_file"
 }
 
 remote_file_exists() {
@@ -399,7 +399,7 @@ remote_file_exists() {
 capture_remote_service_if_present() {
     local alias="$1"
     local out_file="$2"
-    if remote_file_exists "$alias" "~/.config/systemd/user/wezterm-mux-server.service"; then
+    if remote_file_exists "$alias" "~/.config/systemd/user/frankenterm-mux-server.service"; then
         capture_remote_service "$alias" "$out_file"
     else
         printf '# service unit absent on remote host %s\n' "$alias" > "$out_file"
@@ -409,7 +409,7 @@ capture_remote_service_if_present() {
 capture_remote_service_status() {
     local alias="$1"
     local out_file="$2"
-    ssh "$alias" "systemctl --user status wezterm-mux-server" > "$out_file" 2>&1 || true
+    ssh "$alias" "systemctl --user status frankenterm-mux-server" > "$out_file" 2>&1 || true
 }
 
 assert_remote_state() {
@@ -434,7 +434,7 @@ capture_remote_state_report() {
     if remote_file_exists "$alias" "~/.ft-e2e-state/fail-enable"; then
         failure_injected="true"
     fi
-    if remote_file_exists "$alias" "~/.config/systemd/user/wezterm-mux-server.service"; then
+    if remote_file_exists "$alias" "~/.config/systemd/user/frankenterm-mux-server.service"; then
         service_unit_present="true"
     fi
 
@@ -459,7 +459,7 @@ capture_remote_snapshot() {
 assert_failure_rollback_state() {
     local alias="$1"
     if remote_file_exists "$alias" "~/.ft-e2e-state/service-enabled"; then
-        die "Failure injection left wezterm-mux-server enabled on $alias"
+        die "Failure injection left frankenterm-mux-server enabled on $alias"
     fi
 }
 
