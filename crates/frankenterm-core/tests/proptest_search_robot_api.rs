@@ -19,7 +19,6 @@ fn arb_scoring_breakdown() -> impl Strategy<Value = SearchScoringBreakdown> {
         proptest::option::of(0.0f64..1.0),              // semantic_similarity
         proptest::option::of(prop_oneof![
             Just("hash".to_string()),
-            Just("model2vec".to_string()),
             Just("fastembed".to_string()),
         ]), // embedder_tier
         proptest::option::of(1usize..100),              // rrf_rank

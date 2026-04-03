@@ -19,8 +19,14 @@
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+use crate::events::UserVarError;
+use crate::ipc::{IpcClient, IpcResponse};
+use crate::robot_types::{RobotError, RobotResponse};
 
 // =============================================================================
 // Endpoint specifications
@@ -469,6 +475,437 @@ fn map_type_to_language(ft: &FieldType, lang: SdkLanguage) -> String {
     }
 }
 
+/// Canonical Rust transport backend for generated robot SDK clients.
+pub struct RustSdkTransport {
+    ipc: IpcClient,
+}
+
+impl RustSdkTransport {
+    const SUPPORTED_COMMANDS: &[&str] = &["get-text", "send-text", "state", "search"];
+
+    /// Build a transport backed by watcher IPC RPC.
+    #[must_use]
+    pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        Self {
+            ipc: IpcClient::new(socket_path),
+        }
+    }
+
+    /// Build a transport with an explicit IPC auth token.
+    #[must_use]
+    pub fn with_token(socket_path: impl AsRef<Path>, token: impl Into<String>) -> Self {
+        Self {
+            ipc: IpcClient::with_token(socket_path, token),
+        }
+    }
+
+    /// Update the IPC auth token (use `None` to clear).
+    pub fn set_token(&mut self, token: Option<String>) {
+        self.ipc.set_token(token);
+    }
+
+    /// Whether the configured watcher IPC socket currently exists.
+    #[must_use]
+    pub fn socket_exists(&self) -> bool {
+        self.ipc.socket_exists()
+    }
+
+    /// Supported contract commands for the generated Rust SDK.
+    #[must_use]
+    pub fn supported_commands() -> &'static [&'static str] {
+        Self::SUPPORTED_COMMANDS
+    }
+
+    /// Whether this transport supports the supplied contract command.
+    #[must_use]
+    pub fn supports_command(command: &str) -> bool {
+        Self::SUPPORTED_COMMANDS.contains(&command)
+    }
+
+    /// Execute a contract command and decode the robot envelope into `T`.
+    ///
+    /// # Errors
+    /// Returns an explicit transport, payload-shape, or robot-mode error.
+    pub async fn call<T: DeserializeOwned>(
+        &self,
+        command: &str,
+        payload: serde_json::Value,
+    ) -> Result<T, RustSdkTransportError> {
+        let args = build_rust_sdk_ipc_args(command, &payload)?;
+        let response = self
+            .ipc
+            .call_rpc(args, None)
+            .await
+            .map_err(RustSdkTransportError::Transport)?;
+        decode_rust_sdk_response(response)
+    }
+
+    /// Execute a contract command and return the untyped JSON payload.
+    ///
+    /// # Errors
+    /// Returns an explicit transport, payload-shape, or robot-mode error.
+    pub async fn call_value(
+        &self,
+        command: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, RustSdkTransportError> {
+        self.call(command, payload).await
+    }
+}
+
+/// Errors surfaced by the Rust SDK IPC transport.
+#[derive(Debug)]
+pub enum RustSdkTransportError {
+    UnsupportedCommand {
+        command: String,
+    },
+    InvalidPayload {
+        command: String,
+        field: &'static str,
+        message: String,
+    },
+    Transport(UserVarError),
+    ResponseEncode(serde_json::Error),
+    ResponseDecode(serde_json::Error),
+    Robot(RobotError),
+}
+
+impl std::fmt::Display for RustSdkTransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedCommand { command } => write!(
+                f,
+                "unsupported robot SDK command '{command}' (supported: {})",
+                RustSdkTransport::supported_commands().join(", ")
+            ),
+            Self::InvalidPayload {
+                command,
+                field,
+                message,
+            } => {
+                write!(
+                    f,
+                    "invalid payload for robot SDK command '{command}' field '{field}': {message}"
+                )
+            }
+            Self::Transport(err) => write!(f, "robot SDK transport error: {err}"),
+            Self::ResponseEncode(err) => write!(f, "failed to encode IPC response: {err}"),
+            Self::ResponseDecode(err) => {
+                write!(f, "failed to decode robot response envelope: {err}")
+            }
+            Self::Robot(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for RustSdkTransportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Transport(err) => Some(err),
+            Self::ResponseEncode(err) | Self::ResponseDecode(err) => Some(err),
+            Self::Robot(err) => Some(err),
+            Self::UnsupportedCommand { .. } | Self::InvalidPayload { .. } => None,
+        }
+    }
+}
+
+fn decode_rust_sdk_response<T: DeserializeOwned>(
+    response: IpcResponse,
+) -> Result<T, RustSdkTransportError> {
+    let raw = serde_json::to_vec(&response).map_err(RustSdkTransportError::ResponseEncode)?;
+    let envelope: RobotResponse<T> =
+        serde_json::from_slice(&raw).map_err(RustSdkTransportError::ResponseDecode)?;
+    envelope.into_result().map_err(RustSdkTransportError::Robot)
+}
+
+fn build_rust_sdk_ipc_args(
+    command: &str,
+    payload: &serde_json::Value,
+) -> Result<Vec<String>, RustSdkTransportError> {
+    match command {
+        "get-text" => build_get_text_ipc_args(command, payload),
+        "send-text" => build_send_text_ipc_args(command, payload),
+        "state" => build_state_ipc_args(command, payload),
+        "search" => build_search_ipc_args(command, payload),
+        _ => Err(RustSdkTransportError::UnsupportedCommand {
+            command: command.to_string(),
+        }),
+    }
+}
+
+fn build_get_text_ipc_args(
+    command: &str,
+    payload: &serde_json::Value,
+) -> Result<Vec<String>, RustSdkTransportError> {
+    let mut args = vec![
+        "get-text".to_string(),
+        required_nonnegative_integer(payload, command, "pane_id")?,
+    ];
+
+    if let Some(tail_lines) = optional_nonnegative_integer(payload, command, "tail_lines")? {
+        args.push("--tail".to_string());
+        args.push(tail_lines);
+    }
+    if optional_bool(payload, command, "escapes")?.unwrap_or(false) {
+        args.push("--escapes".to_string());
+    }
+
+    Ok(args)
+}
+
+fn build_send_text_ipc_args(
+    command: &str,
+    payload: &serde_json::Value,
+) -> Result<Vec<String>, RustSdkTransportError> {
+    let mut args = vec![
+        "send".to_string(),
+        required_nonnegative_integer(payload, command, "pane_id")?,
+        required_string(payload, command, "text")?,
+    ];
+
+    if optional_bool(payload, command, "dry_run")?.unwrap_or(false) {
+        args.push("--dry-run".to_string());
+    }
+    if let Some(approval_code) = optional_string(payload, command, "approval_code")? {
+        args.push("--approval-code".to_string());
+        args.push(approval_code);
+    }
+
+    let wait_for = optional_string(payload, command, "wait_for")?;
+    let wait_for_regex = optional_bool(payload, command, "wait_for_regex")?.unwrap_or(false);
+    let timeout_secs = optional_nonnegative_integer(payload, command, "timeout_secs")?;
+
+    if wait_for.is_none() && wait_for_regex {
+        return Err(RustSdkTransportError::InvalidPayload {
+            command: command.to_string(),
+            field: "wait_for_regex",
+            message: "wait_for_regex requires wait_for".to_string(),
+        });
+    }
+    if wait_for.is_none() && timeout_secs.is_some() {
+        return Err(RustSdkTransportError::InvalidPayload {
+            command: command.to_string(),
+            field: "timeout_secs",
+            message: "timeout_secs requires wait_for".to_string(),
+        });
+    }
+
+    if let Some(pattern) = wait_for {
+        args.push("--wait-for".to_string());
+        args.push(pattern);
+        if let Some(timeout_secs) = timeout_secs {
+            args.push("--timeout-secs".to_string());
+            args.push(timeout_secs);
+        }
+        if wait_for_regex {
+            args.push("--wait-for-regex".to_string());
+        }
+    }
+
+    Ok(args)
+}
+
+fn build_state_ipc_args(
+    command: &str,
+    payload: &serde_json::Value,
+) -> Result<Vec<String>, RustSdkTransportError> {
+    let mut args = vec!["state".to_string()];
+    let include_text = optional_bool(payload, command, "include_text")?.unwrap_or(false);
+    let tail = optional_nonnegative_integer(payload, command, "tail")?;
+    let escapes = optional_bool(payload, command, "escapes")?.unwrap_or(false);
+    let wants_text = include_text || tail.is_some() || escapes;
+
+    if wants_text {
+        args.push("--include-text".to_string());
+        if let Some(tail) = tail {
+            args.push("--tail".to_string());
+            args.push(tail);
+        }
+        if escapes {
+            args.push("--escapes".to_string());
+        }
+    }
+
+    Ok(args)
+}
+
+fn build_search_ipc_args(
+    command: &str,
+    payload: &serde_json::Value,
+) -> Result<Vec<String>, RustSdkTransportError> {
+    let mut args = vec![
+        "search".to_string(),
+        required_string(payload, command, "query")?,
+    ];
+
+    if let Some(limit) = optional_nonnegative_integer(payload, command, "limit")? {
+        args.push("--limit".to_string());
+        args.push(limit);
+    }
+    if let Some(pane) = optional_nonnegative_integer(payload, command, "pane")? {
+        args.push("--pane".to_string());
+        args.push(pane);
+    }
+    if let Some(since) = optional_integer(payload, command, "since")? {
+        args.push("--since".to_string());
+        args.push(since);
+    }
+    if let Some(until) = optional_integer(payload, command, "until")? {
+        args.push("--until".to_string());
+        args.push(until);
+    }
+    if let Some(snippets) = optional_bool(payload, command, "snippets")? {
+        args.push(if snippets {
+            "--snippets".to_string()
+        } else {
+            "--snippets=false".to_string()
+        });
+    }
+    if let Some(mode) = optional_string(payload, command, "mode")? {
+        match mode.as_str() {
+            "lexical" | "semantic" | "hybrid" => {
+                args.push("--mode".to_string());
+                args.push(mode);
+            }
+            _ => {
+                return Err(RustSdkTransportError::InvalidPayload {
+                    command: command.to_string(),
+                    field: "mode",
+                    message: "expected one of: lexical, semantic, hybrid".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(args)
+}
+
+fn payload_object<'a>(
+    payload: &'a serde_json::Value,
+    command: &str,
+) -> Result<&'a serde_json::Map<String, serde_json::Value>, RustSdkTransportError> {
+    payload
+        .as_object()
+        .ok_or_else(|| RustSdkTransportError::InvalidPayload {
+            command: command.to_string(),
+            field: "<payload>",
+            message: "expected a JSON object".to_string(),
+        })
+}
+
+fn optional_value<'a>(
+    payload: &'a serde_json::Value,
+    command: &str,
+    field: &'static str,
+) -> Result<Option<&'a serde_json::Value>, RustSdkTransportError> {
+    Ok(match payload_object(payload, command)?.get(field) {
+        Some(serde_json::Value::Null) | None => None,
+        Some(value) => Some(value),
+    })
+}
+
+fn required_string(
+    payload: &serde_json::Value,
+    command: &str,
+    field: &'static str,
+) -> Result<String, RustSdkTransportError> {
+    optional_string(payload, command, field)?.ok_or_else(|| RustSdkTransportError::InvalidPayload {
+        command: command.to_string(),
+        field,
+        message: "missing required string".to_string(),
+    })
+}
+
+fn optional_string(
+    payload: &serde_json::Value,
+    command: &str,
+    field: &'static str,
+) -> Result<Option<String>, RustSdkTransportError> {
+    optional_value(payload, command, field)?
+        .map(|value| {
+            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                RustSdkTransportError::InvalidPayload {
+                    command: command.to_string(),
+                    field,
+                    message: "expected a string".to_string(),
+                }
+            })
+        })
+        .transpose()
+}
+
+fn optional_bool(
+    payload: &serde_json::Value,
+    command: &str,
+    field: &'static str,
+) -> Result<Option<bool>, RustSdkTransportError> {
+    optional_value(payload, command, field)?
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| RustSdkTransportError::InvalidPayload {
+                    command: command.to_string(),
+                    field,
+                    message: "expected a boolean".to_string(),
+                })
+        })
+        .transpose()
+}
+
+fn optional_integer(
+    payload: &serde_json::Value,
+    command: &str,
+    field: &'static str,
+) -> Result<Option<String>, RustSdkTransportError> {
+    optional_value(payload, command, field)?
+        .map(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+                .map(|number| number.to_string())
+                .ok_or_else(|| RustSdkTransportError::InvalidPayload {
+                    command: command.to_string(),
+                    field,
+                    message: "expected an integer".to_string(),
+                })
+        })
+        .transpose()
+}
+
+fn optional_nonnegative_integer(
+    payload: &serde_json::Value,
+    command: &str,
+    field: &'static str,
+) -> Result<Option<String>, RustSdkTransportError> {
+    optional_integer(payload, command, field)?
+        .map(|value| {
+            if value.starts_with('-') {
+                Err(RustSdkTransportError::InvalidPayload {
+                    command: command.to_string(),
+                    field,
+                    message: "expected a non-negative integer".to_string(),
+                })
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()
+}
+
+fn required_nonnegative_integer(
+    payload: &serde_json::Value,
+    command: &str,
+    field: &'static str,
+) -> Result<String, RustSdkTransportError> {
+    optional_nonnegative_integer(payload, command, field)?.ok_or_else(|| {
+        RustSdkTransportError::InvalidPayload {
+            command: command.to_string(),
+            field,
+            message: "missing required integer".to_string(),
+        }
+    })
+}
+
 fn render_python_client(surface: &SdkSurface) -> String {
     let mut out = String::from("from __future__ import annotations\n\nfrom typing import Any\n\n");
 
@@ -523,19 +960,21 @@ fn render_typescript_client(surface: &SdkSurface) -> String {
 }
 
 fn render_rust_client(surface: &SdkSurface) -> String {
-    let mut out = String::from("use serde_json::json;\n\n");
+    let mut out = String::from(
+        "use frankenterm_core::robot_sdk_contracts::{RustSdkTransport, RustSdkTransportError};\nuse serde_json::json;\n\n",
+    );
 
     for return_type in unique_return_types(surface) {
         out.push_str(&format!("pub type {return_type} = serde_json::Value;\n"));
     }
 
     out.push_str(
-        "\npub struct FrankentermClient;\n\nimpl FrankentermClient {\n    async fn call(&self, _command: &str, _payload: serde_json::Value) -> serde_json::Value {\n        unimplemented!(\"transport not wired\")\n    }\n",
+        "\npub struct FrankentermClient {\n    transport: RustSdkTransport,\n}\n\nimpl FrankentermClient {\n    pub fn new(socket_path: impl AsRef<std::path::Path>) -> Self {\n        Self {\n            transport: RustSdkTransport::new(socket_path),\n        }\n    }\n\n    pub fn with_token(\n        socket_path: impl AsRef<std::path::Path>,\n        token: impl Into<String>,\n    ) -> Self {\n        Self {\n            transport: RustSdkTransport::with_token(socket_path, token),\n        }\n    }\n\n    pub fn socket_exists(&self) -> bool {\n        self.transport.socket_exists()\n    }\n\n    pub fn supported_commands() -> &'static [&'static str] {\n        RustSdkTransport::supported_commands()\n    }\n\n    pub fn supports_command(command: &str) -> bool {\n        RustSdkTransport::supports_command(command)\n    }\n\n    pub async fn call(\n        &self,\n        command: &str,\n        payload: serde_json::Value,\n    ) -> Result<serde_json::Value, RustSdkTransportError> {\n        self.transport.call_value(command, payload).await\n    }\n",
     );
 
     for method in &surface.methods {
         out.push_str(&format!(
-            "\n    pub async fn {}(&self{}) -> {} {{\n        self.call(\"{}\", {}).await\n    }}\n",
+            "\n    pub async fn {}(&self{}) -> Result<{}, RustSdkTransportError> {{\n        self.call(\"{}\", {}).await\n    }}\n",
             method.method_name,
             render_rust_params(&method.params),
             method.return_type,
@@ -1241,6 +1680,11 @@ pub fn core_endpoint_specs() -> Vec<EndpointSpec> {
         FieldType::Integer,
         "Lines from end",
     ));
+    get_text.add_request_field(FieldSpec::optional(
+        "escapes",
+        FieldType::Boolean,
+        "Include ANSI escape sequences",
+    ));
     get_text.add_response_field(FieldSpec::required(
         "pane_id",
         FieldType::Integer,
@@ -1257,9 +1701,19 @@ pub fn core_endpoint_specs() -> Vec<EndpointSpec> {
         "Lines returned",
     ));
     get_text.add_response_field(FieldSpec::required(
+        "escapes_included",
+        FieldType::Boolean,
+        "Whether ANSI escape sequences were included",
+    ));
+    get_text.add_response_field(FieldSpec::required(
         "truncated",
         FieldType::Boolean,
         "Whether truncated",
+    ));
+    get_text.add_response_field(FieldSpec::optional(
+        "truncation_info",
+        FieldType::Object(Vec::new()),
+        "Truncation metadata when output exceeds limits",
     ));
     specs.push(get_text);
 
@@ -1276,6 +1730,31 @@ pub fn core_endpoint_specs() -> Vec<EndpointSpec> {
         FieldType::String,
         "Text to send",
     ));
+    send_text.add_request_field(FieldSpec::optional(
+        "dry_run",
+        FieldType::Boolean,
+        "Preview without executing",
+    ));
+    send_text.add_request_field(FieldSpec::optional(
+        "approval_code",
+        FieldType::String,
+        "Inline approval code for gated sends",
+    ));
+    send_text.add_request_field(FieldSpec::optional(
+        "wait_for",
+        FieldType::String,
+        "Verification pattern to wait for after sending",
+    ));
+    send_text.add_request_field(FieldSpec::optional(
+        "timeout_secs",
+        FieldType::Integer,
+        "Wait-for timeout in seconds",
+    ));
+    send_text.add_request_field(FieldSpec::optional(
+        "wait_for_regex",
+        FieldType::Boolean,
+        "Treat wait_for as a regex",
+    ));
     send_text.add_response_field(FieldSpec::required(
         "pane_id",
         FieldType::Integer,
@@ -1286,19 +1765,54 @@ pub fn core_endpoint_specs() -> Vec<EndpointSpec> {
         FieldType::Json,
         "Injection details",
     ));
+    send_text.add_response_field(FieldSpec::optional(
+        "wait_for",
+        FieldType::Object(Vec::new()),
+        "Verification result when wait_for is supplied",
+    ));
+    send_text.add_response_field(FieldSpec::optional(
+        "verification_error",
+        FieldType::String,
+        "Wait-for verification failure description",
+    ));
     specs.push(send_text);
 
     let mut state =
         EndpointSpec::new("state", HttpMethod::Get, "List pane states").ntm_compatible();
+    state.add_request_field(FieldSpec::optional(
+        "include_text",
+        FieldType::Boolean,
+        "Include per-pane text payloads in the response",
+    ));
+    state.add_request_field(FieldSpec::optional(
+        "tail",
+        FieldType::Integer,
+        "Tail lines to include when include_text is enabled",
+    ));
+    state.add_request_field(FieldSpec::optional(
+        "escapes",
+        FieldType::Boolean,
+        "Include ANSI escape sequences when include_text is enabled",
+    ));
     state.add_response_field(FieldSpec::required(
         "panes",
         FieldType::Array(Box::new(FieldType::Object(Vec::new()))),
         "Pane state list",
     ));
-    state.add_response_field(FieldSpec::required(
+    state.add_response_field(FieldSpec::optional(
         "tail_lines",
         FieldType::Integer,
-        "Tail lines",
+        "Tail lines included when pane text is attached",
+    ));
+    state.add_response_field(FieldSpec::optional(
+        "escapes_included",
+        FieldType::Boolean,
+        "Whether ANSI escape sequences were included for pane text",
+    ));
+    state.add_response_field(FieldSpec::optional(
+        "pane_text",
+        FieldType::Object(Vec::new()),
+        "Per-pane text results when include_text is enabled",
     ));
     specs.push(state);
 
@@ -1312,6 +1826,31 @@ pub fn core_endpoint_specs() -> Vec<EndpointSpec> {
         "limit",
         FieldType::Integer,
         "Max results",
+    ));
+    search.add_request_field(FieldSpec::optional(
+        "pane",
+        FieldType::Integer,
+        "Restrict search to a single pane",
+    ));
+    search.add_request_field(FieldSpec::optional(
+        "since",
+        FieldType::Integer,
+        "Lower timestamp bound (epoch ms)",
+    ));
+    search.add_request_field(FieldSpec::optional(
+        "until",
+        FieldType::Integer,
+        "Upper timestamp bound (epoch ms)",
+    ));
+    search.add_request_field(FieldSpec::optional(
+        "snippets",
+        FieldType::Boolean,
+        "Whether highlighted snippets should be included",
+    ));
+    search.add_request_field(FieldSpec::optional(
+        "mode",
+        FieldType::String,
+        "Search mode: lexical, semantic, or hybrid",
     ));
     search.add_response_field(FieldSpec::required(
         "query",
@@ -1332,6 +1871,31 @@ pub fn core_endpoint_specs() -> Vec<EndpointSpec> {
         "limit",
         FieldType::Integer,
         "Applied limit",
+    ));
+    search.add_response_field(FieldSpec::optional(
+        "pane_filter",
+        FieldType::Integer,
+        "Applied pane filter",
+    ));
+    search.add_response_field(FieldSpec::optional(
+        "since_filter",
+        FieldType::Integer,
+        "Applied lower timestamp filter",
+    ));
+    search.add_response_field(FieldSpec::optional(
+        "until_filter",
+        FieldType::Integer,
+        "Applied upper timestamp filter",
+    ));
+    search.add_response_field(FieldSpec::optional(
+        "mode",
+        FieldType::String,
+        "Search mode used for execution",
+    ));
+    search.add_response_field(FieldSpec::optional(
+        "metrics",
+        FieldType::Json,
+        "Optional search pipeline metrics",
     ));
     specs.push(search);
 
@@ -1631,6 +2195,108 @@ mod tests {
         assert!(python.contains("\"pane_id\": pane_id"));
         assert!(typescript.contains("\"pane_id\": paneId"));
         assert!(rust.contains("\"pane_id\": pane_id"));
+    }
+
+    #[test]
+    fn rust_sdk_transport_supported_commands_are_explicit() {
+        assert_eq!(
+            RustSdkTransport::supported_commands(),
+            &["get-text", "send-text", "state", "search"]
+        );
+        assert!(RustSdkTransport::supports_command("send-text"));
+        assert!(!RustSdkTransport::supports_command("events"));
+    }
+
+    #[test]
+    fn rust_sdk_transport_maps_send_text_to_robot_send_args() {
+        let args = build_rust_sdk_ipc_args(
+            "send-text",
+            &serde_json::json!({
+                "pane_id": 7,
+                "text": "echo hello",
+                "dry_run": true,
+                "approval_code": "abc123",
+                "wait_for": "Done",
+                "timeout_secs": 45,
+                "wait_for_regex": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            args,
+            vec![
+                "send",
+                "7",
+                "echo hello",
+                "--dry-run",
+                "--approval-code",
+                "abc123",
+                "--wait-for",
+                "Done",
+                "--timeout-secs",
+                "45",
+                "--wait-for-regex",
+            ]
+        );
+    }
+
+    #[test]
+    fn rust_sdk_transport_rejects_unsupported_command() {
+        let err = build_rust_sdk_ipc_args("events", &serde_json::json!({})).unwrap_err();
+        assert!(matches!(
+            err,
+            RustSdkTransportError::UnsupportedCommand { command } if command == "events"
+        ));
+    }
+
+    #[test]
+    fn rust_sdk_transport_rejects_wait_for_flags_without_wait_for_pattern() {
+        let err = build_rust_sdk_ipc_args(
+            "send-text",
+            &serde_json::json!({
+                "pane_id": 7,
+                "text": "echo hello",
+                "wait_for_regex": true
+            }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            RustSdkTransportError::InvalidPayload { field, .. } if field == "wait_for_regex"
+        ));
+    }
+
+    #[test]
+    fn rust_sdk_transport_decodes_robot_errors_from_ipc_response() {
+        let err = decode_rust_sdk_response::<serde_json::Value>(IpcResponse::error_with_code(
+            "robot.policy_denied",
+            "blocked by policy",
+            Some("use an approval code".to_string()),
+        ))
+        .unwrap_err();
+
+        match err {
+            RustSdkTransportError::Robot(robot_err) => {
+                assert_eq!(robot_err.code.as_deref(), Some("robot.policy_denied"));
+                assert_eq!(robot_err.message, "blocked by policy");
+                assert_eq!(robot_err.hint.as_deref(), Some("use an approval code"));
+            }
+            other => panic!("expected robot error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rust_sdk_render_uses_real_transport_backend() {
+        let mut sdk = SdkSurface::new(SdkLanguage::Rust, "frankenterm");
+        sdk.generate_from_specs(&core_endpoint_specs());
+        let source = sdk.render_client_source();
+
+        assert!(source.contains("RustSdkTransport"));
+        assert!(source.contains("supported_commands"));
+        assert!(!source.contains("transport not wired"));
+        assert!(!source.contains("unimplemented!("));
     }
 
     // ---- E2E ----

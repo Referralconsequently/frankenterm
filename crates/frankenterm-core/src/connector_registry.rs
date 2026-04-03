@@ -11,6 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::connector_host_runtime::ConnectorCapability;
+use crate::merkle_tree::MerkleProof;
 
 // =============================================================================
 // Error types
@@ -60,6 +61,8 @@ pub enum ConnectorRegistryError {
 
 /// Schema version for the manifest format.
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+/// Schema version for transparency proof tokens.
+pub const TRANSPARENCY_TOKEN_SCHEMA_VERSION: u32 = 1;
 
 /// A connector package manifest describing metadata, capabilities, and provenance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +93,24 @@ pub struct ConnectorManifest {
     pub created_at_ms: u64,
     /// Arbitrary metadata.
     pub metadata: BTreeMap<String, String>,
+}
+
+/// Transparency proof token proving a manifest digest was included in a trusted
+/// Merkle-tree checkpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransparencyProofToken {
+    /// Schema version for forward compatibility.
+    pub schema_version: u32,
+    /// Package identifier covered by the proof.
+    pub package_id: String,
+    /// Package version covered by the proof.
+    pub version: String,
+    /// Manifest digest bound into the transparency log leaf.
+    pub sha256_digest: String,
+    /// Position in the transparency log/checkpoint.
+    pub log_index: u64,
+    /// Inclusion proof for the canonical connector leaf.
+    pub proof: MerkleProof,
 }
 
 impl ConnectorManifest {
@@ -192,6 +213,8 @@ pub struct TrustPolicy {
     pub max_allowed_capabilities: Vec<ConnectorCapability>,
     /// Explicitly trusted publisher identities.
     pub trusted_publishers: Vec<String>,
+    /// Operator-managed trusted transparency checkpoints (Merkle root hashes).
+    pub trusted_transparency_roots: Vec<String>,
     /// Explicitly blocked package IDs.
     pub blocked_packages: Vec<String>,
 }
@@ -208,6 +231,7 @@ impl Default for TrustPolicy {
                 ConnectorCapability::StreamEvents,
             ],
             trusted_publishers: Vec::new(),
+            trusted_transparency_roots: Vec::new(),
             blocked_packages: Vec::new(),
         }
     }
@@ -280,6 +304,13 @@ impl TrustPolicy {
         if self.require_transparency_proof && manifest.transparency_token.is_none() {
             return Err(ConnectorRegistryError::TrustPolicyDenied {
                 reason: "transparency proof required but not present".to_string(),
+            });
+        }
+
+        if self.require_transparency_proof && self.trusted_transparency_roots.is_empty() {
+            return Err(ConnectorRegistryError::TrustPolicyDenied {
+                reason: "transparency proof required but no trusted transparency roots configured"
+                    .to_string(),
             });
         }
 
@@ -379,7 +410,7 @@ pub fn compute_digest(payload: &[u8]) -> String {
 }
 
 // =============================================================================
-// Transparency log stub
+// Transparency verification
 // =============================================================================
 
 /// Result of a transparency log check.
@@ -388,30 +419,130 @@ pub struct TransparencyCheckResult {
     pub package_id: String,
     pub verified: bool,
     pub log_index: Option<u64>,
+    pub root_hash: Option<String>,
     pub checked_at_ms: u64,
 }
 
-/// Verify a transparency token for a package.
-///
-/// This is currently a stub that validates token structure.
-/// A real implementation would check against a Merkle-tree log endpoint.
+fn canonical_transparency_leaf_key(package_id: &str, version: &str) -> Vec<u8> {
+    format!("connector-manifest/{package_id}/{version}").into_bytes()
+}
+
+fn canonical_transparency_leaf_value(digest: &str) -> Vec<u8> {
+    digest.to_ascii_lowercase().into_bytes()
+}
+
+fn normalize_transparency_root_hash(root_hash: &str) -> String {
+    root_hash.trim().to_ascii_lowercase()
+}
+
+/// Verify a transparency token for a package against operator-trusted
+/// transparency checkpoints.
 pub fn check_transparency(
-    package_id: &str,
-    token: &str,
+    manifest: &ConnectorManifest,
+    trusted_roots: &[String],
     now_ms: u64,
 ) -> Result<TransparencyCheckResult, ConnectorRegistryError> {
-    // Stub: validate that the token is non-empty and hex-like
-    if token.is_empty() {
+    let token = manifest.transparency_token.as_deref().ok_or_else(|| {
+        ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: "no transparency token provided".to_string(),
+        }
+    })?;
+    if token.trim().is_empty() {
         return Err(ConnectorRegistryError::TransparencyCheckFailed {
-            package_id: package_id.to_string(),
+            package_id: manifest.package_id.clone(),
             reason: "empty transparency token".to_string(),
         });
     }
-    // Accept any non-empty token as valid for now
+    if trusted_roots.is_empty() {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: "no trusted transparency roots configured".to_string(),
+        });
+    }
+
+    let proof_token: TransparencyProofToken = serde_json::from_str(token).map_err(|err| {
+        ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: format!("invalid transparency token JSON: {err}"),
+        }
+    })?;
+    if proof_token.schema_version != TRANSPARENCY_TOKEN_SCHEMA_VERSION {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: format!(
+                "unsupported transparency token schema_version {}, expected {}",
+                proof_token.schema_version, TRANSPARENCY_TOKEN_SCHEMA_VERSION
+            ),
+        });
+    }
+    if proof_token.package_id != manifest.package_id {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: format!(
+                "token package_id '{}' does not match manifest package_id '{}'",
+                proof_token.package_id, manifest.package_id
+            ),
+        });
+    }
+    if proof_token.version != manifest.version {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: format!(
+                "token version '{}' does not match manifest version '{}'",
+                proof_token.version, manifest.version
+            ),
+        });
+    }
+
+    let expected_digest = manifest.sha256_digest.to_ascii_lowercase();
+    if proof_token.sha256_digest.to_ascii_lowercase() != expected_digest {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: "token digest does not match manifest digest".to_string(),
+        });
+    }
+
+    let expected_key = canonical_transparency_leaf_key(&manifest.package_id, &manifest.version);
+    if proof_token.proof.key != expected_key {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: "token proof key does not match canonical connector leaf".to_string(),
+        });
+    }
+
+    let expected_value = canonical_transparency_leaf_value(&expected_digest);
+    if proof_token.proof.value != expected_value {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: "token proof value does not match manifest digest".to_string(),
+        });
+    }
+
+    if !proof_token.proof.verify(&proof_token.proof.root_hash) {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: "token inclusion proof does not verify against its root hash".to_string(),
+        });
+    }
+
+    let proof_root_hash =
+        normalize_transparency_root_hash(&proof_token.proof.root_hash.to_string());
+    if !trusted_roots
+        .iter()
+        .any(|root| normalize_transparency_root_hash(root) == proof_root_hash)
+    {
+        return Err(ConnectorRegistryError::TransparencyCheckFailed {
+            package_id: manifest.package_id.clone(),
+            reason: format!("transparency root hash '{proof_root_hash}' is not trusted"),
+        });
+    }
+
     Ok(TransparencyCheckResult {
-        package_id: package_id.to_string(),
+        package_id: manifest.package_id.clone(),
         verified: true,
-        log_index: None,
+        log_index: Some(proof_token.log_index),
+        root_hash: Some(proof_root_hash),
         checked_at_ms: now_ms,
     })
 }
@@ -534,6 +665,10 @@ impl fmt::Display for VerificationOutcome {
 }
 
 impl ConnectorRegistryClient {
+    fn transparency_verification_required(&self) -> bool {
+        self.config.enforce_transparency || self.config.trust_policy.require_transparency_proof
+    }
+
     /// Create a new registry client with the given config.
     pub fn new(config: ConnectorRegistryConfig) -> Self {
         Self {
@@ -591,23 +726,19 @@ impl ConnectorRegistryClient {
         };
 
         // 4. Optional transparency check
-        if self.config.enforce_transparency {
+        if self.transparency_verification_required() {
             self.telemetry.transparency_checks += 1;
-            match &manifest.transparency_token {
-                Some(token) => {
-                    check_transparency(&manifest.package_id, token, now_ms)?;
-                }
-                None => {
-                    self.record_verification(
-                        &manifest,
-                        VerificationOutcome::TransparencyFailed,
-                        now_ms,
-                    );
-                    return Err(ConnectorRegistryError::TransparencyCheckFailed {
-                        package_id: manifest.package_id.clone(),
-                        reason: "no transparency token provided".to_string(),
-                    });
-                }
+            if let Err(err) = check_transparency(
+                &manifest,
+                &self.config.trust_policy.trusted_transparency_roots,
+                now_ms,
+            ) {
+                self.record_verification(
+                    &manifest,
+                    VerificationOutcome::TransparencyFailed,
+                    now_ms,
+                );
+                return Err(err);
             }
         }
 
@@ -674,6 +805,22 @@ impl ConnectorRegistryClient {
             self.telemetry.digest_failures += 1;
             self.record_verification(&manifest_clone, VerificationOutcome::DigestFailed, now_ms);
             return Err(e);
+        }
+
+        if self.transparency_verification_required() {
+            self.telemetry.transparency_checks += 1;
+            if let Err(err) = check_transparency(
+                &manifest_clone,
+                &self.config.trust_policy.trusted_transparency_roots,
+                now_ms,
+            ) {
+                self.record_verification(
+                    &manifest_clone,
+                    VerificationOutcome::TransparencyFailed,
+                    now_ms,
+                );
+                return Err(err);
+            }
         }
 
         self.telemetry.packages_verified += 1;
@@ -785,6 +932,7 @@ impl ConnectorRegistryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::merkle_tree::MerkleTree;
 
     // ---- Helpers ----
 
@@ -816,6 +964,26 @@ mod tests {
 
     fn default_client() -> ConnectorRegistryClient {
         ConnectorRegistryClient::new(default_config())
+    }
+
+    fn make_transparency_token(manifest: &ConnectorManifest, log_index: u64) -> (String, String) {
+        let key = canonical_transparency_leaf_key(&manifest.package_id, &manifest.version);
+        let value = canonical_transparency_leaf_value(&manifest.sha256_digest);
+        let tree = MerkleTree::from_entries(vec![(key.clone(), value.clone())]);
+        let proof = tree.proof(&key).expect("proof should exist");
+        let root_hash = tree.root_hash().to_string();
+        let token = TransparencyProofToken {
+            schema_version: TRANSPARENCY_TOKEN_SCHEMA_VERSION,
+            package_id: manifest.package_id.clone(),
+            version: manifest.version.clone(),
+            sha256_digest: manifest.sha256_digest.clone(),
+            log_index,
+            proof,
+        };
+        (
+            root_hash,
+            serde_json::to_string(&token).expect("token json"),
+        )
     }
 
     // ========================================================================
@@ -1044,6 +1212,20 @@ mod tests {
     }
 
     #[test]
+    fn trust_policy_requires_trusted_roots_when_transparency_is_required() {
+        let mut policy = TrustPolicy::default();
+        policy.require_transparency_proof = true;
+        let mut m = test_manifest("pkg", b"x");
+        let (_root_hash, token) = make_transparency_token(&m, 7);
+        m.transparency_token = Some(token);
+        let err = policy.gate(&m).unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectorRegistryError::TrustPolicyDenied { .. }
+        ));
+    }
+
+    #[test]
     fn trust_policy_serde_roundtrip() {
         let policy = TrustPolicy::default();
         let json = serde_json::to_string(&policy).unwrap();
@@ -1057,7 +1239,45 @@ mod tests {
 
     #[test]
     fn transparency_empty_token_fails() {
-        let err = check_transparency("pkg", "", 1000).unwrap_err();
+        let mut manifest = test_manifest("pkg", b"x");
+        manifest.transparency_token = Some(String::new());
+        let err = check_transparency(&manifest, &[String::from("root")], 1000).unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectorRegistryError::TransparencyCheckFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn transparency_rejects_malformed_json() {
+        let mut manifest = test_manifest("pkg", b"x");
+        manifest.transparency_token = Some("not-json".to_string());
+        let err = check_transparency(&manifest, &[String::from("root")], 1000).unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectorRegistryError::TransparencyCheckFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn transparency_rejects_untrusted_root() {
+        let mut manifest = test_manifest("pkg", b"x");
+        let (_root_hash, token) = make_transparency_token(&manifest, 7);
+        manifest.transparency_token = Some(token);
+        let err = check_transparency(&manifest, &[String::from("deadbeef")], 1000).unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectorRegistryError::TransparencyCheckFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn transparency_rejects_digest_mismatch() {
+        let mut manifest = test_manifest("pkg", b"x");
+        let (root_hash, token) = make_transparency_token(&manifest, 7);
+        manifest.sha256_digest = "0".repeat(64);
+        manifest.transparency_token = Some(token);
+        let err = check_transparency(&manifest, &[root_hash], 1000).unwrap_err();
         assert!(matches!(
             err,
             ConnectorRegistryError::TransparencyCheckFailed { .. }
@@ -1066,9 +1286,14 @@ mod tests {
 
     #[test]
     fn transparency_valid_token() {
-        let result = check_transparency("pkg", "abc123", 1000).unwrap();
+        let mut manifest = test_manifest("pkg", b"x");
+        let (root_hash, token) = make_transparency_token(&manifest, 7);
+        manifest.transparency_token = Some(token);
+        let result = check_transparency(&manifest, &[root_hash.clone()], 1000).unwrap();
         assert!(result.verified);
         assert_eq!(result.package_id, "pkg");
+        assert_eq!(result.log_index, Some(7));
+        assert_eq!(result.root_hash, Some(root_hash));
     }
 
     // ========================================================================
@@ -1284,6 +1509,41 @@ mod tests {
     }
 
     #[test]
+    fn reverify_checks_transparency_when_enforced() {
+        let mut config = default_config();
+        config.enforce_transparency = true;
+        let mut client = ConnectorRegistryClient::new(config);
+
+        let data = b"payload";
+        let mut manifest = test_manifest("pkg", data);
+        let (root_hash, token) = make_transparency_token(&manifest, 8);
+        client.config.trust_policy.trusted_transparency_roots = vec![root_hash];
+        manifest.transparency_token = Some(token);
+        client.register_package(manifest, data, 1000).unwrap();
+
+        client
+            .packages
+            .get_mut("pkg")
+            .unwrap()
+            .manifest
+            .transparency_token = Some("not-json".to_string());
+
+        let err = client.reverify_package("pkg", data, 2000).unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectorRegistryError::TransparencyCheckFailed { .. }
+        ));
+        assert_eq!(client.telemetry().transparency_checks, 2);
+        assert_eq!(
+            client
+                .verification_log()
+                .back()
+                .map(|record| record.outcome),
+            Some(VerificationOutcome::TransparencyFailed)
+        );
+    }
+
+    #[test]
     fn package_count() {
         let mut client = default_client();
         assert_eq!(client.package_count(), 0);
@@ -1450,7 +1710,9 @@ mod tests {
 
         let data = b"payload";
         let mut m = test_manifest("pkg", data);
-        m.transparency_token = Some("valid-token".to_string());
+        let (root_hash, token) = make_transparency_token(&m, 11);
+        client.config.trust_policy.trusted_transparency_roots = vec![root_hash];
+        m.transparency_token = Some(token);
         let entry = client.register_package(m, data, 1000).unwrap();
         assert_eq!(entry.status, PackageStatus::Active);
         assert_eq!(client.telemetry().transparency_checks, 1);
@@ -1469,6 +1731,76 @@ mod tests {
             err,
             ConnectorRegistryError::TransparencyCheckFailed { .. }
         ));
+    }
+
+    #[test]
+    fn register_with_transparency_enforcement_rejects_untrusted_root() {
+        let mut config = default_config();
+        config.enforce_transparency = true;
+        let mut client = ConnectorRegistryClient::new(config);
+
+        let data = b"payload";
+        let mut m = test_manifest("pkg", data);
+        let (_root_hash, token) = make_transparency_token(&m, 3);
+        client.config.trust_policy.trusted_transparency_roots = vec!["deadbeef".to_string()];
+        m.transparency_token = Some(token);
+
+        let err = client.register_package(m, data, 1000).unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectorRegistryError::TransparencyCheckFailed { .. }
+        ));
+        assert_eq!(
+            client
+                .verification_log()
+                .back()
+                .map(|record| record.outcome),
+            Some(VerificationOutcome::TransparencyFailed)
+        );
+    }
+
+    #[test]
+    fn register_requires_valid_transparency_when_policy_requires_proof() {
+        let mut config = default_config();
+        config.trust_policy.require_transparency_proof = true;
+        let mut client = ConnectorRegistryClient::new(config);
+
+        let data = b"payload";
+        let mut manifest = test_manifest("pkg", data);
+        let (_root_hash, token) = make_transparency_token(&manifest, 5);
+        client.config.trust_policy.trusted_transparency_roots = vec!["deadbeef".to_string()];
+        manifest.transparency_token = Some(token);
+
+        let err = client.register_package(manifest, data, 1000).unwrap_err();
+        assert!(matches!(
+            err,
+            ConnectorRegistryError::TransparencyCheckFailed { .. }
+        ));
+        assert_eq!(client.telemetry().transparency_checks, 1);
+        assert_eq!(
+            client
+                .verification_log()
+                .back()
+                .map(|record| record.outcome),
+            Some(VerificationOutcome::TransparencyFailed)
+        );
+    }
+
+    #[test]
+    fn register_verifies_transparency_when_policy_requires_proof() {
+        let mut config = default_config();
+        config.trust_policy.require_transparency_proof = true;
+        let mut client = ConnectorRegistryClient::new(config);
+
+        let data = b"payload";
+        let mut manifest = test_manifest("pkg", data);
+        let (root_hash, token) = make_transparency_token(&manifest, 5);
+        client.config.trust_policy.trusted_transparency_roots = vec![root_hash];
+        manifest.transparency_token = Some(token);
+
+        let entry = client.register_package(manifest, data, 1000).unwrap();
+        assert_eq!(entry.status, PackageStatus::Active);
+        assert_eq!(client.telemetry().transparency_checks, 1);
     }
 
     #[test]

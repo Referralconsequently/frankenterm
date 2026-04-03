@@ -228,6 +228,7 @@ proptest! {
             ],
             blocked_packages: Vec::new(),
             trusted_publishers: Vec::new(),
+            trusted_transparency_roots: Vec::new(),
             min_install_level: TrustLevel::Conditional,
         };
         let level = policy.evaluate(&manifest);
@@ -250,6 +251,7 @@ proptest! {
             max_allowed_capabilities: vec![ConnectorCapability::Invoke],
             blocked_packages: Vec::new(),
             trusted_publishers: Vec::new(),
+            trusted_transparency_roots: Vec::new(),
             min_install_level: TrustLevel::Conditional,
         };
         let result = policy.gate(&manifest);
@@ -384,6 +386,7 @@ proptest! {
             require_transparency_proof: require_transparency,
             max_allowed_capabilities: caps,
             trusted_publishers: vec!["pub1".to_string()],
+            trusted_transparency_roots: vec!["root1".to_string()],
             blocked_packages: vec!["blocked1".to_string()],
         };
         let json = serde_json::to_string(&policy).unwrap();
@@ -493,6 +496,7 @@ proptest! {
                 require_signature: false,
                 require_transparency_proof: false,
                 max_allowed_capabilities: vec![ConnectorCapability::Invoke],
+                trusted_transparency_roots: Vec::new(),
                 blocked_packages: Vec::new(),
                 min_install_level: TrustLevel::Conditional,
             },
@@ -533,6 +537,7 @@ proptest! {
                 require_signature: false,
                 require_transparency_proof: false,
                 max_allowed_capabilities: vec![],
+                trusted_transparency_roots: Vec::new(),
                 blocked_packages: Vec::new(),
                 min_install_level: TrustLevel::Conditional,
             },

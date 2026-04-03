@@ -194,15 +194,7 @@ fn effective_search_indexing_config(search_config: &SearchConfig) -> crate::sear
 }
 
 fn search_embedder_tiers(search_config: &SearchConfig) -> Vec<String> {
-    let mut tiers = vec!["hash".to_string()];
-    if cfg!(feature = "semantic-search") && search_config.enabled {
-        tiers.push("model2vec".to_string());
-        tiers.push("fastembed".to_string());
-        if search_config.reranker_enabled {
-            tiers.push("cross-encoder".to_string());
-        }
-    }
-    tiers
+    crate::search::advertised_embedder_tiers(search_config.enabled, search_config.reranker_enabled)
 }
 
 fn build_search_status_payload(
@@ -863,8 +855,11 @@ async fn shutdown_signal_pending(shutdown_rx: &mut mpsc::Receiver<()>) -> bool {
 
     #[cfg(not(feature = "asupersync-runtime"))]
     {
-        match crate::runtime_compat::timeout(IPC_SHUTDOWN_POLL_INTERVAL, mpsc_recv_state(shutdown_rx))
-            .await
+        match crate::runtime_compat::timeout(
+            IPC_SHUTDOWN_POLL_INTERVAL,
+            mpsc_recv_state(shutdown_rx),
+        )
+        .await
         {
             Ok(MpscRecvState::Value(()) | MpscRecvState::Disconnected) => true,
             Err(_elapsed) => false,

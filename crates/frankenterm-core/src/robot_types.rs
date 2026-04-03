@@ -527,7 +527,7 @@ pub enum SearchStreamPhase {
     /// Fast tier results (hash embedder + BM25).
     #[serde(rename = "phase_fast")]
     Fast { result_count: usize },
-    /// Quality tier results (model2vec/fastembed + cross-encoder).
+    /// Quality tier results (FastEmbed semantic retrieval + optional reranking).
     #[serde(rename = "phase_quality")]
     Quality { result_count: usize },
     /// Search complete.
@@ -3766,7 +3766,7 @@ mod tests {
                         "bm25_score": 6.2,
                         "matching_terms": ["error", "compiling"],
                         "semantic_similarity": 0.85,
-                        "embedder_tier": "model2vec",
+                        "embedder_tier": "fastembed",
                         "rrf_rank": 1,
                         "rrf_score": 0.0167,
                         "final_score": 0.88
@@ -3787,7 +3787,7 @@ mod tests {
         let hit = &data.results[0];
         assert_eq!(hit.hit.pane_id, 5);
         assert_eq!(hit.scoring.matching_terms.len(), 2);
-        assert_eq!(hit.scoring.embedder_tier.as_deref(), Some("model2vec"));
+        assert_eq!(hit.scoring.embedder_tier.as_deref(), Some("fastembed"));
     }
 
     #[test]

@@ -268,6 +268,7 @@ pub struct TrustPolicyBuilder {
     require_transparency_proof: bool,
     max_allowed_capabilities: Vec<ConnectorCapability>,
     trusted_publishers: Vec<String>,
+    trusted_transparency_roots: Vec<String>,
     blocked_packages: Vec<String>,
 }
 
@@ -279,6 +280,7 @@ impl Default for TrustPolicyBuilder {
             require_transparency_proof: false,
             max_allowed_capabilities: Vec::new(),
             trusted_publishers: Vec::new(),
+            trusted_transparency_roots: Vec::new(),
             blocked_packages: Vec::new(),
         }
     }
@@ -350,6 +352,13 @@ impl TrustPolicyBuilder {
         self
     }
 
+    /// Add an operator-trusted transparency root hash.
+    #[must_use]
+    pub fn trusted_transparency_root(mut self, root_hash: impl Into<String>) -> Self {
+        self.trusted_transparency_roots.push(root_hash.into());
+        self
+    }
+
     /// Block a specific package ID.
     #[must_use]
     pub fn block_package(mut self, package_id: impl Into<String>) -> Self {
@@ -366,6 +375,7 @@ impl TrustPolicyBuilder {
             require_transparency_proof: self.require_transparency_proof,
             max_allowed_capabilities: self.max_allowed_capabilities,
             trusted_publishers: self.trusted_publishers,
+            trusted_transparency_roots: self.trusted_transparency_roots,
             blocked_packages: self.blocked_packages,
         }
     }
@@ -1712,6 +1722,15 @@ mod tests {
             .build();
 
         assert_eq!(policy.max_allowed_capabilities.len(), 2);
+    }
+
+    #[test]
+    fn trust_policy_builder_trusted_transparency_root() {
+        let policy = TrustPolicyBuilder::new()
+            .trusted_transparency_root("abcd1234")
+            .build();
+
+        assert_eq!(policy.trusted_transparency_roots, vec!["abcd1234"]);
     }
 
     #[test]
