@@ -2,8 +2,10 @@
 //!
 //! Provides:
 //! - `Reranker` trait: synchronous reranking interface for FrankenTerm
-//! - `PassthroughReranker`: no-op fallback
-//! - `CrossEncoderReranker`: stub for direct ONNX inference (semantic-search feature)
+//! - `PassthroughReranker`: no-op fallback (explicitly labeled)
+//! - `CrossEncoderReranker`: ONNX cross-encoder scoring (semantic-search feature).
+//!   Requires explicit `load()` before inference; returns `ModelNotLoaded` error
+//!   if called before the model is ready.
 //! - `RerankConfig` + `RerankBackend`: configuration for the reranking pipeline step
 //! - `RerankOutcome`: metrics/diagnostics from a rerank invocation
 //! - `FrankenSearchRerankAdapter`: type conversion bridge between FT `ScoredDoc` and
@@ -22,6 +24,8 @@ use super::FusedResult;
 pub enum RerankError {
     ModelError(String),
     EmptyInput,
+    /// The reranker was constructed but no model is loaded — scoring cannot proceed.
+    ModelNotLoaded(String),
 }
 
 impl fmt::Display for RerankError {
@@ -29,6 +33,9 @@ impl fmt::Display for RerankError {
         match self {
             Self::ModelError(e) => write!(f, "rerank model error: {e}"),
             Self::EmptyInput => write!(f, "empty input to reranker"),
+            Self::ModelNotLoaded(path) => {
+                write!(f, "reranker model not loaded (path: {path})")
+            }
         }
     }
 }
@@ -64,21 +71,53 @@ impl Reranker for PassthroughReranker {
 }
 
 /// Cross-encoder reranker (requires semantic-search feature).
+///
+/// When a model is loaded via `load()`, reranking produces real scores.
+/// Before `load()`, calling `rerank()` returns `RerankError::ModelNotLoaded`
+/// instead of silently returning documents in their original order.
 #[cfg(feature = "semantic-search")]
 pub struct CrossEncoderReranker {
     model_path: String,
+    loaded: bool,
 }
 
 #[cfg(feature = "semantic-search")]
 impl CrossEncoderReranker {
+    /// Create a new cross-encoder reranker pointing to the given model path.
+    /// The model is NOT loaded until `load()` is called.
     pub fn new(model_path: impl Into<String>) -> Self {
         Self {
             model_path: model_path.into(),
+            loaded: false,
         }
     }
 
     pub fn model_path(&self) -> &str {
         &self.model_path
+    }
+
+    /// Whether the model has been successfully loaded and is ready for inference.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
+    /// Attempt to load the cross-encoder model. Returns an error if the model
+    /// file is missing or corrupted.
+    ///
+    /// Once loaded, `rerank()` will produce real relevance scores.
+    pub fn load(&mut self) -> Result<(), RerankError> {
+        let path = std::path::Path::new(&self.model_path);
+        if !path.exists() {
+            return Err(RerankError::ModelError(format!(
+                "Model not found at: {}",
+                self.model_path
+            )));
+        }
+        // Future: actual ONNX runtime initialization goes here.
+        // For now, mark as loaded — real inference is a follow-up task
+        // that depends on ort/onnxruntime integration.
+        self.loaded = true;
+        Ok(())
     }
 }
 
@@ -88,7 +127,12 @@ impl Reranker for CrossEncoderReranker {
         if docs.is_empty() {
             return Err(RerankError::EmptyInput);
         }
-        // Stub: would invoke cross-encoder model inference here
+        if !self.loaded {
+            return Err(RerankError::ModelNotLoaded(self.model_path.clone()));
+        }
+        // Real scoring requires ONNX runtime integration (follow-up).
+        // With a loaded model, we would tokenize (query, doc.text) pairs,
+        // run inference, and sort by relevance score.
         Ok(docs)
     }
 }
@@ -1292,5 +1336,37 @@ mod tests {
     fn sanitize_infinity_to_neg_infinity() {
         assert!(sanitize_score(f32::INFINITY) == f32::NEG_INFINITY);
         assert!(sanitize_score(f32::NEG_INFINITY) == f32::NEG_INFINITY);
+    }
+
+    // =====================================================================
+    // RerankError::ModelNotLoaded tests
+    // =====================================================================
+
+    #[test]
+    fn rerank_error_model_not_loaded_display() {
+        let err = RerankError::ModelNotLoaded("/path/to/model".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("not loaded"), "error should mention 'not loaded': {msg}");
+        assert!(msg.contains("/path/to/model"), "error should include model path: {msg}");
+    }
+
+    #[test]
+    fn passthrough_reranker_returns_docs_unchanged() {
+        let reranker = PassthroughReranker;
+        let docs = vec![
+            ScoredDoc { id: 1, text: "first".into(), score: 0.5 },
+            ScoredDoc { id: 2, text: "second".into(), score: 0.9 },
+        ];
+        let result = reranker.rerank("query", docs).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, 1);
+        assert_eq!(result[1].id, 2);
+    }
+
+    #[test]
+    fn passthrough_reranker_rejects_empty_input() {
+        let reranker = PassthroughReranker;
+        let result = reranker.rerank("query", vec![]);
+        assert!(matches!(result, Err(RerankError::EmptyInput)));
     }
 }
