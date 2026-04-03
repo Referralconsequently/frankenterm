@@ -34,6 +34,9 @@ pub struct BackupManifest {
     pub db_checksum: String,
     /// Statistics about the backed-up data
     pub stats: BackupStats,
+    /// Whether the database file is zstd-compressed (`database.db.zst`).
+    #[serde(default)]
+    pub compressed: bool,
 }
 
 /// Statistics about backed-up data.
@@ -400,6 +403,7 @@ pub fn export_backup(
         db_size_bytes: db_size,
         db_checksum: db_checksum.clone(),
         stats,
+        compressed: false,
     };
 
     // Step 5: Write manifest.json
@@ -444,6 +448,91 @@ pub fn export_backup(
 
     Ok(ExportResult {
         output_path: output_dir.display().to_string(),
+        manifest,
+        total_size_bytes: total_size,
+    })
+}
+
+/// Compress the `database.db` file inside a backup directory using zstd.
+///
+/// After compression:
+/// - Creates `database.db.zst` alongside the original
+/// - Removes the uncompressed `database.db`
+/// - Re-computes the checksum file to cover the compressed artifact
+/// - Updates the manifest to set `compressed: true`
+///
+/// Returns the updated `ExportResult` with the new size.
+pub fn compress_backup_dir(result: &ExportResult) -> Result<ExportResult> {
+    let backup_dir = Path::new(&result.output_path);
+    let db_path = backup_dir.join("database.db");
+    let compressed_path = backup_dir.join("database.db.zst");
+
+    if !db_path.exists() {
+        return Err(Error::Storage(crate::StorageError::Database(format!(
+            "Cannot compress: {} not found",
+            db_path.display()
+        ))));
+    }
+
+    // Compress with zstd (level 3 is a good balance of speed and ratio)
+    let input = fs::read(&db_path).map_err(|e| {
+        Error::Storage(crate::StorageError::Database(format!(
+            "Failed to read database for compression: {e}"
+        )))
+    })?;
+    let compressed = zstd::encode_all(input.as_slice(), 3).map_err(|e| {
+        Error::Storage(crate::StorageError::Database(format!(
+            "zstd compression failed: {e}"
+        )))
+    })?;
+    fs::write(&compressed_path, &compressed).map_err(|e| {
+        Error::Storage(crate::StorageError::Database(format!(
+            "Failed to write compressed file: {e}"
+        )))
+    })?;
+
+    // Remove the uncompressed original
+    fs::remove_file(&db_path).map_err(|e| {
+        Error::Storage(crate::StorageError::Database(format!(
+            "Failed to remove uncompressed database after compression: {e}"
+        )))
+    })?;
+
+    // Update checksum file to cover the compressed artifact
+    let checksum = sha256_file(&compressed_path)?;
+    let checksum_path = backup_dir.join("checksums.sha256");
+    let mut checksum_content = String::new();
+    checksum_content.push_str(&format!("{checksum}  database.db.zst\n"));
+    // Preserve manifest checksum if present
+    let manifest_path = backup_dir.join("manifest.json");
+    if manifest_path.exists() {
+        let manifest_checksum = sha256_file(&manifest_path)?;
+        checksum_content.push_str(&format!("{manifest_checksum}  manifest.json\n"));
+    }
+    fs::write(&checksum_path, &checksum_content).map_err(|e| {
+        Error::Storage(crate::StorageError::Database(format!(
+            "Failed to update checksums after compression: {e}"
+        )))
+    })?;
+
+    // Update manifest
+    let mut manifest = result.manifest.clone();
+    manifest.compressed = true;
+    let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
+        Error::Storage(crate::StorageError::Database(format!(
+            "Failed to serialize updated manifest: {e}"
+        )))
+    })?;
+    fs::write(&manifest_path, &manifest_json).map_err(|e| {
+        Error::Storage(crate::StorageError::Database(format!(
+            "Failed to write updated manifest: {e}"
+        )))
+    })?;
+
+    let total_size = dir_size(backup_dir);
+
+    Ok(ExportResult {
+        output_path: result.output_path.clone(),
         manifest,
         total_size_bytes: total_size,
     })
@@ -1861,6 +1950,7 @@ mod tests {
                 db_size_bytes: 0,
                 db_checksum: "deadbeef".to_string(),
                 stats: BackupStats::default(),
+                compressed: false,
             };
             let data = serde_json::to_string(&manifest).unwrap();
             fs::write(dir.join("manifest.json"), data).unwrap();
@@ -2514,6 +2604,7 @@ mod tests {
                 audit_actions: 1,
                 workflow_executions: 0,
             },
+            compressed: false,
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let back: BackupManifest = serde_json::from_str(&json).unwrap();
@@ -2584,6 +2675,7 @@ mod tests {
             db_size_bytes: 1024,
             db_checksum: "abc".to_string(),
             stats: BackupStats::default(),
+            compressed: false,
         };
         let result = ExportResult {
             output_path: "/backup/dir".to_string(),
@@ -2606,6 +2698,7 @@ mod tests {
             db_size_bytes: 1024,
             db_checksum: "abc".to_string(),
             stats: BackupStats::default(),
+            compressed: false,
         };
         let result = ImportResult {
             source_path: "/backup".to_string(),
@@ -2624,5 +2717,95 @@ mod tests {
     fn load_manifest_missing_dir_returns_error() {
         let result = load_backup_manifest(Path::new("/nonexistent/backup"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn compress_backup_dir_creates_zst_and_removes_original() {
+        let tmp = TempDir::new().unwrap();
+        let backup_dir = tmp.path().join("backup");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        // Write a fake database file
+        let db_content = b"CREATE TABLE test; INSERT INTO test VALUES (1);";
+        fs::write(backup_dir.join("database.db"), db_content).unwrap();
+
+        // Write a manifest
+        let manifest = BackupManifest {
+            wa_version: "test".to_string(),
+            schema_version: 1,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            workspace: "/tmp".to_string(),
+            db_size_bytes: db_content.len() as u64,
+            db_checksum: "fakechecksum".to_string(),
+            stats: BackupStats::default(),
+            compressed: false,
+        };
+        let manifest_json = serde_json::to_string_pretty(&manifest).unwrap();
+        fs::write(backup_dir.join("manifest.json"), &manifest_json).unwrap();
+        fs::write(backup_dir.join("checksums.sha256"), "fake  database.db\n").unwrap();
+
+        let export_result = ExportResult {
+            output_path: backup_dir.display().to_string(),
+            manifest,
+            total_size_bytes: db_content.len() as u64,
+        };
+
+        let compressed = compress_backup_dir(&export_result).unwrap();
+
+        // Original should be gone
+        assert!(!backup_dir.join("database.db").exists());
+        // Compressed should exist
+        assert!(backup_dir.join("database.db.zst").exists());
+        // Manifest should be updated
+        assert!(compressed.manifest.compressed);
+        // Compressed file should be smaller or equal (zstd overhead for tiny files)
+        let zst_content = fs::read(backup_dir.join("database.db.zst")).unwrap();
+        assert!(!zst_content.is_empty());
+        // Verify the compressed content can be decompressed back
+        let decompressed = zstd::decode_all(zst_content.as_slice()).unwrap();
+        assert_eq!(decompressed, db_content);
+    }
+
+    #[test]
+    fn compress_backup_dir_missing_db_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let backup_dir = tmp.path().join("backup");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        let manifest = BackupManifest {
+            wa_version: "test".to_string(),
+            schema_version: 1,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            workspace: "/tmp".to_string(),
+            db_size_bytes: 0,
+            db_checksum: "".to_string(),
+            stats: BackupStats::default(),
+            compressed: false,
+        };
+
+        let export_result = ExportResult {
+            output_path: backup_dir.display().to_string(),
+            manifest,
+            total_size_bytes: 0,
+        };
+
+        let result = compress_backup_dir(&export_result);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn manifest_compressed_field_defaults_to_false() {
+        // Verify backwards compatibility: old manifests without "compressed" field
+        let json = r#"{
+            "wa_version": "0.1.0",
+            "schema_version": 7,
+            "created_at": "2026-01-01T00:00:00Z",
+            "workspace": "/tmp",
+            "db_size_bytes": 1024,
+            "db_checksum": "abc",
+            "stats": {"panes": 0, "segments": 0, "events": 0, "audit_actions": 0, "workflow_executions": 0}
+        }"#;
+        let manifest: BackupManifest = serde_json::from_str(json).unwrap();
+        assert!(!manifest.compressed, "compressed should default to false for old manifests");
     }
 }

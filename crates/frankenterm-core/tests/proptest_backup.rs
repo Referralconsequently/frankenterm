@@ -45,6 +45,7 @@ fn arb_backup_manifest() -> impl Strategy<Value = BackupManifest> {
         any::<u64>(),
         "[a-f0-9]{64}",
         arb_backup_stats(),
+        any::<bool>(),
     )
         .prop_map(
             |(
@@ -55,6 +56,7 @@ fn arb_backup_manifest() -> impl Strategy<Value = BackupManifest> {
                 db_size_bytes,
                 db_checksum,
                 stats,
+                compressed,
             )| {
                 BackupManifest {
                     wa_version,
@@ -64,6 +66,7 @@ fn arb_backup_manifest() -> impl Strategy<Value = BackupManifest> {
                     db_size_bytes,
                     db_checksum,
                     stats,
+                    compressed,
                 }
             },
         )

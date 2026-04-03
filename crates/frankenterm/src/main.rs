@@ -15792,9 +15792,7 @@ async fn run_scheduled_backups(
     };
 
     if config.compress {
-        tracing::warn!(
-            "Scheduled backup compression is not implemented; storing directory backups"
-        );
+        tracing::info!("Scheduled backup compression enabled (zstd)");
     }
     if config.metadata_only {
         tracing::info!("Scheduled backup metadata_only: verification disabled");
@@ -15947,6 +15945,35 @@ async fn run_single_scheduled_backup(
     })
     .await
     .map_err(anyhow::Error::msg)??;
+
+    // Compress the backup if requested
+    let export_result = if config.compress {
+        let result_for_compress = export_result.clone();
+        match frankenterm_core::runtime_compat::spawn_blocking(move || {
+            frankenterm_core::backup::compress_backup_dir(&result_for_compress)
+        })
+        .await
+        {
+            Ok(Ok(compressed)) => {
+                tracing::info!(
+                    path = %compressed.output_path,
+                    size_bytes = compressed.total_size_bytes,
+                    "Backup compressed with zstd"
+                );
+                compressed
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Backup compression failed; keeping uncompressed backup");
+                export_result
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Backup compression task failed; keeping uncompressed backup");
+                export_result
+            }
+        }
+    } else {
+        export_result
+    };
 
     let retention_days = config.retention_days;
     let max_backups = config.max_backups;
