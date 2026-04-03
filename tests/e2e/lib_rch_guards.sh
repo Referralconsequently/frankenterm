@@ -14,6 +14,7 @@
 #   rch_init()                 - Set up variables (call once at start)
 #   ensure_rch_ready()         - Preflight: probe workers + smoke cargo check
 #   run_rch_cargo_logged()     - Timeout-wrapped rch cargo with stall/fallback detection
+#   rch_write_meta_json()      - Persist worker/exit/timing metadata for an rch log
 #   check_rch_fallback()       - Fatal if rch entered a fail-open/off-policy path
 #   run_rch()                  - TMPDIR-safe rch wrapper
 #   resolve_timeout_bin()      - Find timeout or gtimeout
@@ -66,6 +67,91 @@ rch_smoke_log_path() {
 
 rch_log_meta_path() {
     printf '%s.rch_meta.json\n' "$1"
+}
+
+rch_write_meta_json() {
+    local log_file="$1"
+    local wrapper_exit_code="${2:-}"
+    local meta_file probe_worker_count selected_worker sync_duration_ms remote_duration_ms remote_exit_code
+    local probe_worker_ids_json="[]"
+    local probe_worker_ids_raw=""
+    local skipped_smoke_preflight="false"
+    local reachable_workers_detected="false"
+    local fail_open_detected="false"
+    local timed_out="false"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        rch_fatal "jq is required to write rch metadata artifacts."
+    fi
+
+    meta_file="$(rch_log_meta_path "${log_file}")"
+
+    if [[ ! -f "${log_file}" ]]; then
+        jq -cn \
+            --arg log_file "${log_file}" \
+            --arg wrapper_exit_code "${wrapper_exit_code}" \
+            '{
+              log_file: $log_file,
+              missing: true,
+              wrapper_exit_code: (if $wrapper_exit_code == "" then null else ($wrapper_exit_code | tonumber) end)
+            }' > "${meta_file}"
+        return 0
+    fi
+
+    probe_worker_ids_raw="$(rch_extract_probe_worker_ids "${log_file}")"
+    if [[ -n "${probe_worker_ids_raw}" ]]; then
+        probe_worker_ids_json="$(printf '%s\n' "${probe_worker_ids_raw}" | jq -R . | jq -s .)"
+    fi
+
+    if grep -q 'Smoke preflight skipped because RCH_SKIP_SMOKE_PREFLIGHT=1' "${log_file}" 2>/dev/null; then
+        skipped_smoke_preflight="true"
+    fi
+
+    if probe_has_reachable_workers "${log_file}"; then
+        reachable_workers_detected="true"
+    fi
+
+    if grep -Eq "${RCH_FAIL_OPEN_REGEX}" "${log_file}" 2>/dev/null; then
+        fail_open_detected="true"
+    fi
+
+    if [[ "${wrapper_exit_code}" == "124" || "${wrapper_exit_code}" == "137" ]]; then
+        timed_out="true"
+    fi
+
+    probe_worker_count="$(rch_extract_probe_worker_count "${log_file}")"
+    selected_worker="$(rch_extract_selected_worker "${log_file}")"
+    sync_duration_ms="$(rch_extract_sync_duration_ms "${log_file}")"
+    remote_duration_ms="$(rch_extract_remote_duration_ms "${log_file}")"
+    remote_exit_code="$(rch_extract_remote_exit_code "${log_file}")"
+
+    jq -cn \
+        --arg log_file "${log_file}" \
+        --arg selected_worker "${selected_worker}" \
+        --arg probe_worker_count "${probe_worker_count}" \
+        --arg sync_duration_ms "${sync_duration_ms}" \
+        --arg remote_duration_ms "${remote_duration_ms}" \
+        --arg remote_exit_code "${remote_exit_code}" \
+        --arg wrapper_exit_code "${wrapper_exit_code}" \
+        --argjson probe_worker_ids "${probe_worker_ids_json}" \
+        --argjson skipped_smoke_preflight "${skipped_smoke_preflight}" \
+        --argjson reachable_workers_detected "${reachable_workers_detected}" \
+        --argjson fail_open_detected "${fail_open_detected}" \
+        --argjson timed_out "${timed_out}" \
+        '{
+          log_file: $log_file,
+          selected_worker: (if $selected_worker == "" then null else $selected_worker end),
+          probe_worker_count: (if $probe_worker_count == "" then null else ($probe_worker_count | tonumber) end),
+          probe_worker_ids: $probe_worker_ids,
+          sync_duration_ms: (if $sync_duration_ms == "" then null else ($sync_duration_ms | tonumber) end),
+          remote_duration_ms: (if $remote_duration_ms == "" then null else ($remote_duration_ms | tonumber) end),
+          remote_exit_code: (if $remote_exit_code == "" then null else ($remote_exit_code | tonumber) end),
+          wrapper_exit_code: (if $wrapper_exit_code == "" then null else ($wrapper_exit_code | tonumber) end),
+          skipped_smoke_preflight: $skipped_smoke_preflight,
+          reachable_workers_detected: $reachable_workers_detected,
+          fail_open_detected: $fail_open_detected,
+          timed_out: $timed_out
+        }' > "${meta_file}"
 }
 
 rch_extract_selected_worker() {
@@ -218,6 +304,7 @@ run_rch_cargo_logged_with_timeout() {
     local rc=$?
     set -e
     stop_rch_fallback_monitor "${monitor_pid}"
+    rch_write_meta_json "${output_file}" "${rc}"
 
     check_rch_fallback "${output_file}"
     if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
@@ -267,12 +354,14 @@ ensure_rch_ready() {
     run_rch --json workers probe --all >"${_RCH_PROBE_LOG}" 2>&1
     local probe_rc=$?
     set -e
+    rch_write_meta_json "${_RCH_PROBE_LOG}" "${probe_rc}"
     if [[ ${probe_rc} -ne 0 ]] || ! probe_has_reachable_workers "${_RCH_PROBE_LOG}"; then
         rch_fatal "rch workers are unavailable; refusing local cargo execution. See ${_RCH_PROBE_LOG}"
     fi
 
     if [[ "${RCH_SKIP_SMOKE_PREFLIGHT}" == "1" ]]; then
         printf '%s\n' "Smoke preflight skipped because RCH_SKIP_SMOKE_PREFLIGHT=1" >"${_RCH_SMOKE_LOG}"
+        rch_write_meta_json "${_RCH_SMOKE_LOG}" "0"
         return 0
     fi
 
