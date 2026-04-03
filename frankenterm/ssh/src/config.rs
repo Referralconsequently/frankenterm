@@ -6,7 +6,9 @@ use std::process::Command;
 
 pub type ConfigMap = BTreeMap<String, String>;
 
-const MATCH_EXEC_TOKENS: &[&str] = &["%C", "%d", "%h", "%i", "%j", "%k", "%L", "%l", "%n", "%p", "%r", "%u"];
+const MATCH_EXEC_TOKENS: &[&str] = &[
+    "%C", "%d", "%h", "%i", "%j", "%k", "%L", "%l", "%n", "%p", "%r", "%u",
+];
 
 /// A Pattern in a `Host` list
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -128,6 +130,15 @@ pub struct MatchExecDiagnostic {
     pub outcome: MatchExecOutcome,
 }
 
+#[derive(Copy, Clone)]
+struct MatchCriteriaContext<'a> {
+    hostname: &'a str,
+    original_host: &'a str,
+    user: &'a str,
+    local_user: &'a str,
+    pass: Context,
+}
+
 /// Represents `Host pattern,list` stanza in the config,
 /// and the options that it logically contains
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -138,45 +149,37 @@ struct MatchGroup {
 }
 
 impl MatchGroup {
-    fn is_match<F>(
-        &self,
-        hostname: &str,
-        original_host: &str,
-        user: &str,
-        local_user: &str,
-        context: Context,
-        exec_matcher: &mut F,
-    ) -> bool
+    fn is_match<'a, F>(&self, ctx: MatchCriteriaContext<'a>, exec_matcher: &mut F) -> bool
     where
-        F: FnMut(&str) -> bool,
+        F: FnMut(&str, MatchCriteriaContext<'a>) -> bool,
     {
-        if self.context != context {
+        if self.context != ctx.pass {
             return false;
         }
         for c in &self.criteria {
             match c {
                 Criteria::Host(patterns) => {
-                    if !Pattern::match_group(hostname, patterns) {
+                    if !Pattern::match_group(ctx.hostname, patterns) {
                         return false;
                     }
                 }
                 Criteria::Exec(command) => {
-                    if !exec_matcher(command) {
+                    if !exec_matcher(command, ctx) {
                         return false;
                     }
                 }
                 Criteria::OriginalHost(patterns) => {
-                    if !Pattern::match_group(original_host, patterns) {
+                    if !Pattern::match_group(ctx.original_host, patterns) {
                         return false;
                     }
                 }
                 Criteria::User(patterns) => {
-                    if !Pattern::match_group(user, patterns) {
+                    if !Pattern::match_group(ctx.user, patterns) {
                         return false;
                     }
                 }
                 Criteria::LocalUser(patterns) => {
-                    if !Pattern::match_group(local_user, patterns) {
+                    if !Pattern::match_group(ctx.local_user, patterns) {
                         return false;
                     }
                 }
@@ -374,8 +377,7 @@ impl ParsedConfigFile {
                                 context = Context::Final;
                             }
                             "exec" => {
-                                let command =
-                                    tokens.next().unwrap_or_else(|| "false".to_string());
+                                let command = tokens.next().unwrap_or_else(|| "false".to_string());
                                 criteria.push(Criteria::Exec(command));
                             }
                             "host" => {
@@ -437,16 +439,15 @@ impl ParsedConfigFile {
     /// Apply configuration values that match the specified hostname to target,
     /// but only if a given key is not already present in target, because the
     /// semantics are that the first match wins
-    fn apply_matches(
+    fn apply_matches<'a, F>(
         &self,
-        hostname: &str,
-        original_host: &str,
-        user: &str,
-        local_user: &str,
-        context: Context,
+        ctx: MatchCriteriaContext<'a>,
         target: &mut ConfigMap,
-        exec_matcher: &mut impl FnMut(&str, &ConfigMap, &str, &str, &str, &str) -> bool,
-    ) -> bool {
+        exec_matcher: &mut F,
+    ) -> bool
+    where
+        F: FnMut(&str, &ConfigMap, MatchCriteriaContext<'a>) -> bool,
+    {
         let mut needs_reparse = false;
 
         for (k, v) in &self.options {
@@ -456,16 +457,9 @@ impl ParsedConfigFile {
             if group.context != Context::FirstPass {
                 needs_reparse = true;
             }
-            if group.is_match(
-                hostname,
-                original_host,
-                user,
-                local_user,
-                context,
-                &mut |command| {
-                    exec_matcher(command, target, hostname, original_host, user, local_user)
-                },
-            ) {
+            if group.is_match(ctx, &mut |command, match_ctx| {
+                exec_matcher(command, target, match_ctx)
+            }) {
                 for (k, v) in &group.options {
                     target.entry(k.to_string()).or_insert_with(|| v.to_string());
                 }
@@ -617,23 +611,18 @@ impl Config {
                 .get("user")
                 .cloned()
                 .unwrap_or_else(|| local_user.clone());
+            let match_ctx = MatchCriteriaContext {
+                hostname: host,
+                original_host: host,
+                user: &target_user,
+                local_user: &local_user,
+                pass: Context::FirstPass,
+            };
             if config.apply_matches(
-                host,
-                host,
-                &target_user,
-                &local_user,
-                Context::FirstPass,
+                match_ctx,
                 &mut result,
-                &mut |command, current_target, hostname, original_host, user, local_user| {
-                    self.evaluate_match_exec(
-                        command,
-                        current_target,
-                        hostname,
-                        original_host,
-                        user,
-                        local_user,
-                        &mut diagnostics,
-                    )
+                &mut |command, current_target, ctx| {
+                    self.evaluate_match_exec(command, current_target, ctx, &mut diagnostics)
                 },
             ) {
                 needs_reparse = true;
@@ -860,27 +849,24 @@ impl Config {
     fn build_match_exec_token_map(
         &self,
         current_target: &ConfigMap,
-        hostname: &str,
-        original_host: &str,
-        user: &str,
-        local_user: &str,
+        ctx: MatchCriteriaContext<'_>,
     ) -> ConfigMap {
         let mut hostname_value = current_target
             .get("hostname")
             .cloned()
-            .unwrap_or_else(|| hostname.to_string());
+            .unwrap_or_else(|| ctx.hostname.to_string());
         let mut bootstrap_tokens = self.tokens.clone();
-        bootstrap_tokens.insert("%h".to_string(), hostname.to_string());
+        bootstrap_tokens.insert("%h".to_string(), ctx.hostname.to_string());
         if let Some(tokens) = self.should_expand_tokens("hostname") {
             self.expand_tokens(&mut hostname_value, tokens, &bootstrap_tokens);
         }
 
         let mut token_map = self.tokens.clone();
         token_map.insert("%h".to_string(), hostname_value);
-        token_map.insert("%n".to_string(), original_host.to_string());
-        token_map.insert("%k".to_string(), original_host.to_string());
-        token_map.insert("%r".to_string(), user.to_string());
-        token_map.insert("%u".to_string(), local_user.to_string());
+        token_map.insert("%n".to_string(), ctx.original_host.to_string());
+        token_map.insert("%k".to_string(), ctx.original_host.to_string());
+        token_map.insert("%r".to_string(), ctx.user.to_string());
+        token_map.insert("%u".to_string(), ctx.local_user.to_string());
         token_map.insert(
             "%p".to_string(),
             current_target
@@ -895,14 +881,10 @@ impl Config {
         &self,
         command: &str,
         current_target: &ConfigMap,
-        hostname: &str,
-        original_host: &str,
-        user: &str,
-        local_user: &str,
+        ctx: MatchCriteriaContext<'_>,
         diagnostics: &mut Vec<MatchExecDiagnostic>,
     ) -> bool {
-        let token_map =
-            self.build_match_exec_token_map(current_target, hostname, original_host, user, local_user);
+        let token_map = self.build_match_exec_token_map(current_target, ctx);
         let mut expanded_command = command.to_string();
         self.expand_tokens(&mut expanded_command, MATCH_EXEC_TOKENS, &token_map);
 
@@ -927,9 +909,9 @@ impl Config {
                 }
 
                 match shell_cmd.status() {
-                    Ok(status) if status.success() => {
-                        MatchExecOutcome::Matched { exit_status: status.code().unwrap_or(0) }
-                    }
+                    Ok(status) if status.success() => MatchExecOutcome::Matched {
+                        exit_status: status.code().unwrap_or(0),
+                    },
                     Ok(status) => MatchExecOutcome::False {
                         exit_status: status.code(),
                     },

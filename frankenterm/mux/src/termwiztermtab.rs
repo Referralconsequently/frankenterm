@@ -79,7 +79,9 @@ impl Domain for TermWizTerminalDomain {
     }
 
     fn detach(&self) -> anyhow::Result<()> {
-        bail!("detach not implemented for TermWizTerminalDomain");
+        bail!(
+            "detach is unsupported for TermWizTerminalDomain because termwiz applet panes are inline UI surfaces"
+        );
     }
 
     fn state(&self) -> DomainState {
@@ -617,4 +619,22 @@ pub async fn run<
     .detach();
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn termwiz_domain_detach_is_explicitly_unsupported() {
+        let domain = termwiz_terminal_domain();
+        assert!(!domain.detachable());
+
+        let err = domain
+            .detach()
+            .expect_err("termwiz domain detach should be unsupported");
+        let err = err.to_string();
+        assert!(err.contains("unsupported"), "{}", err);
+        assert!(err.contains("TermWizTerminalDomain"), "{}", err);
+    }
 }

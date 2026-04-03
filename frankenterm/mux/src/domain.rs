@@ -780,7 +780,9 @@ impl Domain for LocalDomain {
     }
 
     fn detach(&self) -> anyhow::Result<()> {
-        bail!("detach not implemented for LocalDomain");
+        bail!(
+            "detach is unsupported for LocalDomain because local panes are owned by the current mux session"
+        );
     }
 
     fn state(&self) -> DomainState {
@@ -810,6 +812,19 @@ mod tests {
         assert_eq!(DomainState::Detached, DomainState::Detached);
         assert_eq!(DomainState::Attached, DomainState::Attached);
         assert_ne!(DomainState::Detached, DomainState::Attached);
+    }
+
+    #[test]
+    fn local_domain_detach_is_explicitly_unsupported() {
+        let domain = LocalDomain::new("local-detach-test").expect("local domain");
+        assert!(!domain.detachable());
+
+        let err = domain
+            .detach()
+            .expect_err("local domain detach should fail");
+        let err = err.to_string();
+        assert!(err.contains("unsupported"), "{}", err);
+        assert!(err.contains("LocalDomain"), "{}", err);
     }
 
     #[test]

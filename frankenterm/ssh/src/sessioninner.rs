@@ -804,6 +804,30 @@ impl SessionInner {
                     ))) => dispatch(
                         reply,
                         || {
+                            #[cfg(feature = "libssh-rs")]
+                            if let Some(path) = self
+                                .files
+                                .get(&msg.file_id)
+                                .and_then(FileWrap::libssh_path)
+                                .map(|path| path.to_owned())
+                            {
+                                let sftp = self.init_sftp(sess)?;
+                                let current = sftp.metadata(&path)?;
+                                if msg.metadata.accessed != current.accessed {
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::Unsupported,
+                                        format!(
+                                            "libssh-backed SFTP file metadata mutation does not support access-time changes for {path}"
+                                        ),
+                                    )
+                                    .into());
+                                }
+
+                                let mut normalized = msg.metadata;
+                                normalized.accessed = current.accessed;
+                                return sftp.set_metadata(&path, normalized);
+                            }
+
                             let file = self
                                 .files
                                 .get_mut(&msg.file_id)
@@ -818,6 +842,16 @@ impl SessionInner {
                     ))) => dispatch(
                         reply,
                         || {
+                            #[cfg(feature = "libssh-rs")]
+                            if let Some(path) = self
+                                .files
+                                .get(&file_id)
+                                .and_then(FileWrap::libssh_path)
+                                .map(|path| path.to_owned())
+                            {
+                                return self.init_sftp(sess)?.metadata(&path);
+                            }
+
                             let file = self
                                 .files
                                 .get_mut(&file_id)

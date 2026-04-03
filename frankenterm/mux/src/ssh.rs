@@ -820,7 +820,9 @@ impl Domain for RemoteSshDomain {
     }
 
     fn detach(&self) -> anyhow::Result<()> {
-        bail!("detach not implemented for RemoteSshDomain");
+        bail!(
+            "detach is unsupported for RemoteSshDomain because remote SSH panes are direct child sessions of the current mux"
+        );
     }
 
     fn state(&self) -> DomainState {
@@ -1393,6 +1395,20 @@ mod tests {
         assert!(command_line.is_none());
         assert_no_remote_pane_env(&env);
         assert_eq!(env_value(&env, "TERM_PROGRAM"), "WezTerm");
+        Ok(())
+    }
+
+    #[test]
+    fn remote_ssh_domain_detach_is_explicitly_unsupported() -> anyhow::Result<()> {
+        let remote = RemoteSshDomain::with_ssh_domain(&test_domain("builder.invalid"))?;
+        assert!(!remote.detachable());
+
+        let err = remote
+            .detach()
+            .expect_err("remote ssh detach should be unsupported");
+        let err = err.to_string();
+        assert!(err.contains("unsupported"), "{}", err);
+        assert!(err.contains("RemoteSshDomain"), "{}", err);
         Ok(())
     }
 }

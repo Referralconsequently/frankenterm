@@ -8,10 +8,11 @@ use crate::tmux_commands::{
 use crate::tmux_pty::TmuxChildState;
 use crate::window::WindowId;
 use crate::{Mux, MuxWindowBuilder};
+use anyhow::Context;
 use async_trait::async_trait;
 use config::configuration;
 use filedescriptor::FileDescriptor;
-use frankenterm_term::TerminalSize;
+use frankenterm_term::{KeyCode, KeyModifiers, TerminalSize};
 use parking_lot::Mutex;
 use portable_pty::CommandBuilder;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -472,27 +473,270 @@ impl Domain for TmuxDomain {
     }
 
     fn detachable(&self) -> bool {
-        false
+        true
     }
 
     fn detach(&self) -> anyhow::Result<()> {
-        anyhow::bail!("detach not implemented for TmuxDomain");
+        if *self.inner.state.lock() == State::Exit {
+            return Ok(());
+        }
+
+        let mux = Mux::get();
+        let pane = mux.get_pane(self.inner.pane_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "detach is unavailable for TmuxDomain because its launcher pane {} is gone",
+                self.inner.pane_id
+            )
+        })?;
+
+        pane.key_down(KeyCode::Char('q'), KeyModifiers::NONE)
+            .context("sending detach key to tmux launcher pane")
     }
 
     fn state(&self) -> DomainState {
-        DomainState::Attached
+        match *self.inner.state.lock() {
+            State::Exit => DomainState::Detached,
+            _ => DomainState::Attached,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{Domain, LocalDomain};
+    use crate::pane::{CachePolicy, ForEachPaneLogicalLine, LogicalLine, Pane, WithPaneLines};
+    use crate::renderable::{RenderableDimensions, StableCursorPosition};
+    use frankenterm_term::color::ColorPalette;
+    use parking_lot::MappedMutexGuard;
+    use rangeset::RangeSet;
+    use std::ops::Range;
+    use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
+    use termwiz::surface::{Line, SEQ_ZERO};
+    use url::Url;
+
+    fn mux_test_lock() -> &'static StdMutex<()> {
+        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| StdMutex::new(()))
+    }
+
+    struct ScopedMux {
+        prior: Option<Arc<Mux>>,
+        _guard: StdMutexGuard<'static, ()>,
+    }
+
+    impl ScopedMux {
+        fn install(mux: Arc<Mux>) -> Self {
+            let guard = mux_test_lock()
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let prior = Mux::try_get();
+            Mux::set_mux(&mux);
+            Self {
+                prior,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for ScopedMux {
+        fn drop(&mut self) {
+            if let Some(prior) = self.prior.take() {
+                Mux::set_mux(&prior);
+            } else {
+                Mux::shutdown();
+            }
+        }
+    }
+
+    struct RecordingPane {
+        pane_id: PaneId,
+        domain_id: DomainId,
+        keys: Mutex<Vec<char>>,
+    }
+
+    impl RecordingPane {
+        fn new(pane_id: PaneId, domain_id: DomainId) -> Arc<Self> {
+            Arc::new(Self {
+                pane_id,
+                domain_id,
+                keys: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn recorded_keys(&self) -> Vec<char> {
+            self.keys.lock().clone()
+        }
+    }
+
+    impl Pane for RecordingPane {
+        fn pane_id(&self) -> PaneId {
+            self.pane_id
+        }
+
+        fn get_cursor_position(&self) -> StableCursorPosition {
+            StableCursorPosition::default()
+        }
+
+        fn get_current_seqno(&self) -> termwiz::surface::SequenceNo {
+            SEQ_ZERO
+        }
+
+        fn get_changed_since(
+            &self,
+            _lines: Range<frankenterm_term::StableRowIndex>,
+            _seqno: termwiz::surface::SequenceNo,
+        ) -> RangeSet<frankenterm_term::StableRowIndex> {
+            RangeSet::new()
+        }
+
+        fn get_lines(
+            &self,
+            _lines: Range<frankenterm_term::StableRowIndex>,
+        ) -> (frankenterm_term::StableRowIndex, Vec<Line>) {
+            (0, Vec::new())
+        }
+
+        fn with_lines_mut(
+            &self,
+            _lines: Range<frankenterm_term::StableRowIndex>,
+            _with_lines: &mut dyn WithPaneLines,
+        ) {
+        }
+
+        fn for_each_logical_line_in_stable_range_mut(
+            &self,
+            _lines: Range<frankenterm_term::StableRowIndex>,
+            _for_line: &mut dyn ForEachPaneLogicalLine,
+        ) {
+        }
+
+        fn get_logical_lines(
+            &self,
+            _lines: Range<frankenterm_term::StableRowIndex>,
+        ) -> Vec<LogicalLine> {
+            Vec::new()
+        }
+
+        fn get_dimensions(&self) -> RenderableDimensions {
+            RenderableDimensions {
+                cols: 80,
+                viewport_rows: 24,
+                scrollback_rows: 24,
+                physical_top: 0,
+                scrollback_top: 0,
+                dpi: 0,
+                pixel_width: 0,
+                pixel_height: 0,
+                reverse_video: false,
+            }
+        }
+
+        fn get_title(&self) -> String {
+            "recording-pane".to_string()
+        }
+
+        fn send_paste(&self, _text: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn reader(&self) -> anyhow::Result<Option<Box<dyn std::io::Read + Send>>> {
+            Ok(None)
+        }
+
+        fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
+            unimplemented!("recording pane writer is not used in tmux detach tests")
+        }
+
+        fn resize(&self, _size: TerminalSize) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn key_down(&self, key: KeyCode, _mods: KeyModifiers) -> anyhow::Result<()> {
+            self.keys.lock().push(match key {
+                KeyCode::Char(c) => c,
+                _ => '\0',
+            });
+            Ok(())
+        }
+
+        fn key_up(&self, _key: KeyCode, _mods: KeyModifiers) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn mouse_event(&self, _event: frankenterm_term::MouseEvent) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn is_dead(&self) -> bool {
+            false
+        }
+
+        fn palette(&self) -> ColorPalette {
+            ColorPalette::default()
+        }
+
+        fn domain_id(&self) -> DomainId {
+            self.domain_id
+        }
+
+        fn is_mouse_grabbed(&self) -> bool {
+            false
+        }
+
+        fn is_alt_screen_active(&self) -> bool {
+            false
+        }
+
+        fn get_current_working_dir(&self, _policy: CachePolicy) -> Option<Url> {
+            None
+        }
+    }
 
     #[test]
     fn backlog_payload_cap_keeps_small_payload_unchanged() {
         let small = vec![0u8; 1024];
         let capped = cap_backlog_payload(&small);
         assert_eq!(small, capped);
+    }
+
+    #[test]
+    fn tmux_domain_detach_sends_detach_key_to_launcher_pane() {
+        let default_domain: Arc<dyn Domain> =
+            Arc::new(LocalDomain::new("tmux-detach-default").expect("local domain"));
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&default_domain))));
+        let _guard = ScopedMux::install(Arc::clone(&mux));
+
+        let launcher = RecordingPane::new(77, default_domain.domain_id());
+        let launcher_dyn: Arc<dyn Pane> = launcher.clone();
+        mux.add_pane(&launcher_dyn).expect("add launcher pane");
+
+        let tmux_domain = TmuxDomain::new(77);
+        assert!(tmux_domain.detachable());
+        tmux_domain.detach().expect("detach tmux domain");
+
+        assert_eq!(launcher.recorded_keys(), vec!['q']);
+    }
+
+    #[test]
+    fn tmux_domain_detach_requires_launcher_pane() {
+        let mux = Arc::new(Mux::new(None));
+        let _guard = ScopedMux::install(mux);
+
+        let tmux_domain = TmuxDomain::new(1234);
+        let err = tmux_domain
+            .detach()
+            .expect_err("detach should fail without launcher pane");
+        let err = err.to_string();
+        assert!(err.contains("launcher pane"), "{}", err);
+        assert!(err.contains("TmuxDomain"), "{}", err);
+    }
+
+    #[test]
+    fn tmux_domain_state_reports_detached_after_exit() {
+        let tmux_domain = TmuxDomain::new(0);
+        *tmux_domain.inner.state.lock() = State::Exit;
+        assert_eq!(tmux_domain.state(), DomainState::Detached);
     }
 
     #[test]

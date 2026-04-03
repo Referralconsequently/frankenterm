@@ -53,7 +53,10 @@ impl SftpWrap {
                     OpenFlags::from_bits_truncate(accesstype),
                     opts.mode.try_into().unwrap(),
                 )?;
-                Ok(FileWrap::LibSsh(file))
+                Ok(FileWrap::LibSsh {
+                    file,
+                    path: filename.to_owned(),
+                })
             }
         }
     }
