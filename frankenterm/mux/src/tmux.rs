@@ -1,17 +1,18 @@
 use crate::activity::Activity;
-use crate::domain::{Domain, DomainId, DomainState, SplitSource, alloc_domain_id};
+use crate::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use crate::pane::{Pane, PaneId};
 use crate::tab::{SplitRequest, Tab, TabId};
 use crate::tmux_commands::{
     ListAllPanes, ListAllWindows, ListCommands, NewWindow, SplitPane, TmuxCommand,
 };
+use crate::tmux_pty::TmuxChildState;
 use crate::window::WindowId;
 use crate::{Mux, MuxWindowBuilder};
 use async_trait::async_trait;
 use config::configuration;
 use filedescriptor::FileDescriptor;
 use frankenterm_term::TerminalSize;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use portable_pty::CommandBuilder;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
@@ -62,7 +63,7 @@ pub(crate) struct TmuxRemotePane {
     // members for local
     pub local_pane_id: PaneId,
     pub output_write: FileDescriptor,
-    pub active_lock: Arc<(Mutex<bool>, Condvar)>,
+    pub child_state: Arc<TmuxChildState>,
     // members sync with remote
     pub session_id: TmuxSessionId,
     pub window_id: TmuxWindowId,
@@ -150,10 +151,9 @@ impl TmuxDomainState {
                         let mut pane_map = self.remote_panes.lock();
                         for (_, v) in pane_map.iter_mut() {
                             let remote_pane = v.lock();
-                            let (lock, condvar) = &*remote_pane.active_lock;
-                            let mut released = lock.lock();
-                            *released = true;
-                            condvar.notify_all();
+                            remote_pane
+                                .child_state
+                                .mark_exited(portable_pty::ExitStatus::with_exit_code(0));
                         }
                         // Drop remote pane state as soon as the tmux session exits.
                         pane_map.clear();
@@ -224,15 +224,15 @@ impl TmuxDomainState {
                 }
                 Event::WindowAdd { window } => {
                     // Only handle the new tab, the first empty window handled by sync_window_state
-                    if !self.gui_window.lock().is_none() {
-                        if let Some(session) = *self.tmux_session.lock() {
-                            let mut cmd_queue = self.cmd_queue.as_ref().lock();
-                            cmd_queue.push_back(Box::new(ListAllWindows {
-                                session_id: session,
-                                window_id: Some(*window),
-                            }));
-                            log::info!("tmux window add: {}:{}", session, window);
-                        }
+                    if let (true, Some(session)) =
+                        (self.gui_window.lock().is_some(), *self.tmux_session.lock())
+                    {
+                        let mut cmd_queue = self.cmd_queue.as_ref().lock();
+                        cmd_queue.push_back(Box::new(ListAllWindows {
+                            session_id: session,
+                            window_id: Some(*window),
+                        }));
+                        log::info!("tmux window add: {}:{}", session, window);
                     }
                 }
                 Event::WindowClose { window } => {

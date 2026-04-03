@@ -155,6 +155,32 @@ fn has_extension(extensions: &str, wanted: &str) -> bool {
     extensions.split(' ').find(|&ext| ext == wanted).is_some()
 }
 
+fn client_rect_dimensions(rect: RECT) -> (u32, u32) {
+    (
+        rect.right.saturating_sub(rect.left) as u32,
+        rect.bottom.saturating_sub(rect.top) as u32,
+    )
+}
+
+fn current_client_rect(hdc: HDC) -> Option<RECT> {
+    let hwnd = unsafe { WindowFromDC(hdc) };
+    if hwnd.is_null() {
+        log::warn!("WindowFromDC returned null while querying WGL framebuffer size");
+        return None;
+    }
+
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetClientRect(hwnd, &mut rect) } == 0 {
+        log::warn!(
+            "GetClientRect failed while querying WGL framebuffer size: {}",
+            std::io::Error::last_os_error()
+        );
+        None
+    } else {
+        Some(rect)
+    }
+}
+
 impl GlState {
     fn into_wrapper(mut self) -> WglWrapper {
         self.delete();
@@ -402,8 +428,16 @@ impl Drop for GlState {
 }
 
 unsafe impl glium::backend::Backend for GlState {
-    fn resize(&self, _: (u32, u32)) {
-        todo!()
+    fn resize(&self, new_size: (u32, u32)) {
+        if let Some(actual) = current_client_rect(self.hdc).map(client_rect_dimensions) {
+            if actual != new_size {
+                log::trace!(
+                    "WGL drawable size is window-managed; requested {:?}, current client rect {:?}",
+                    new_size,
+                    actual
+                );
+            }
+        }
     }
 
     fn swap_buffers(&self) -> Result<(), glium::SwapBuffersError> {
@@ -436,7 +470,9 @@ unsafe impl glium::backend::Backend for GlState {
     }
 
     fn get_framebuffer_dimensions(&self) -> (u32, u32) {
-        unimplemented!();
+        current_client_rect(self.hdc)
+            .map(client_rect_dimensions)
+            .unwrap_or((0, 0))
     }
 
     fn is_current(&self) -> bool {
@@ -449,5 +485,37 @@ unsafe impl glium::backend::Backend for GlState {
             .unwrap()
             .wgl
             .MakeCurrent(self.hdc as *mut _, self.rc);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client_rect_dimensions;
+    use winapi::shared::windef::RECT;
+
+    #[test]
+    fn client_rect_dimensions_handles_positive_rects() {
+        assert_eq!(
+            client_rect_dimensions(RECT {
+                left: 4,
+                top: 8,
+                right: 104,
+                bottom: 48,
+            }),
+            (100, 40)
+        );
+    }
+
+    #[test]
+    fn client_rect_dimensions_saturates_inverted_rects() {
+        assert_eq!(
+            client_rect_dimensions(RECT {
+                left: 10,
+                top: 10,
+                right: 3,
+                bottom: 1,
+            }),
+            (0, 0)
+        );
     }
 }

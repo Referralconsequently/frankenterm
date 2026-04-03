@@ -1,9 +1,9 @@
-use crate::ExitBehavior;
 use crate::domain::DomainId;
 use crate::renderable::*;
+use crate::ExitBehavior;
 use async_trait::async_trait;
 use config::keyassignment::{KeyAssignment, ScrollbackEraseMode};
-use downcast_rs::{Downcast, impl_downcast};
+use downcast_rs::{impl_downcast, Downcast};
 use frankenterm_dynamic::Value;
 use frankenterm_term::color::ColorPalette;
 use frankenterm_term::{
@@ -541,22 +541,22 @@ pub fn impl_get_logical_lines_via_get_lines<P: Pane + ?Sized>(
                     first_row: first + idx as StableRowIndex,
                 });
             }
-            Some(prior) => {
+            Some(prior)
                 if prior.logical.last_cell_was_wrapped()
-                    && prior.logical.len() <= MAX_LOGICAL_LINE_LEN
-                {
-                    let seqno = prior.logical.current_seqno().max(line.current_seqno());
-                    prior.logical.set_last_cell_was_wrapped(false, seqno);
-                    prior.logical.append_line(line.clone(), seqno);
-                    prior.physical_lines.push(line);
-                } else {
-                    let logical = line.clone();
-                    lines.push(LogicalLine {
-                        physical_lines: vec![line],
-                        logical,
-                        first_row: first + idx as StableRowIndex,
-                    });
-                }
+                    && prior.logical.len() <= MAX_LOGICAL_LINE_LEN =>
+            {
+                let seqno = prior.logical.current_seqno().max(line.current_seqno());
+                prior.logical.set_last_cell_was_wrapped(false, seqno);
+                prior.logical.append_line(line.clone(), seqno);
+                prior.physical_lines.push(line);
+            }
+            Some(_) => {
+                let logical = line.clone();
+                lines.push(LogicalLine {
+                    physical_lines: vec![line],
+                    logical,
+                    first_row: first + idx as StableRowIndex,
+                });
             }
         }
     }

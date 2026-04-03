@@ -9,13 +9,179 @@ use crate::escape::osc::OperatingSystemCommand;
 use crate::escape::osc::{ITermDimension, ITermFileData, ITermProprietary};
 use crate::escape::{Esc, OneBased};
 #[cfg(feature = "use_image")]
-use crate::image::{ImageDataType, TextureCoordinate};
+use crate::image::{ImageData, ImageDataType, TextureCoordinate};
 use crate::render::RenderTty;
 use crate::surface::{Change, CursorShape, CursorVisibility, LineAttribute, Position};
 use crate::Result;
 use finl_unicode::grapheme_clusters::Graphemes;
+#[cfg(feature = "use_image")]
+use image::codecs::gif::GifEncoder;
+#[cfg(feature = "use_image")]
+use image::codecs::png::PngEncoder;
+#[cfg(feature = "use_image")]
+use image::{
+    Delay, ExtendedColorType, Frame, GenericImage, GenericImageView, ImageBuffer, ImageEncoder,
+    Rgba, RgbaImage,
+};
 use std::io::Write;
 use terminfo::{capability as cap, Capability as TermInfoCapability};
+
+#[cfg(feature = "use_image")]
+fn is_full_image_region(top_left: TextureCoordinate, bottom_right: TextureCoordinate) -> bool {
+    top_left == TextureCoordinate::new_f32(0.0, 0.0)
+        && bottom_right == TextureCoordinate::new_f32(1.0, 1.0)
+}
+
+#[cfg(feature = "use_image")]
+fn texture_axis_to_pixel_bounds(start: f32, end: f32, dimension: u32) -> Result<(u32, u32)> {
+    crate::ensure!(
+        (0.0..=1.0).contains(&start) && (0.0..=1.0).contains(&end),
+        "image texture coordinates must be within 0..=1, got {start}..{end}"
+    );
+    crate::ensure!(
+        matches!(start.partial_cmp(&end), Some(std::cmp::Ordering::Less)),
+        "image texture coordinates must define a non-empty region, got {start}..{end}"
+    );
+    crate::ensure!(
+        dimension > 0,
+        "image dimension must be positive when computing crop bounds"
+    );
+
+    let start_px =
+        ((start * dimension as f32).floor() as i64).clamp(0, i64::from(dimension)) as u32;
+    let raw_end_px = ((end * dimension as f32).ceil() as i64).clamp(0, i64::from(dimension)) as u32;
+    let end_px = raw_end_px.max(start_px.saturating_add(1)).min(dimension);
+
+    crate::ensure!(
+        end_px > start_px,
+        "image crop bounds resolved to an empty slice ({start_px}..{end_px})"
+    );
+
+    Ok((start_px, end_px))
+}
+
+#[cfg(feature = "use_image")]
+fn crop_rgba_region(
+    width: u32,
+    height: u32,
+    data: &[u8],
+    top_left: TextureCoordinate,
+    bottom_right: TextureCoordinate,
+) -> Result<RgbaImage> {
+    let source = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, data.to_vec())
+        .ok_or_else(|| crate::error::StringWrap("ill formed RGBA image".to_string()))?;
+
+    let (left, right) =
+        texture_axis_to_pixel_bounds(top_left.x.into_inner(), bottom_right.x.into_inner(), width)?;
+    let (top, bottom) =
+        texture_axis_to_pixel_bounds(top_left.y.into_inner(), bottom_right.y.into_inner(), height)?;
+
+    let view = source.view(left, top, right - left, bottom - top);
+    let mut cropped = RgbaImage::new(right - left, bottom - top);
+    cropped
+        .copy_from(&*view, 0, 0)
+        .map_err(anyhow::Error::from)?;
+    Ok(cropped)
+}
+
+#[cfg(feature = "use_image")]
+fn encode_png(image: &RgbaImage) -> Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    let encoder = PngEncoder::new(&mut encoded);
+    encoder
+        .write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            ExtendedColorType::Rgba8,
+        )
+        .map_err(anyhow::Error::from)?;
+    Ok(encoded)
+}
+
+#[cfg(feature = "use_image")]
+fn encode_gif(frames: Vec<Frame>) -> Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = GifEncoder::new(&mut encoded);
+        encoder.encode_frames(frames).map_err(anyhow::Error::from)?;
+    }
+    Ok(encoded)
+}
+
+#[cfg(feature = "use_image")]
+fn encode_iterm_inline_image(
+    image: &crate::surface::Image,
+    top_left: TextureCoordinate,
+    bottom_right: TextureCoordinate,
+) -> Result<Vec<u8>> {
+    let full_region = is_full_image_region(top_left, bottom_right);
+    let image_data = image.image.data().clone();
+
+    match image_data {
+        ImageDataType::EncodedFile(data) if full_region => Ok(data),
+        ImageDataType::EncodedLease(lease) if full_region => Ok(lease.get_data()?),
+        ImageDataType::EncodedFile(data) => match ImageDataType::EncodedFile(data).decode() {
+            ImageDataType::EncodedFile(_) | ImageDataType::EncodedLease(_) => {
+                crate::bail!("cannot crop encoded image data unless the format is decodable")
+            }
+            decoded => encode_iterm_inline_image(
+                &crate::surface::Image {
+                    image: std::sync::Arc::new(ImageData::with_data(decoded)),
+                    ..image.clone()
+                },
+                top_left,
+                bottom_right,
+            ),
+        },
+        ImageDataType::EncodedLease(lease) => {
+            match ImageDataType::EncodedFile(lease.get_data()?).decode() {
+                ImageDataType::EncodedFile(_) | ImageDataType::EncodedLease(_) => {
+                    crate::bail!("cannot crop encoded image data unless the format is decodable")
+                }
+                decoded => encode_iterm_inline_image(
+                    &crate::surface::Image {
+                        image: std::sync::Arc::new(ImageData::with_data(decoded)),
+                        ..image.clone()
+                    },
+                    top_left,
+                    bottom_right,
+                ),
+            }
+        }
+        ImageDataType::Rgba8 {
+            width,
+            height,
+            data,
+            ..
+        } => encode_png(&crop_rgba_region(
+            width,
+            height,
+            &data,
+            top_left,
+            bottom_right,
+        )?),
+        ImageDataType::AnimRgba8 {
+            width,
+            height,
+            durations,
+            frames,
+            ..
+        } => {
+            let mut encoded_frames = Vec::with_capacity(frames.len());
+            for (frame_data, duration) in frames.into_iter().zip(durations.into_iter()) {
+                let frame = crop_rgba_region(width, height, &frame_data, top_left, bottom_right)?;
+                encoded_frames.push(Frame::from_parts(
+                    frame,
+                    0,
+                    0,
+                    Delay::from_saturating_duration(duration),
+                ));
+            }
+            encode_gif(encoded_frames)
+        }
+    }
+}
 
 pub struct TerminfoRenderer {
     caps: Capabilities,
@@ -695,23 +861,8 @@ impl TerminfoRenderer {
                 #[cfg(feature = "use_image")]
                 Change::Image(image) => {
                     if self.caps.iterm2_image() {
-                        let data = if image.top_left == TextureCoordinate::new_f32(0.0, 0.0)
-                            && image.bottom_right == TextureCoordinate::new_f32(1.0, 1.0)
-                        {
-                            // The whole image is requested, so we can send the
-                            // original image bytes over
-                            match &*image.image.data() {
-                                ImageDataType::EncodedFile(data) => data.to_vec(),
-                                ImageDataType::EncodedLease(lease) => lease.get_data()?,
-                                ImageDataType::AnimRgba8 { .. } | ImageDataType::Rgba8 { .. } => {
-                                    unimplemented!()
-                                }
-                            }
-                        } else {
-                            // TODO: slice out the requested region of the image,
-                            // and encode as a PNG.
-                            unimplemented!();
-                        };
+                        let data =
+                            encode_iterm_inline_image(image, image.top_left, image.bottom_right)?;
 
                         let file = ITermFileData {
                             name: None,
@@ -843,14 +994,22 @@ mod test {
     use crate::bail;
     use crate::caps::ProbeHints;
     use crate::color::{AnsiColor, ColorAttribute};
+    #[cfg(feature = "use_image")]
+    use crate::escape::osc::{ITermDimension, ITermProprietary, OperatingSystemCommand};
     use crate::escape::parser::Parser;
     use crate::escape::{Action, ControlCode, Esc, EscCode};
     use crate::input::InputEvent;
     use crate::terminal::unix::{Purge, SetAttributeWhen, UnixTty};
     use crate::terminal::{cast, ScreenSize, Terminal, TerminalWaker};
+    #[cfg(feature = "use_image")]
+    use crate::{image::ImageData, surface::Image};
+    #[cfg(feature = "use_image")]
+    use image::AnimationDecoder;
     use libc::winsize;
     use std::io::{Error as IoError, ErrorKind, Read, Result as IoResult, Write};
     use std::mem;
+    #[cfg(feature = "use_image")]
+    use std::sync::Arc;
     use std::time::Duration;
     use terminfo;
     use termios::Termios;
@@ -1019,6 +1178,39 @@ mod test {
         }
     }
 
+    #[cfg(feature = "use_image")]
+    fn iterm2_caps() -> Capabilities {
+        xterm_terminfo_with_hints(
+            ProbeHints::default()
+                .term_program(Some("iTerm.app".into()))
+                .term_program_version(Some("3.4.0".into())),
+        )
+    }
+
+    #[cfg(feature = "use_image")]
+    fn parse_iterm_file(out: &FakeTerm) -> ITermFileData {
+        let parsed = out.parse();
+        match parsed.as_slice() {
+            [Action::OperatingSystemCommand(osc)]
+            | [Action::OperatingSystemCommand(osc), Action::Esc(Esc::Code(EscCode::StringTerminator))] => {
+                match osc.as_ref() {
+                    OperatingSystemCommand::ITermProprietary(ITermProprietary::File(file)) => {
+                        (**file).clone()
+                    }
+                    other => panic!("expected iTerm file OSC, got {:?}", other),
+                }
+            }
+            other => panic!("expected a single OSC action, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "use_image")]
+    fn render_iterm_image(change: Change) -> FakeTerm {
+        let mut out = FakeTerm::new(iterm2_caps());
+        out.render(&[change]).unwrap();
+        out
+    }
+
     #[test]
     fn empty_render() {
         let mut out = FakeTerm::new(xterm_terminfo());
@@ -1067,6 +1259,129 @@ mod test {
             CellAttributes::default()
                 .set_intensity(Intensity::Bold)
                 .clone()
+        );
+    }
+
+    #[cfg(feature = "use_image")]
+    #[test]
+    fn iterm2_full_rgba_image_is_encoded_as_png() {
+        let change = Change::Image(Image {
+            width: 1,
+            height: 1,
+            top_left: TextureCoordinate::new_f32(0.0, 0.0),
+            bottom_right: TextureCoordinate::new_f32(1.0, 1.0),
+            image: Arc::new(ImageData::with_data(ImageDataType::new_single_frame(
+                2,
+                1,
+                vec![255, 0, 0, 255, 0, 255, 0, 255],
+            ))),
+        });
+
+        let out = render_iterm_image(change);
+        let file = parse_iterm_file(&out);
+
+        assert_eq!(file.width, ITermDimension::Cells(1));
+        assert_eq!(file.height, ITermDimension::Cells(1));
+        assert_eq!(
+            image::guess_format(&file.data).unwrap(),
+            image::ImageFormat::Png
+        );
+        assert_eq!(
+            image::load_from_memory(&file.data)
+                .unwrap()
+                .into_rgba8()
+                .into_vec(),
+            vec![255, 0, 0, 255, 0, 255, 0, 255]
+        );
+    }
+
+    #[cfg(feature = "use_image")]
+    #[test]
+    fn iterm2_cropped_rgba_image_uses_only_requested_region() {
+        let change = Change::Image(Image {
+            width: 1,
+            height: 1,
+            top_left: TextureCoordinate::new_f32(0.5, 0.0),
+            bottom_right: TextureCoordinate::new_f32(1.0, 1.0),
+            image: Arc::new(ImageData::with_data(ImageDataType::new_single_frame(
+                2,
+                2,
+                vec![
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+                ],
+            ))),
+        });
+
+        let out = render_iterm_image(change);
+        let file = parse_iterm_file(&out);
+        let image = image::load_from_memory(&file.data).unwrap().into_rgba8();
+
+        assert_eq!(image.dimensions(), (1, 2));
+        assert_eq!(image.into_vec(), vec![0, 255, 0, 255, 255, 255, 0, 255]);
+    }
+
+    #[cfg(feature = "use_image")]
+    #[test]
+    fn iterm2_animated_rgba_image_is_encoded_as_gif() {
+        let change = Change::Image(Image {
+            width: 1,
+            height: 1,
+            top_left: TextureCoordinate::new_f32(0.0, 0.0),
+            bottom_right: TextureCoordinate::new_f32(1.0, 1.0),
+            image: Arc::new(ImageData::with_data(ImageDataType::AnimRgba8 {
+                width: 1,
+                height: 1,
+                durations: vec![Duration::from_millis(10), Duration::from_millis(20)],
+                frames: vec![vec![255, 0, 0, 255], vec![0, 0, 255, 255]],
+                hashes: vec![
+                    ImageDataType::hash_bytes(&[255, 0, 0, 255]),
+                    ImageDataType::hash_bytes(&[0, 0, 255, 255]),
+                ],
+            })),
+        });
+
+        let out = render_iterm_image(change);
+        let file = parse_iterm_file(&out);
+
+        assert_eq!(
+            image::guess_format(&file.data).unwrap(),
+            image::ImageFormat::Gif
+        );
+
+        let decoder =
+            image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&file.data)).unwrap();
+        let frames = decoder.into_frames().collect_frames().unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(
+            frames[0].clone().into_buffer().into_vec(),
+            vec![255, 0, 0, 255]
+        );
+        assert_eq!(
+            frames[1].clone().into_buffer().into_vec(),
+            vec![0, 0, 255, 255]
+        );
+    }
+
+    #[cfg(feature = "use_image")]
+    #[test]
+    fn iterm2_cropped_undecodable_image_returns_an_explicit_error() {
+        let mut out = FakeTerm::new(iterm2_caps());
+        let image = Change::Image(Image {
+            width: 1,
+            height: 1,
+            top_left: TextureCoordinate::new_f32(0.25, 0.0),
+            bottom_right: TextureCoordinate::new_f32(0.75, 1.0),
+            image: Arc::new(ImageData::with_data(ImageDataType::EncodedFile(vec![
+                0xde, 0xad, 0xbe, 0xef,
+            ]))),
+        });
+
+        let err = out.render(&[image]).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("cannot crop encoded image data unless the format is decodable"),
+            "unexpected error: {}",
+            message
         );
     }
 

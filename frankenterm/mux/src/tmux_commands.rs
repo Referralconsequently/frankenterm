@@ -1,19 +1,19 @@
 use crate::domain::{DomainId, WriterWrapper};
 use crate::localpane::LocalPane;
-use crate::pane::{PaneId, alloc_pane_id};
+use crate::pane::{alloc_pane_id, PaneId};
 use crate::tab::{SplitDirection, SplitRequest, SplitSize, Tab, TabId};
 use crate::tmux::{AttachState, TmuxDomain, TmuxDomainState, TmuxRemotePane, TmuxTab};
-use crate::tmux_pty::{TmuxChild, TmuxPty};
+use crate::tmux_pty::{TmuxChild, TmuxChildState, TmuxPty};
 use crate::{Mux, MuxNotification, Pane};
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use frankenterm_term::TerminalSize;
-use parking_lot::{Condvar, Mutex};
-use portable_pty::{MasterPty, PtySize};
+use parking_lot::Mutex;
+use portable_pty::{ExitStatus, MasterPty, PtySize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Write};
 use std::io::Write as _;
 use std::sync::Arc;
-use termwiz::escape::csi::{CSI, Cursor};
+use termwiz::escape::csi::{Cursor, CSI};
 use termwiz::escape::{Action, OneBased};
 use termwiz::tmux_cc::*;
 
@@ -116,7 +116,11 @@ impl TmuxDomainState {
         let mut local_pane_ids = Vec::with_capacity(pane_ids.len());
         for pane_id in pane_ids {
             if let Some(remote) = remote_panes.remove(pane_id) {
-                local_pane_ids.push(remote.lock().local_pane_id);
+                let remote = remote.lock();
+                remote
+                    .child_state
+                    .mark_exited(ExitStatus::with_exit_code(0));
+                local_pane_ids.push(remote.local_pane_id);
             }
             let _ = backlog.remove(pane_id);
         }
@@ -202,12 +206,12 @@ impl TmuxDomainState {
 
     fn create_pane(&self, pane: &PaneItem) -> anyhow::Result<Arc<dyn Pane>> {
         let local_pane_id = alloc_pane_id();
-        let active_lock = Arc::new((Mutex::new(false), Condvar::new()));
+        let child_state = Arc::new(TmuxChildState::new());
         let (output_read, output_write) = filedescriptor::socketpair()?;
         let ref_pane = Arc::new(Mutex::new(TmuxRemotePane {
             local_pane_id,
             output_write,
-            active_lock: active_lock.clone(),
+            child_state: child_state.clone(),
             session_id: 0,
             window_id: pane.window_id,
             pane_id: pane.pane_id,
@@ -241,9 +245,12 @@ impl TmuxDomainState {
             dpi: 0,
         };
 
-        let child = TmuxChild {
-            active_lock: active_lock.clone(),
-        };
+        let child = TmuxChild::new(
+            self.domain_id,
+            pane.pane_id,
+            self.cmd_queue.clone(),
+            child_state,
+        );
 
         let terminal = frankenterm_term::Terminal::new(
             size,
@@ -1246,6 +1253,26 @@ impl TmuxCommand for SelectPane {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct KillPane {
+    pub pane_id: TmuxPaneId,
+}
+
+impl TmuxCommand for KillPane {
+    fn get_command(&self, _domain_id: DomainId) -> String {
+        format!("kill-pane -t %{}\n", self.pane_id)
+    }
+
+    fn process_result(&self, domain_id: DomainId, result: &Guarded) -> anyhow::Result<()> {
+        if result.error {
+            let error = format!("kill-pane in domain={domain_id} failed: {result:#?}");
+            log::error!("{error}");
+            anyhow::bail!("{error}");
+        }
+        Ok(())
+    }
+}
+
 // This is a dummy command which indicates the attaching is done, it prevents the tmux output
 // the unexpected and unnecessary content when syncing with back end in attaching stage.
 #[derive(Debug)]
@@ -1286,24 +1313,6 @@ mod tests {
     use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
     static MUX_TEST_LOCK: StdMutex<()> = StdMutex::new(());
-
-    fn make_remote_pane(local_pane_id: PaneId, pane_id: TmuxPaneId) -> Arc<Mutex<TmuxRemotePane>> {
-        let (_read, write) = filedescriptor::socketpair().expect("socketpair");
-        Arc::new(Mutex::new(TmuxRemotePane {
-            local_pane_id,
-            output_write: write,
-            active_lock: Arc::new((Mutex::new(false), Condvar::new())),
-            session_id: 1,
-            window_id: 1,
-            pane_id,
-            cursor_x: 0,
-            cursor_y: 0,
-            pane_width: 80,
-            pane_height: 24,
-            pane_left: 0,
-            pane_top: 0,
-        }))
-    }
 
     struct ScopedMux {
         prior: Option<Arc<Mux>>,
@@ -1349,8 +1358,44 @@ mod tests {
     #[test]
     fn remove_tmux_pane_state_entries_removes_requested_ids_only() {
         let mut remote_panes: HashMap<TmuxPaneId, Arc<Mutex<TmuxRemotePane>>> = HashMap::new();
-        remote_panes.insert(11, make_remote_pane(101, 11));
-        remote_panes.insert(22, make_remote_pane(202, 22));
+        let removed_child_state = Arc::new(TmuxChildState::new());
+        let retained_child_state = Arc::new(TmuxChildState::new());
+        let (_read_removed, write_removed) = filedescriptor::socketpair().expect("socketpair");
+        let (_read_retained, write_retained) = filedescriptor::socketpair().expect("socketpair");
+        remote_panes.insert(
+            11,
+            Arc::new(Mutex::new(TmuxRemotePane {
+                local_pane_id: 101,
+                output_write: write_removed,
+                child_state: removed_child_state.clone(),
+                session_id: 1,
+                window_id: 1,
+                pane_id: 11,
+                cursor_x: 0,
+                cursor_y: 0,
+                pane_width: 80,
+                pane_height: 24,
+                pane_left: 0,
+                pane_top: 0,
+            })),
+        );
+        remote_panes.insert(
+            22,
+            Arc::new(Mutex::new(TmuxRemotePane {
+                local_pane_id: 202,
+                output_write: write_retained,
+                child_state: retained_child_state.clone(),
+                session_id: 1,
+                window_id: 1,
+                pane_id: 22,
+                cursor_x: 0,
+                cursor_y: 0,
+                pane_width: 80,
+                pane_height: 24,
+                pane_left: 0,
+                pane_top: 0,
+            })),
+        );
 
         let mut backlog: HashMap<TmuxPaneId, Vec<u8>> = HashMap::new();
         backlog.insert(11, b"pane-11".to_vec());
@@ -1369,6 +1414,13 @@ mod tests {
         assert!(!backlog.contains_key(&11));
         assert!(backlog.contains_key(&22));
         assert!(!backlog.contains_key(&33));
+        assert_eq!(
+            removed_child_state
+                .try_wait()
+                .map(|status| status.exit_code()),
+            Some(0)
+        );
+        assert!(retained_child_state.try_wait().is_none());
     }
 
     #[test]
@@ -1483,6 +1535,12 @@ mod tests {
     }
 
     #[test]
+    fn kill_pane_get_command() {
+        let cmd = KillPane { pane_id: 23 };
+        assert_eq!(cmd.get_command(0), "kill-pane -t %23\n");
+    }
+
+    #[test]
     fn attach_done_get_command() {
         let cmd = AttachDone;
         assert_eq!(cmd.get_command(0), "list-session\n");
@@ -1528,13 +1586,11 @@ mod tests {
 
         cmd.process_result(domain_id, &result)?;
 
-        assert!(
-            tmux_domain
-                .inner
-                .support_commands
-                .lock()
-                .contains_key("list-windows")
-        );
+        assert!(tmux_domain
+            .inner
+            .support_commands
+            .lock()
+            .contains_key("list-windows"));
 
         let queue = tmux_domain.inner.cmd_queue.lock();
         assert_eq!(queue.len(), 1);

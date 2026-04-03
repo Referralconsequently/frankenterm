@@ -44,6 +44,7 @@ pub struct ClientPane {
     mouse: Arc<Mutex<MouseState>>,
     clipboard: Mutex<Option<Arc<dyn Clipboard>>>,
     mouse_grabbed: Mutex<bool>,
+    alt_screen_active: Mutex<bool>,
     ignore_next_kill: Mutex<bool>,
     user_vars: Mutex<HashMap<String, String>>,
     config: Mutex<Option<Arc<dyn TerminalConfiguration>>>,
@@ -58,6 +59,7 @@ impl ClientPane {
         remote_pane_id: PaneId,
         size: TerminalSize,
         title: &str,
+        alt_screen_active: bool,
     ) -> Self {
         let local_pane_id = alloc_pane_id();
         let writer = PaneWriter {
@@ -126,6 +128,7 @@ impl ClientPane {
             palette: Mutex::new(palette),
             clipboard: Mutex::new(None),
             mouse_grabbed: Mutex::new(false),
+            alt_screen_active: Mutex::new(alt_screen_active),
             ignore_next_kill: Mutex::new(false),
             unseen_output: Mutex::new(false),
             user_vars: Mutex::new(HashMap::new()),
@@ -138,6 +141,7 @@ impl ClientPane {
         match pdu {
             Pdu::GetPaneRenderChangesResponse(mut delta) => {
                 let mouse_grabbed = delta.mouse_grabbed;
+                let alt_screen_active = delta.alt_screen_active;
                 {
                     let renderable = self.renderable.lock();
                     if renderable.get_current_seqno() > delta.seqno {
@@ -157,6 +161,7 @@ impl ClientPane {
                     .apply_changes_to_surface(delta, bonus_lines);
                 if applied {
                     *self.mouse_grabbed.lock() = mouse_grabbed;
+                    *self.alt_screen_active.lock() = alt_screen_active;
                 }
             }
             Pdu::SetClipboard(SetClipboard {
@@ -259,6 +264,10 @@ impl ClientPane {
     /// It isn't perfect.
     pub fn ignore_next_kill(&self) {
         *self.ignore_next_kill.lock() = true;
+    }
+
+    pub fn sync_remote_listing_state(&self, alt_screen_active: bool) {
+        *self.alt_screen_active.lock() = alt_screen_active;
     }
 }
 
@@ -570,8 +579,7 @@ impl Pane for ClientPane {
     }
 
     fn is_alt_screen_active(&self) -> bool {
-        // FIXME: retrieve this from the remote
-        false
+        *self.alt_screen_active.lock()
     }
 
     fn get_current_working_dir(&self, _policy: CachePolicy) -> Option<Url> {
@@ -682,5 +690,117 @@ impl std::io::Write for PaneWriter {
 
     fn flush(&mut self) -> Result<(), std::io::Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::Client;
+    use crate::domain::ClientDomainConfig;
+    use config::UnixDomain;
+    use mux::renderable::{RenderableDimensions, StableCursorPosition};
+    use mux::Mux;
+    use promise::spawn::SimpleExecutor;
+    use std::sync::{Mutex as StdMutex, Once};
+
+    static TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    fn ensure_test_scheduler() {
+        static TEST_SCHEDULER: Once = Once::new();
+        TEST_SCHEDULER.call_once(|| {
+            let _ = Box::leak(Box::new(SimpleExecutor::new()));
+        });
+    }
+
+    struct ScopedMux(Option<Arc<Mux>>);
+
+    impl ScopedMux {
+        fn install(mux: &Arc<Mux>) -> Self {
+            let prior = Mux::try_get();
+            Mux::set_mux(mux);
+            Self(prior)
+        }
+    }
+
+    impl Drop for ScopedMux {
+        fn drop(&mut self) {
+            if let Some(prior) = self.0.take() {
+                Mux::set_mux(&prior);
+            } else {
+                Mux::shutdown();
+            }
+        }
+    }
+
+    fn test_client_inner(local_domain_id: DomainId) -> Arc<ClientInner> {
+        let unix = UnixDomain {
+            name: "client-pane-test".to_string(),
+            ..UnixDomain::default()
+        };
+        Arc::new(ClientInner::new(
+            local_domain_id,
+            Client::new_test_client(Some(local_domain_id), ClientDomainConfig::Unix(unix)),
+            None,
+            None,
+            false,
+        ))
+    }
+
+    #[test]
+    fn render_delta_updates_authoritative_alt_screen_state() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        ensure_test_scheduler();
+        let mux = Arc::new(Mux::new(None));
+        let _guard = ScopedMux::install(&mux);
+        let inner = test_client_inner(17);
+        let pane = ClientPane::new(
+            &inner,
+            23,
+            29,
+            TerminalSize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 800,
+                pixel_height: 480,
+                dpi: 96,
+            },
+            "shell",
+            false,
+        );
+        assert!(!pane.is_alt_screen_active());
+
+        promise::spawn::block_on(async {
+            pane.process_unilateral(Pdu::GetPaneRenderChangesResponse(
+                GetPaneRenderChangesResponse {
+                    pane_id: 29,
+                    mouse_grabbed: false,
+                    alt_screen_active: true,
+                    cursor_position: StableCursorPosition::default(),
+                    dimensions: RenderableDimensions {
+                        cols: 80,
+                        viewport_rows: 24,
+                        scrollback_rows: 24,
+                        physical_top: 0,
+                        scrollback_top: 0,
+                        dpi: 96,
+                        pixel_width: 800,
+                        pixel_height: 480,
+                        reverse_video: false,
+                    },
+                    tiered_scrollback_status: None,
+                    dirty_lines: Vec::new(),
+                    title: "shell".to_string(),
+                    working_dir: None,
+                    bonus_lines: SerializedLines::default(),
+                    input_serial: None,
+                    seqno: 1,
+                },
+            ))
+            .await
+        })
+        .expect("render delta should apply");
+
+        assert!(pane.is_alt_screen_active());
     }
 }

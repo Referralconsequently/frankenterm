@@ -40,6 +40,7 @@ libssh-rs = {workspace=true, features=["vendored"], optional = true}
 log.workspace = true
 portable-pty.workspace = true
 regex.workspace = true
+shell-words.workspace = true
 asupersync = { workspace = true, optional = true }
 async-channel = { workspace = true, optional = true }
 smol = { workspace = true, optional = true }
@@ -62,6 +63,5 @@ env_logger.workspace = true
 k9.workspace = true
 predicates.workspace = true
 rstest.workspace = true
-shell-words.workspace = true
 termwiz.workspace = true
 whoami.workspace = true

@@ -1,5 +1,5 @@
 use crate::domain::DomainId;
-use crate::layout::{LayoutCycle, PaneStack, SwapLayout, redistribute_panes};
+use crate::layout::{redistribute_panes, LayoutCycle, PaneStack, SwapLayout};
 use crate::pane::*;
 use crate::renderable::StableCursorPosition;
 use crate::{Mux, MuxNotification, WindowId};
@@ -235,16 +235,16 @@ impl SplitDirectionAndSize {
     }
 
     pub fn size(&self) -> TerminalSize {
-        let cell_width = if self.first.cols > 0 {
-            self.first.pixel_width / self.first.cols
-        } else {
-            0
-        };
-        let cell_height = if self.first.rows > 0 {
-            self.first.pixel_height / self.first.rows
-        } else {
-            0
-        };
+        let cell_width = self
+            .first
+            .pixel_width
+            .checked_div(self.first.cols)
+            .unwrap_or(0);
+        let cell_height = self
+            .first
+            .pixel_height
+            .checked_div(self.first.rows)
+            .unwrap_or(0);
 
         let rows = self.height();
         let cols = self.width();
@@ -342,6 +342,7 @@ fn pane_tree(
                     dpi: dims.dpi,
                 },
                 working_dir: working_dir.map(Into::into),
+                alt_screen_active: pane.is_alt_screen_active(),
                 workspace: workspace.to_string(),
                 cursor_pos,
                 physical_top: dims.physical_top,
@@ -1184,16 +1185,8 @@ fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
     TerminalSize {
         rows: 1,
         cols: 1,
-        pixel_width: if size.cols > 0 {
-            size.pixel_width / size.cols
-        } else {
-            0
-        },
-        pixel_height: if size.rows > 0 {
-            size.pixel_height / size.rows
-        } else {
-            0
-        },
+        pixel_width: size.pixel_width.checked_div(size.cols).unwrap_or(0),
+        pixel_height: size.pixel_height.checked_div(size.rows).unwrap_or(0),
         dpi: size.dpi,
     }
 }
@@ -3737,6 +3730,8 @@ pub struct PaneEntry {
     pub title: String,
     pub size: TerminalSize,
     pub working_dir: Option<SerdeUrl>,
+    #[serde(default)]
+    pub alt_screen_active: bool,
     pub is_active_pane: bool,
     pub is_zoomed_pane: bool,
     pub workspace: String,
@@ -3983,16 +3978,15 @@ mod test {
         assert_eq!(80, panes[0].width);
         assert_eq!(24, panes[0].height);
 
-        assert!(
-            tab.compute_split_size(
+        assert!(tab
+            .compute_split_size(
                 1,
                 SplitRequest {
                     direction: SplitDirection::Horizontal,
                     ..Default::default()
                 }
             )
-            .is_none()
-        );
+            .is_none());
 
         let horz_size = tab
             .compute_split_size(
@@ -5453,6 +5447,7 @@ mod test {
             title: "test".to_string(),
             size: TerminalSize::default(),
             working_dir: None,
+            alt_screen_active: false,
             is_active_pane: true,
             is_zoomed_pane: false,
             workspace: "default".to_string(),
@@ -5478,6 +5473,7 @@ mod test {
             title: "test".to_string(),
             size: TerminalSize::default(),
             working_dir: None,
+            alt_screen_active: false,
             is_active_pane: false,
             is_zoomed_pane: false,
             workspace: "ws".to_string(),
@@ -5555,6 +5551,7 @@ mod test {
             title: "shell".to_string(),
             size: TerminalSize::default(),
             working_dir: None,
+            alt_screen_active: false,
             is_active_pane: true,
             is_zoomed_pane: false,
             workspace: "default".to_string(),
@@ -5577,6 +5574,7 @@ mod test {
             title: "vim".to_string(),
             size: TerminalSize::default(),
             working_dir: None,
+            alt_screen_active: false,
             is_active_pane: false,
             is_zoomed_pane: true,
             workspace: "coding".to_string(),

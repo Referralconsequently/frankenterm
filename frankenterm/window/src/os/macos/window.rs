@@ -142,11 +142,50 @@ pub enum BackendImpl {
     Egl(Rc<crate::egl::GlState>),
 }
 
+fn backing_dimensions_from_rect(backing_frame: NSRect) -> (u32, u32) {
+    (
+        backing_frame.size.width.max(0.0) as u32,
+        backing_frame.size.height.max(0.0) as u32,
+    )
+}
+
 impl BackendImpl {
-    pub fn update(&self) {
-        if let Self::Cgl(be) = self {
-            be.update();
+    /// The native window has already processed the resize. Refresh any
+    /// backend-specific drawable bookkeeping before the logical resize event
+    /// is dispatched to the embedding application.
+    pub fn resize(&self, new_size: (u32, u32)) {
+        match self {
+            Self::Cgl(be) => glium::backend::Backend::resize(be.as_ref(), new_size),
+            Self::Egl(be) => glium::backend::Backend::resize(be.as_ref(), new_size),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::backing_dimensions_from_rect;
+    use cocoa::foundation::{NSPoint, NSRect, NSSize};
+
+    #[test]
+    fn backing_dimensions_from_rect_preserve_positive_sizes() {
+        assert_eq!(
+            backing_dimensions_from_rect(NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(640.0, 480.0),
+            )),
+            (640, 480)
+        );
+    }
+
+    #[test]
+    fn backing_dimensions_from_rect_clamp_negative_sizes() {
+        assert_eq!(
+            backing_dimensions_from_rect(NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(-3.0, 27.0),
+            )),
+            (0, 27)
+        );
     }
 }
 
@@ -232,6 +271,12 @@ impl GlContextPair {
                 (context, BackendImpl::Cgl(backend))
             }
         };
+
+        unsafe {
+            let frame = NSView::frame(view);
+            let backing_frame = NSView::convertRectToBacking(view, frame);
+            backend.resize(backing_dimensions_from_rect(backing_frame));
+        }
 
         Ok(Self { context, backend })
     }
@@ -321,7 +366,7 @@ mod cglbits {
 
     unsafe impl glium::backend::Backend for GlState {
         fn resize(&self, _: (u32, u32)) {
-            todo!()
+            self.update();
         }
 
         fn swap_buffers(&self) -> Result<(), glium::SwapBuffersError> {
@@ -347,10 +392,7 @@ mod cglbits {
                 let view = self.gl_context.view();
                 let frame = NSView::frame(view);
                 let backing_frame = NSView::convertRectToBacking(view, frame);
-                (
-                    backing_frame.size.width as u32,
-                    backing_frame.size.height as u32,
-                )
+                backing_dimensions_from_rect(backing_frame)
             }
         }
 
@@ -2916,20 +2958,15 @@ impl WindowView {
     }
 
     extern "C" fn did_resize(this: &mut Object, _sel: Sel, _notification: id) {
-        if let Some(this) = Self::get_this(this) {
-            let inner = this.inner.borrow_mut();
-
-            if let Some(gl_context_pair) = inner.gl_context_pair.as_ref() {
-                gl_context_pair.backend.update();
-            }
-        }
-
         let frame = unsafe { NSView::frame(this as *mut _) };
         let backing_frame = unsafe { NSView::convertRectToBacking(this as *mut _, frame) };
-        let width = backing_frame.size.width;
-        let height = backing_frame.size.height;
+        let (pixel_width, pixel_height) = backing_dimensions_from_rect(backing_frame);
         if let Some(this) = Self::get_this(this) {
             let mut inner = this.inner.borrow_mut();
+
+            if let Some(gl_context_pair) = inner.gl_context_pair.as_ref() {
+                gl_context_pair.backend.resize((pixel_width, pixel_height));
+            }
 
             // This is a little gross; ideally we'd call
             // WindowInner:is_fullscreen to determine this, but
@@ -2990,8 +3027,8 @@ impl WindowView {
 
             inner.events.dispatch(WindowEvent::Resized {
                 dimensions: Dimensions {
-                    pixel_width: width as usize,
-                    pixel_height: height as usize,
+                    pixel_width: pixel_width as usize,
+                    pixel_height: pixel_height as usize,
                     dpi,
                 },
                 window_state: screen_state | level_state,

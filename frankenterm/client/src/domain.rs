@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use codec::{ListPanesResponse, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{SshDomain, TlsDomainClient, UnixDomain};
+use mux::client::ClientId;
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
@@ -20,6 +21,7 @@ use wezterm_term::TerminalSize;
 pub struct ClientInner {
     pub client: Client,
     pub local_domain_id: DomainId,
+    owner_client_id: Option<Arc<ClientId>>,
     pub local_echo_threshold_ms: Option<u64>,
     pub overlay_lag_indicator: bool,
     remote_to_local_window: Mutex<HashMap<WindowId, WindowId>>,
@@ -234,12 +236,14 @@ impl ClientInner {
     pub fn new(
         local_domain_id: DomainId,
         client: Client,
+        owner_client_id: Option<Arc<ClientId>>,
         local_echo_threshold_ms: Option<u64>,
         overlay_lag_indicator: bool,
     ) -> Self {
         Self {
             client,
             local_domain_id,
+            owner_client_id,
             local_echo_threshold_ms,
             overlay_lag_indicator,
             remote_to_local_window: Mutex::new(HashMap::new()),
@@ -275,6 +279,40 @@ async fn update_remote_workspace(
     Ok(())
 }
 
+async fn update_remote_active_workspace(
+    local_domain_id: DomainId,
+    pdu: codec::SetActiveWorkspace,
+) -> anyhow::Result<()> {
+    let inner = ClientDomain::get_client_inner_for_domain(local_domain_id)?;
+    inner.client.set_active_workspace(pdu).await?;
+    Ok(())
+}
+
+fn active_workspace_sync_request(
+    owner_client_id: Option<&Arc<ClientId>>,
+    changed_client_id: &Arc<ClientId>,
+    mux: &Mux,
+) -> Option<codec::SetActiveWorkspace> {
+    let owner_client_id = owner_client_id?;
+    if owner_client_id != changed_client_id {
+        return None;
+    }
+
+    Some(codec::SetActiveWorkspace {
+        workspace: mux.active_workspace_for_client(changed_client_id),
+    })
+}
+
+fn current_active_workspace_sync(
+    inner: &ClientInner,
+    mux: &Mux,
+) -> Option<codec::SetActiveWorkspace> {
+    let owner_client_id = inner.owner_client_id.as_ref()?;
+    Some(codec::SetActiveWorkspace {
+        workspace: mux.active_workspace_for_client(owner_client_id),
+    })
+}
+
 fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -> bool {
     let mux = Mux::get();
     let domain = match mux.get_domain(local_domain_id) {
@@ -287,8 +325,17 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
     };
 
     match notif {
-        MuxNotification::ActiveWorkspaceChanged(_client_id) => {
-            // TODO: advice remote host of interesting workspaces
+        MuxNotification::ActiveWorkspaceChanged(client_id) => {
+            if let Some(inner) = client_domain.inner() {
+                if let Some(request) =
+                    active_workspace_sync_request(inner.owner_client_id.as_ref(), &client_id, &mux)
+                {
+                    promise::spawn::spawn(async move {
+                        let _ = update_remote_active_workspace(local_domain_id, request).await;
+                    })
+                    .detach();
+                }
+            }
         }
         MuxNotification::WorkspaceRenamed {
             old_workspace,
@@ -478,7 +525,11 @@ impl ClientDomain {
         let inner = Self::get_client_inner_for_domain(domain_id)?;
 
         let panes = inner.client.list_panes().await?;
-        Self::process_pane_list(inner, panes, None)?;
+        Self::process_pane_list(Arc::clone(&inner), panes, None)?;
+
+        if let Some(request) = current_active_workspace_sync(&inner, &Mux::get()) {
+            let _ = update_remote_active_workspace(domain_id, request).await;
+        }
 
         ui.close();
         Ok(())
@@ -486,10 +537,48 @@ impl ClientDomain {
 
     pub async fn resync(&self) -> anyhow::Result<()> {
         if let Some(inner) = self.inner() {
-            let panes = inner.client.list_panes().await?;
-            Self::process_pane_list(inner, panes, None)?;
+            Self::sync_remote_topology(inner, None).await?;
         }
         Ok(())
+    }
+
+    async fn sync_remote_topology(
+        inner: Arc<ClientInner>,
+        primary_window_id: Option<WindowId>,
+    ) -> anyhow::Result<()> {
+        let panes = inner.client.list_panes().await?;
+        Self::process_pane_list(inner, panes, primary_window_id)?;
+        Ok(())
+    }
+
+    fn resolve_remote_spawn_entities(
+        inner: &Arc<ClientInner>,
+        result: codec::SpawnResponse,
+    ) -> anyhow::Result<(Arc<Tab>, Arc<dyn Pane>, WindowId)> {
+        let mux = Mux::get();
+        let local_tab_id = inner
+            .remote_to_local_tab_id(result.tab_id)
+            .ok_or_else(|| anyhow!("remote tab {} didn't resolve after resync", result.tab_id))?;
+        let local_pane_id = inner
+            .remote_to_local_pane_id(result.pane_id)
+            .ok_or_else(|| anyhow!("remote pane {} didn't resolve after resync", result.pane_id))?;
+        let local_window_id = inner
+            .remote_to_local_window(result.window_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "remote window {} didn't resolve after resync",
+                    result.window_id
+                )
+            })?;
+
+        let tab = mux
+            .get_tab(local_tab_id)
+            .ok_or_else(|| anyhow!("local tab {local_tab_id} is invalid"))?;
+        let pane = mux
+            .get_pane(local_pane_id)
+            .ok_or_else(|| anyhow!("local pane {local_pane_id} is invalid"))?;
+
+        Ok((tab, pane, local_window_id))
     }
 
     pub fn process_remote_window_title_change(&self, remote_window_id: WindowId, title: String) {
@@ -591,7 +680,7 @@ impl ClientDomain {
                 tab.sync_with_pane_tree(root_size, tabroot, |entry| {
                     workspace.replace(entry.workspace.clone());
                     remote_panes_to_forget.remove(&entry.pane_id);
-                    if let Some(pane_id) = inner.remote_to_local_pane_id(entry.pane_id) {
+                    let pane = if let Some(pane_id) = inner.remote_to_local_pane_id(entry.pane_id) {
                         match mux.get_pane(pane_id) {
                             Some(pane) => pane,
                             None => {
@@ -605,6 +694,7 @@ impl ClientDomain {
                                     entry.pane_id,
                                     entry.size,
                                     &entry.title,
+                                    entry.alt_screen_active,
                                 ));
                                 mux.add_pane(&pane).expect("failed to add pane to mux");
                                 pane
@@ -617,6 +707,7 @@ impl ClientDomain {
                             entry.pane_id,
                             entry.size,
                             &entry.title,
+                            entry.alt_screen_active,
                         ));
                         log::debug!(
                             "domain: {} attaching to remote pane {:?} -> local pane_id {}",
@@ -626,7 +717,11 @@ impl ClientDomain {
                         );
                         mux.add_pane(&pane).expect("failed to add pane to mux");
                         pane
+                    };
+                    if let Some(client_pane) = pane.downcast_ref::<ClientPane>() {
+                        client_pane.sync_remote_listing_state(entry.alt_screen_active);
                     }
+                    pane
                 });
 
                 if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
@@ -733,10 +828,12 @@ impl ClientDomain {
             .ok_or_else(|| anyhow!("domain {} is not a ClientDomain", domain_id))?;
         let threshold = domain.config.local_echo_threshold_ms();
         let overlay_lag_indicator = domain.config.overlay_lag_indicator();
+        let owner_client_id = mux.active_identity();
 
         let inner = Arc::new(ClientInner::new(
             domain_id,
             client,
+            owner_client_id,
             threshold,
             overlay_lag_indicator,
         ));
@@ -746,7 +843,14 @@ impl ClientDomain {
         // attached domain with incomplete pane mappings.
         Self::process_pane_list(Arc::clone(&inner), panes, primary_window_id)?;
 
-        *domain.inner.lock().unwrap() = Some(inner);
+        *domain.inner.lock().unwrap() = Some(Arc::clone(&inner));
+
+        if let Some(request) = current_active_workspace_sync(&inner, &mux) {
+            promise::spawn::spawn(async move {
+                let _ = update_remote_active_workspace(domain_id, request).await;
+            })
+            .detach();
+        }
 
         Ok(())
     }
@@ -768,11 +872,30 @@ impl Domain for ClientDomain {
 
     async fn spawn_pane(
         &self,
-        _size: TerminalSize,
-        _command: Option<CommandBuilder>,
-        _command_dir: Option<String>,
+        size: TerminalSize,
+        command: Option<CommandBuilder>,
+        command_dir: Option<String>,
     ) -> anyhow::Result<Arc<dyn Pane>> {
-        anyhow::bail!("spawn_pane not implemented for ClientDomain")
+        let inner = self
+            .inner()
+            .ok_or_else(|| anyhow!("domain is not attached"))?;
+
+        let workspace = Mux::get().active_workspace();
+        let result = inner
+            .client
+            .spawn_v2(SpawnV2 {
+                domain: SpawnTabDomain::DefaultDomain,
+                window_id: None,
+                size,
+                command,
+                command_dir,
+                workspace,
+            })
+            .await?;
+
+        Self::sync_remote_topology(Arc::clone(&inner), None).await?;
+        let (_tab, pane, _window_id) = Self::resolve_remote_spawn_entities(&inner, result)?;
+        Ok(pane)
     }
 
     /// Forward the request to the remote; we need to translate the local ids
@@ -853,32 +976,15 @@ impl Domain for ClientDomain {
                 workspace,
             })
             .await?;
-
-        inner.record_remote_to_local_window_mapping(result.window_id, window);
-
-        let pane: Arc<dyn Pane> = Arc::new(ClientPane::new(
-            &inner,
-            result.tab_id,
-            result.pane_id,
-            size,
-            "wezterm",
-        ));
-        let tab = Arc::new(Tab::new(&size));
-        tab.assign_pane(&pane);
-        inner.remove_old_tab_mapping(result.tab_id);
-        inner.record_remote_to_local_tab_mapping(result.tab_id, tab.tab_id());
-
-        let mux = Mux::get();
-        mux.add_tab_and_active_pane(&tab)?;
-        mux.add_tab_to_window(&tab, window)?;
-
+        Self::sync_remote_topology(Arc::clone(&inner), Some(window)).await?;
+        let (tab, _pane, _window_id) = Self::resolve_remote_spawn_entities(&inner, result)?;
         Ok(tab)
     }
 
     async fn split_pane(
         &self,
         source: SplitSource,
-        tab_id: TabId,
+        _tab_id: TabId,
         pane_id: PaneId,
         split_request: SplitRequest,
     ) -> anyhow::Result<Arc<dyn Pane>> {
@@ -886,12 +992,7 @@ impl Domain for ClientDomain {
             .inner()
             .ok_or_else(|| anyhow!("domain is not attached"))?;
 
-        let mux = Mux::get();
-
-        let tab = mux
-            .get_tab(tab_id)
-            .ok_or_else(|| anyhow!("tab_id {} is invalid", tab_id))?;
-        let local_pane = mux
+        let local_pane = Mux::get()
             .get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane_id {} is invalid", pane_id))?;
         let pane = local_pane
@@ -917,29 +1018,8 @@ impl Domain for ClientDomain {
                 move_pane_id,
             })
             .await?;
-
-        let pane: Arc<dyn Pane> = Arc::new(ClientPane::new(
-            &inner,
-            result.tab_id,
-            result.pane_id,
-            result.size,
-            "wezterm",
-        ));
-
-        let pane_index = match tab
-            .iter_panes()
-            .iter()
-            .find(|p| p.pane.pane_id() == pane_id)
-        {
-            Some(p) => p.index,
-            None => anyhow::bail!("invalid pane id {}", pane_id),
-        };
-
-        tab.split_and_insert(pane_index, split_request, Arc::clone(&pane))
-            .ok();
-
-        mux.add_pane(&pane)?;
-
+        Self::sync_remote_topology(Arc::clone(&inner), None).await?;
+        let (_tab, pane, _window_id) = Self::resolve_remote_spawn_entities(&inner, result)?;
         Ok(pane)
     }
 
@@ -1019,5 +1099,256 @@ impl Domain for ClientDomain {
         } else {
             DomainState::Detached
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mux::tab::{PaneEntry, PaneNode};
+    use promise::spawn::SimpleExecutor;
+    use std::sync::{Mutex as StdMutex, Once};
+
+    static TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    fn ensure_test_scheduler() {
+        static TEST_SCHEDULER: Once = Once::new();
+        TEST_SCHEDULER.call_once(|| {
+            let _ = Box::leak(Box::new(SimpleExecutor::new()));
+        });
+    }
+
+    struct ScopedMux(Option<Arc<Mux>>);
+
+    impl ScopedMux {
+        fn install(mux: &Arc<Mux>) -> Self {
+            let prior = Mux::try_get();
+            Mux::set_mux(mux);
+            Self(prior)
+        }
+    }
+
+    impl Drop for ScopedMux {
+        fn drop(&mut self) {
+            if let Some(prior) = self.0.take() {
+                Mux::set_mux(&prior);
+            } else {
+                Mux::shutdown();
+            }
+        }
+    }
+
+    fn test_client_id(name: &str, pid: u32) -> Arc<ClientId> {
+        Arc::new(ClientId {
+            hostname: format!("{name}.local"),
+            username: "testuser".to_string(),
+            pid,
+            epoch: 1000,
+            id: 0,
+            ssh_auth_sock: None,
+        })
+    }
+
+    #[test]
+    fn active_workspace_sync_request_only_targets_attached_owner_client() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let mux = Arc::new(Mux::new(None));
+        let _guard = ScopedMux::install(&mux);
+
+        let owner = test_client_id("owner", 41_001);
+        let other = test_client_id("other", 41_002);
+        mux.register_client(Arc::clone(&owner));
+        mux.register_client(Arc::clone(&other));
+        mux.set_active_workspace_for_client(&owner, "owner-workspace");
+        mux.set_active_workspace_for_client(&other, "other-workspace");
+
+        assert_eq!(
+            active_workspace_sync_request(Some(&owner), &owner, &mux),
+            Some(codec::SetActiveWorkspace {
+                workspace: "owner-workspace".to_string(),
+            })
+        );
+        assert_eq!(
+            active_workspace_sync_request(Some(&owner), &other, &mux),
+            None
+        );
+        assert_eq!(active_workspace_sync_request(None, &owner, &mux), None);
+    }
+
+    #[test]
+    fn active_workspace_sync_request_tracks_renamed_owner_workspace() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let mux = Arc::new(Mux::new(None));
+        let _guard = ScopedMux::install(&mux);
+
+        let owner = test_client_id("owner", 41_003);
+        mux.register_client(Arc::clone(&owner));
+        mux.set_active_workspace_for_client(&owner, "old-workspace");
+        mux.rename_workspace("old-workspace", "renamed-workspace");
+
+        assert_eq!(
+            active_workspace_sync_request(Some(&owner), &owner, &mux),
+            Some(codec::SetActiveWorkspace {
+                workspace: "renamed-workspace".to_string(),
+            })
+        );
+    }
+
+    fn test_client_inner(local_domain_id: DomainId) -> Arc<ClientInner> {
+        let unix = UnixDomain {
+            name: "test-client-domain".to_string(),
+            ..UnixDomain::default()
+        };
+        Arc::new(ClientInner::new(
+            local_domain_id,
+            Client::new_test_client(Some(local_domain_id), ClientDomainConfig::Unix(unix)),
+            None,
+            None,
+            false,
+        ))
+    }
+
+    fn sample_remote_tab_listing() -> ListPanesResponse {
+        ListPanesResponse {
+            tabs: vec![PaneNode::Leaf(PaneEntry {
+                window_id: 41,
+                tab_id: 51,
+                pane_id: 61,
+                title: "remote shell".to_string(),
+                size: TerminalSize {
+                    cols: 120,
+                    rows: 40,
+                    pixel_width: 1200,
+                    pixel_height: 800,
+                    dpi: 96,
+                },
+                working_dir: None,
+                alt_screen_active: true,
+                is_active_pane: true,
+                is_zoomed_pane: false,
+                workspace: "ops".to_string(),
+                cursor_pos: mux::renderable::StableCursorPosition::default(),
+                physical_top: 0,
+                top_row: 0,
+                left_col: 0,
+                tty_name: None,
+            })],
+            tab_titles: vec!["remote tab".to_string()],
+            window_titles: HashMap::from([(41, "ops window".to_string())]),
+        }
+    }
+
+    #[test]
+    fn process_pane_list_seeds_spawned_client_pane_alt_screen_state() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        ensure_test_scheduler();
+        let mux = Arc::new(Mux::new(None));
+        let _guard = ScopedMux::install(&mux);
+
+        let local_domain_id = alloc_domain_id();
+        let inner = test_client_inner(local_domain_id);
+        let local_window_id = *mux.new_empty_window(Some("ops".to_string()), None);
+
+        ClientDomain::process_pane_list(
+            Arc::clone(&inner),
+            sample_remote_tab_listing(),
+            Some(local_window_id),
+        )
+        .expect("process_pane_list should seed remote pane state");
+
+        let local_pane_id = inner
+            .remote_to_local_pane_id(61)
+            .expect("remote pane should map locally");
+        let pane = mux
+            .get_pane(local_pane_id)
+            .expect("local pane should exist after sync");
+        let client_pane = pane
+            .downcast_ref::<ClientPane>()
+            .expect("pane should be a ClientPane");
+
+        assert!(client_pane.is_alt_screen_active());
+        assert_eq!(inner.remote_to_local_window(41), Some(local_window_id));
+    }
+
+    #[test]
+    fn resolve_remote_spawn_entities_returns_local_ids_after_sync() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        ensure_test_scheduler();
+        let mux = Arc::new(Mux::new(None));
+        let _guard = ScopedMux::install(&mux);
+
+        let local_domain_id = alloc_domain_id();
+        let inner = test_client_inner(local_domain_id);
+        let local_window_id = *mux.new_empty_window(Some("ops".to_string()), None);
+
+        ClientDomain::process_pane_list(
+            Arc::clone(&inner),
+            sample_remote_tab_listing(),
+            Some(local_window_id),
+        )
+        .expect("process_pane_list should seed remote pane state");
+
+        let (tab, pane, resolved_window_id) = ClientDomain::resolve_remote_spawn_entities(
+            &inner,
+            codec::SpawnResponse {
+                pane_id: 61,
+                tab_id: 51,
+                window_id: 41,
+                size: TerminalSize {
+                    cols: 120,
+                    rows: 40,
+                    pixel_width: 1200,
+                    pixel_height: 800,
+                    dpi: 96,
+                },
+            },
+        )
+        .expect("spawn response should resolve through the synced remote topology");
+
+        assert_eq!(resolved_window_id, local_window_id);
+        assert_eq!(inner.remote_to_local_tab_id(51), Some(tab.tab_id()));
+        assert_eq!(inner.remote_to_local_pane_id(61), Some(pane.pane_id()));
+        assert!(pane
+            .downcast_ref::<ClientPane>()
+            .expect("resolved pane should be a client pane")
+            .is_alt_screen_active());
+    }
+
+    #[test]
+    fn resolve_remote_spawn_entities_errors_when_remote_ids_do_not_resolve() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        ensure_test_scheduler();
+        let mux = Arc::new(Mux::new(None));
+        let _guard = ScopedMux::install(&mux);
+        let inner = test_client_inner(alloc_domain_id());
+
+        let error = match ClientDomain::resolve_remote_spawn_entities(
+            &inner,
+            codec::SpawnResponse {
+                pane_id: 61,
+                tab_id: 51,
+                window_id: 41,
+                size: TerminalSize {
+                    cols: 120,
+                    rows: 40,
+                    pixel_width: 1200,
+                    pixel_height: 800,
+                    dpi: 96,
+                },
+            },
+        ) {
+            Ok(_) => {
+                panic!("missing remote mappings should surface an explicit spawn resolution error")
+            }
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("remote tab 51 didn't resolve after resync"),
+            "unexpected error: {error:#}",
+            error = error
+        );
     }
 }

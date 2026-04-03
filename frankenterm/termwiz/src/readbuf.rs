@@ -58,7 +58,7 @@ mod tests {
         let buf = ReadBuffer::new();
         assert!(buf.is_empty());
         assert_eq!(buf.len(), 0);
-        assert_eq!(buf.as_slice(), &[]);
+        assert!(buf.as_slice().is_empty());
     }
 
     #[test]

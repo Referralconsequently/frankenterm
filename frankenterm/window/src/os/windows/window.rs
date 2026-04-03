@@ -104,11 +104,35 @@ pub(crate) struct HWindow(HWND);
 unsafe impl Send for HWindow {}
 unsafe impl Sync for HWindow {}
 
+#[derive(Clone)]
+enum BackendImpl {
+    Wgl(Rc<super::wgl::GlState>),
+    Egl(Rc<crate::egl::GlState>),
+}
+
+impl BackendImpl {
+    /// The native window has already been resized by the OS at this point; this
+    /// hook lets each backend refresh any drawable/surface bookkeeping before
+    /// we emit the logical `WindowEvent::Resized`.
+    fn resize(&self, new_size: (u32, u32)) {
+        match self {
+            Self::Wgl(backend) => glium::backend::Backend::resize(backend.as_ref(), new_size),
+            Self::Egl(backend) => glium::backend::Backend::resize(backend.as_ref(), new_size),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GlContextPair {
+    _context: Rc<glium::backend::Context>,
+    backend: BackendImpl,
+}
+
 pub(crate) struct WindowInner {
     /// Non-owning reference to the window handle
     hwnd: HWindow,
     events: WindowEventSender,
-    gl_state: Option<Rc<glium::backend::Context>>,
+    gl_context_pair: Option<GlContextPair>,
     /// Fraction of mouse scroll
     hscroll_remainder: i16,
     vscroll_remainder: i16,
@@ -224,40 +248,48 @@ impl WindowInner {
     fn enable_opengl(&mut self) -> anyhow::Result<Rc<glium::backend::Context>> {
         let conn = Connection::get().unwrap();
 
-        let gl_state = if self.config.prefer_egl {
+        let (gl_state, backend) = if self.config.prefer_egl {
             match conn.gl_connection.borrow().as_ref() {
                 None => crate::egl::GlState::create(None, self.hwnd.0),
                 Some(glconn) => {
                     crate::egl::GlState::create_with_existing_connection(glconn, self.hwnd.0)
                 }
             }
+            .and_then(|egl| unsafe {
+                log::trace!("Initialized EGL!");
+                conn.gl_connection
+                    .borrow_mut()
+                    .replace(Rc::clone(egl.get_connection()));
+                let backend = Rc::new(egl);
+                let context =
+                    glium::backend::Context::new(Rc::clone(&backend), true, callback_behavior())?;
+                Ok((context, BackendImpl::Egl(backend)))
+            })
         } else {
             Err(anyhow::anyhow!("Config says to avoid EGL"))
         }
-        .and_then(|egl| unsafe {
-            log::trace!("Initialized EGL!");
-            conn.gl_connection
-                .borrow_mut()
-                .replace(Rc::clone(egl.get_connection()));
-            let backend = Rc::new(egl);
-            Ok(glium::backend::Context::new(
-                backend,
-                true,
-                callback_behavior(),
-            )?)
-        })
         .or_else(|err| {
             log::trace!("EGL init failed {:?}, fall back to WGL", err);
             super::wgl::GlState::create(self.hwnd.0).and_then(|state| unsafe {
-                Ok(glium::backend::Context::new(
-                    Rc::new(state),
-                    true,
-                    callback_behavior(),
-                )?)
+                let backend = Rc::new(state);
+                let context =
+                    glium::backend::Context::new(Rc::clone(&backend), true, callback_behavior())?;
+                Ok((context, BackendImpl::Wgl(backend)))
             })
         })?;
 
-        self.gl_state.replace(gl_state.clone());
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        unsafe {
+            GetClientRect(self.hwnd.0, &mut rect);
+        }
+        let initial_size = (rect_width(&rect) as u32, rect_height(&rect) as u32);
+
+        let gl_context_pair = GlContextPair {
+            _context: gl_state.clone(),
+            backend,
+        };
+        gl_context_pair.backend.resize(initial_size);
+        self.gl_context_pair.replace(gl_context_pair);
 
         Ok(gl_state)
     }
@@ -291,7 +323,7 @@ impl WindowInner {
     /// Returns true if we did.
     fn check_and_call_resize_if_needed(&mut self) -> bool {
         /*
-        if self.gl_state.is_none() {
+        if self.gl_context_pair.is_none() {
             // Don't cache state or generate resize callbacks until
             // we've set up opengl, otherwise we can miss propagating
             // some state during the initial window setup that results
@@ -328,6 +360,13 @@ impl WindowInner {
         self.last_size.replace(current_dims);
 
         if !same {
+            if let Some(gl_context_pair) = self.gl_context_pair.as_ref() {
+                gl_context_pair.backend.resize((
+                    current_dims.pixel_width as u32,
+                    current_dims.pixel_height as u32,
+                ));
+            }
+
             self.set_ime_window_position(Rect::default());
 
             self.events.dispatch(WindowEvent::Resized {
@@ -533,7 +572,7 @@ impl Window {
             hwnd: HWindow(null_mut()),
             appearance,
             events,
-            gl_state: None,
+            gl_context_pair: None,
             vscroll_remainder: 0,
             hscroll_remainder: 0,
             keyboard_info: KeyboardLayoutInfo::new(),

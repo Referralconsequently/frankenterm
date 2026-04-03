@@ -88,6 +88,10 @@ pub struct GlState {
     context: ffi::types::EGLContext,
 }
 
+fn query_dimensions(width: ffi::EGLint, height: ffi::EGLint) -> (u32, u32) {
+    (width.max(0) as u32, height.max(0) as u32)
+}
+
 impl Drop for GlState {
     fn drop(&mut self) {
         unsafe {
@@ -658,8 +662,19 @@ impl GlState {
 }
 
 unsafe impl glium::backend::Backend for GlState {
-    fn resize(&self, _: (u32, u32)) {
-        todo!()
+    fn resize(&self, new_size: (u32, u32)) {
+        // EGL window surfaces inherit their size from the native window object
+        // (HWND, CALayer, wl_egl_window, etc.). By the time this hook runs, the
+        // native surface has already been resized by the platform-specific
+        // window code; all we need here is an idempotent sync point.
+        let actual = self.get_framebuffer_dimensions();
+        if new_size.0 > 0 && new_size.1 > 0 && actual != new_size {
+            log::trace!(
+                "EGL drawable size is native-window managed; requested {:?}, current surface {:?}",
+                new_size,
+                actual
+            );
+        }
     }
 
     fn swap_buffers(&self) -> Result<(), glium::SwapBuffersError> {
@@ -702,7 +717,7 @@ unsafe impl glium::backend::Backend for GlState {
                 &mut height,
             );
         }
-        (width as u32, height as u32)
+        query_dimensions(width, height)
     }
 
     fn is_current(&self) -> bool {
@@ -720,5 +735,21 @@ unsafe impl glium::backend::Backend for GlState {
             let err = self.connection.egl.error("MakeCurrent");
             log::error!("make_current failed {:?} {:?}", self, err);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_dimensions;
+
+    #[test]
+    fn query_dimensions_preserve_positive_sizes() {
+        assert_eq!(query_dimensions(1920, 1080), (1920, 1080));
+    }
+
+    #[test]
+    fn query_dimensions_clamp_negative_driver_values() {
+        assert_eq!(query_dimensions(-1, 27), (0, 27));
+        assert_eq!(query_dimensions(41, -7), (41, 0));
     }
 }

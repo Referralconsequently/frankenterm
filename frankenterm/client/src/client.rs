@@ -191,6 +191,46 @@ async fn process_unilateral_inner_async(
     client_pane.process_unilateral(decoded.pdu).await
 }
 
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+enum StandaloneUnilateralError {
+    #[error(
+        "standalone mux client cannot process {pdu_name} unilateral PDU without a local domain; \
+         reconnect with an attached client domain or retry after topology settles"
+    )]
+    RequiresAttachedDomain { pdu_name: &'static str },
+}
+
+fn unilateral_without_local_domain_is_ignorable(pdu: &Pdu) -> bool {
+    match pdu {
+        Pdu::WindowTitleChanged(_)
+        | Pdu::TabTitleChanged(_)
+        | Pdu::PaneFocused(_)
+        | Pdu::TabResized(_)
+        | Pdu::NotifyAlert(_)
+        | Pdu::SetClipboard(_) => true,
+        Pdu::PaneRemoved(_)
+        | Pdu::TabAddedToWindow(_)
+        | Pdu::WindowWorkspaceChanged(_)
+        | Pdu::RenameWorkspace(_) => false,
+        _ => pdu.pane_id().is_some(),
+    }
+}
+
+fn handle_unilateral_without_local_domain(decoded: &DecodedPdu) -> anyhow::Result<()> {
+    if unilateral_without_local_domain_is_ignorable(&decoded.pdu) {
+        log::trace!(
+            "standalone mux client explicitly ignored {} unilateral PDU",
+            decoded.pdu.pdu_name()
+        );
+        return Ok(());
+    }
+
+    Err(StandaloneUnilateralError::RequiresAttachedDomain {
+        pdu_name: decoded.pdu.pdu_name(),
+    }
+    .into())
+}
+
 fn process_unilateral(
     local_domain_id: Option<DomainId>,
     decoded: DecodedPdu,
@@ -198,14 +238,7 @@ fn process_unilateral(
     let local_domain_id = match local_domain_id {
         Some(id) => id,
         None => {
-            // FIXME: We currently get a bunch of these; we'll need
-            // to do something to advise the server when we want them.
-            // For now, we just ignore them.
-            log::trace!(
-                "client doesn't have a real local domain, \
-                 so unilateral message cannot be processed by it"
-            );
-            return Ok(());
+            return handle_unilateral_without_local_domain(&decoded);
         }
     };
     match &decoded.pdu {
@@ -1399,6 +1432,7 @@ impl Client {
     rpc!(set_client_id, SetClientId, UnitResponse);
     rpc!(list_clients, GetClientList = (), GetClientListResponse);
     rpc!(set_window_workspace, SetWindowWorkspace, UnitResponse);
+    rpc!(set_active_workspace, SetActiveWorkspace, UnitResponse);
     rpc!(set_focused_pane_id, SetFocusedPane, UnitResponse);
     rpc!(get_image_cell, GetImageCell, GetImageCellResponse);
     rpc!(set_configured_palette_for_pane, SetPalette, UnitResponse);
@@ -1415,8 +1449,34 @@ impl Client {
 }
 
 #[cfg(test)]
+impl Client {
+    pub(crate) fn new_test_client(
+        local_domain_id: Option<DomainId>,
+        client_domain_config: ClientDomainConfig,
+    ) -> Self {
+        let (sender, _receiver) = unbounded();
+        Self {
+            sender,
+            local_domain_id,
+            client_id: ClientId {
+                hostname: "test-host".to_string(),
+                username: "tester".to_string(),
+                pid: 1,
+                epoch: 1,
+                id: 1,
+                ssh_auth_sock: None,
+            },
+            client_domain_config,
+            is_reconnectable: false,
+            is_local: true,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use codec::{PaneRemoved, WindowTitleChanged, WindowWorkspaceChanged};
 
     #[test]
     fn wezterm_bin_path_defaults_to_wezterm() {
@@ -1475,5 +1535,62 @@ mod tests {
         assert!(Reconnectable::should_retry_tls_bootstrap_after_reuse_error(
             &err
         ));
+    }
+
+    fn unilateral(pdu: Pdu) -> DecodedPdu {
+        DecodedPdu { serial: 0, pdu }
+    }
+
+    #[test]
+    fn standalone_client_ignores_cosmetic_unilateral_updates() {
+        let result = process_unilateral(
+            None,
+            unilateral(Pdu::WindowTitleChanged(WindowTitleChanged {
+                window_id: 3,
+                title: "dev shell".into(),
+            })),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn standalone_client_rejects_workspace_rebinding_without_domain() {
+        let err = process_unilateral(
+            None,
+            unilateral(Pdu::WindowWorkspaceChanged(WindowWorkspaceChanged {
+                window_id: 7,
+                workspace: "ops".into(),
+            })),
+        )
+        .expect_err("workspace topology changes must not be silently ignored");
+        let root = err
+            .root_cause()
+            .downcast_ref::<StandaloneUnilateralError>()
+            .expect("root cause should preserve the standalone unilateral classification");
+        assert_eq!(
+            root,
+            &StandaloneUnilateralError::RequiresAttachedDomain {
+                pdu_name: "WindowWorkspaceChanged",
+            }
+        );
+    }
+
+    #[test]
+    fn standalone_client_rejects_pane_removal_without_domain() {
+        let err = process_unilateral(
+            None,
+            unilateral(Pdu::PaneRemoved(PaneRemoved { pane_id: 9 })),
+        )
+        .expect_err("pane removal changes must not be silently ignored");
+        let root = err
+            .root_cause()
+            .downcast_ref::<StandaloneUnilateralError>()
+            .expect("root cause should preserve the standalone unilateral classification");
+        assert_eq!(
+            root,
+            &StandaloneUnilateralError::RequiresAttachedDomain {
+                pdu_name: "PaneRemoved",
+            }
+        );
     }
 }

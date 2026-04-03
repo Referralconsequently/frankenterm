@@ -2,8 +2,11 @@
 use regex::{Captures, Regex};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub type ConfigMap = BTreeMap<String, String>;
+
+const MATCH_EXEC_TOKENS: &[&str] = &["%C", "%d", "%h", "%i", "%j", "%k", "%L", "%l", "%n", "%p", "%r", "%u"];
 
 /// A Pattern in a `Host` list
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -88,6 +91,43 @@ enum Context {
     Final,
 }
 
+/// Policy for evaluating `Match exec` criteria.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub enum MatchExecPolicy {
+    /// Execute `Match exec` commands using the local shell.
+    #[default]
+    Permit,
+    /// Refuse to execute `Match exec` commands and treat the criterion as false.
+    Deny,
+}
+
+/// Outcome of a `Match exec` evaluation.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum MatchExecOutcome {
+    /// The command exited successfully and the criterion matched.
+    Matched { exit_status: i32 },
+    /// The command ran but did not satisfy the criterion.
+    False { exit_status: Option<i32> },
+    /// Execution was denied by local policy.
+    DeniedByPolicy,
+    /// Command execution could not be completed.
+    ExecutionFailed { error: String },
+}
+
+impl MatchExecOutcome {
+    fn is_match(&self) -> bool {
+        matches!(self, Self::Matched { .. })
+    }
+}
+
+/// Diagnostic record for a single `Match exec` criterion evaluation.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct MatchExecDiagnostic {
+    pub command: String,
+    pub expanded_command: String,
+    pub outcome: MatchExecOutcome,
+}
+
 /// Represents `Host pattern,list` stanza in the config,
 /// and the options that it logically contains
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -98,7 +138,18 @@ struct MatchGroup {
 }
 
 impl MatchGroup {
-    fn is_match(&self, hostname: &str, user: &str, local_user: &str, context: Context) -> bool {
+    fn is_match<F>(
+        &self,
+        hostname: &str,
+        original_host: &str,
+        user: &str,
+        local_user: &str,
+        context: Context,
+        exec_matcher: &mut F,
+    ) -> bool
+    where
+        F: FnMut(&str) -> bool,
+    {
         if self.context != context {
             return false;
         }
@@ -109,11 +160,13 @@ impl MatchGroup {
                         return false;
                     }
                 }
-                Criteria::Exec(_) => {
-                    log::warn!("Match Exec is not implemented");
+                Criteria::Exec(command) => {
+                    if !exec_matcher(command) {
+                        return false;
+                    }
                 }
                 Criteria::OriginalHost(patterns) => {
-                    if !Pattern::match_group(hostname, patterns) {
+                    if !Pattern::match_group(original_host, patterns) {
                         return false;
                     }
                 }
@@ -232,6 +285,20 @@ impl ParsedConfigFile {
         groups: &mut Vec<MatchGroup>,
         loaded_files: &mut Vec<PathBuf>,
     ) {
+        fn parse_match_tokens(v: &str) -> Vec<String> {
+            match shell_words::split(v) {
+                Ok(tokens) => tokens,
+                Err(err) => {
+                    log::warn!(
+                        "failed to shell-parse Match stanza {:?}: {}; falling back to whitespace tokenization",
+                        v,
+                        err
+                    );
+                    v.split_ascii_whitespace().map(str::to_string).collect()
+                }
+            }
+        }
+
         for line in s.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -293,7 +360,7 @@ impl ParsedConfigFile {
                     let mut criteria = vec![];
                     let mut context = Context::FirstPass;
 
-                    let mut tokens = v.split_ascii_whitespace();
+                    let mut tokens = parse_match_tokens(v).into_iter();
 
                     while let Some(cname) = tokens.next() {
                         match cname.to_lowercase().as_str() {
@@ -307,28 +374,28 @@ impl ParsedConfigFile {
                                 context = Context::Final;
                             }
                             "exec" => {
-                                criteria.push(Criteria::Exec(
-                                    tokens.next().unwrap_or("false").to_string(),
-                                ));
+                                let command =
+                                    tokens.next().unwrap_or_else(|| "false".to_string());
+                                criteria.push(Criteria::Exec(command));
                             }
                             "host" => {
                                 criteria.push(Criteria::Host(parse_pattern_list(
-                                    tokens.next().unwrap_or(""),
+                                    tokens.next().as_deref().unwrap_or(""),
                                 )));
                             }
                             "originalhost" => {
                                 criteria.push(Criteria::OriginalHost(parse_pattern_list(
-                                    tokens.next().unwrap_or(""),
+                                    tokens.next().as_deref().unwrap_or(""),
                                 )));
                             }
                             "user" => {
                                 criteria.push(Criteria::User(parse_pattern_list(
-                                    tokens.next().unwrap_or(""),
+                                    tokens.next().as_deref().unwrap_or(""),
                                 )));
                             }
                             "localuser" => {
                                 criteria.push(Criteria::LocalUser(parse_pattern_list(
-                                    tokens.next().unwrap_or(""),
+                                    tokens.next().as_deref().unwrap_or(""),
                                 )));
                             }
                             _ => break,
@@ -373,10 +440,12 @@ impl ParsedConfigFile {
     fn apply_matches(
         &self,
         hostname: &str,
+        original_host: &str,
         user: &str,
         local_user: &str,
         context: Context,
         target: &mut ConfigMap,
+        exec_matcher: &mut impl FnMut(&str, &ConfigMap, &str, &str, &str, &str) -> bool,
     ) -> bool {
         let mut needs_reparse = false;
 
@@ -387,7 +456,16 @@ impl ParsedConfigFile {
             if group.context != Context::FirstPass {
                 needs_reparse = true;
             }
-            if group.is_match(hostname, user, local_user, context) {
+            if group.is_match(
+                hostname,
+                original_host,
+                user,
+                local_user,
+                context,
+                &mut |command| {
+                    exec_matcher(command, target, hostname, original_host, user, local_user)
+                },
+            ) {
                 for (k, v) in &group.options {
                     target.entry(k.to_string()).or_insert_with(|| v.to_string());
                 }
@@ -401,12 +479,13 @@ impl ParsedConfigFile {
 /// A context for resolving configuration values.
 /// Holds a combination of environment and token expansion state,
 /// as well as the set of configs that should be consulted.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     config_files: Vec<ParsedConfigFile>,
     options: ConfigMap,
     tokens: ConfigMap,
     environment: Option<ConfigMap>,
+    match_exec_policy: MatchExecPolicy,
 }
 
 impl Config {
@@ -417,7 +496,13 @@ impl Config {
             options: ConfigMap::new(),
             tokens: ConfigMap::new(),
             environment: None,
+            match_exec_policy: MatchExecPolicy::Permit,
         }
+    }
+
+    /// Control whether `Match exec` criteria are allowed to spawn local commands.
+    pub fn set_match_exec_policy(&mut self, policy: MatchExecPolicy) {
+        self.match_exec_policy = policy;
     }
 
     /// Assign a fake environment map, useful for testing.
@@ -512,20 +597,44 @@ impl Config {
     /// the config parsed a second time in order for value expansion
     /// to have the same results as `ssh`.
     pub fn for_host<H: AsRef<str>>(&self, host: H) -> ConfigMap {
+        self.for_host_with_match_diagnostics(host).0
+    }
+
+    /// Resolve the configuration for a given host and return `Match exec`
+    /// diagnostics describing any command evaluations that occurred.
+    pub fn for_host_with_match_diagnostics<H: AsRef<str>>(
+        &self,
+        host: H,
+    ) -> (ConfigMap, Vec<MatchExecDiagnostic>) {
         let host = host.as_ref();
         let local_user = self.resolve_local_user();
-        let target_user = &local_user;
-
         let mut result = self.options.clone();
         let mut needs_reparse = false;
+        let mut diagnostics = Vec::new();
 
         for config in &self.config_files {
+            let target_user = result
+                .get("user")
+                .cloned()
+                .unwrap_or_else(|| local_user.clone());
             if config.apply_matches(
                 host,
-                target_user,
+                host,
+                &target_user,
                 &local_user,
                 Context::FirstPass,
                 &mut result,
+                &mut |command, current_target, hostname, original_host, user, local_user| {
+                    self.evaluate_match_exec(
+                        command,
+                        current_target,
+                        hostname,
+                        original_host,
+                        user,
+                        local_user,
+                        &mut diagnostics,
+                    )
+                },
             ) {
                 needs_reparse = true;
             }
@@ -550,7 +659,14 @@ impl Config {
             .or_insert_with(|| host.to_string());
         token_map.insert("%h".to_string(), result["hostname"].to_string());
         token_map.insert("%n".to_string(), host.to_string());
-        token_map.insert("%r".to_string(), target_user.to_string());
+        token_map.insert(
+            "%r".to_string(),
+            result
+                .get("user")
+                .cloned()
+                .unwrap_or_else(|| local_user.clone()),
+        );
+        token_map.insert("%k".to_string(), host.to_string());
         token_map.insert(
             "%p".to_string(),
             result
@@ -575,7 +691,7 @@ impl Config {
 
         result
             .entry("user".to_string())
-            .or_insert_with(|| target_user.clone());
+            .or_insert_with(|| local_user.clone());
 
         if !result.contains_key("userknownhostsfile") {
             if let Some(home) = self.resolve_home() {
@@ -604,7 +720,7 @@ impl Config {
             }
         }
 
-        result
+        (result, diagnostics)
     }
 
     /// Return true if a given option name is subject to environment variable
@@ -741,6 +857,98 @@ impl Config {
         }
     }
 
+    fn build_match_exec_token_map(
+        &self,
+        current_target: &ConfigMap,
+        hostname: &str,
+        original_host: &str,
+        user: &str,
+        local_user: &str,
+    ) -> ConfigMap {
+        let mut hostname_value = current_target
+            .get("hostname")
+            .cloned()
+            .unwrap_or_else(|| hostname.to_string());
+        let mut bootstrap_tokens = self.tokens.clone();
+        bootstrap_tokens.insert("%h".to_string(), hostname.to_string());
+        if let Some(tokens) = self.should_expand_tokens("hostname") {
+            self.expand_tokens(&mut hostname_value, tokens, &bootstrap_tokens);
+        }
+
+        let mut token_map = self.tokens.clone();
+        token_map.insert("%h".to_string(), hostname_value);
+        token_map.insert("%n".to_string(), original_host.to_string());
+        token_map.insert("%k".to_string(), original_host.to_string());
+        token_map.insert("%r".to_string(), user.to_string());
+        token_map.insert("%u".to_string(), local_user.to_string());
+        token_map.insert(
+            "%p".to_string(),
+            current_target
+                .get("port")
+                .cloned()
+                .unwrap_or_else(|| "22".to_string()),
+        );
+        token_map
+    }
+
+    fn evaluate_match_exec(
+        &self,
+        command: &str,
+        current_target: &ConfigMap,
+        hostname: &str,
+        original_host: &str,
+        user: &str,
+        local_user: &str,
+        diagnostics: &mut Vec<MatchExecDiagnostic>,
+    ) -> bool {
+        let token_map =
+            self.build_match_exec_token_map(current_target, hostname, original_host, user, local_user);
+        let mut expanded_command = command.to_string();
+        self.expand_tokens(&mut expanded_command, MATCH_EXEC_TOKENS, &token_map);
+
+        let outcome = match self.match_exec_policy {
+            MatchExecPolicy::Deny => MatchExecOutcome::DeniedByPolicy,
+            MatchExecPolicy::Permit => {
+                let mut shell_cmd;
+                if cfg!(windows) {
+                    let comspec = self
+                        .resolve_env("COMSPEC")
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| "cmd".to_string());
+                    shell_cmd = Command::new(comspec);
+                    shell_cmd.args(["/c", expanded_command.as_str()]);
+                } else {
+                    let shell = self
+                        .resolve_env("SHELL")
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| "sh".to_string());
+                    shell_cmd = Command::new(shell);
+                    shell_cmd.args(["-c", expanded_command.as_str()]);
+                }
+
+                match shell_cmd.status() {
+                    Ok(status) if status.success() => {
+                        MatchExecOutcome::Matched { exit_status: status.code().unwrap_or(0) }
+                    }
+                    Ok(status) => MatchExecOutcome::False {
+                        exit_status: status.code(),
+                    },
+                    Err(err) => MatchExecOutcome::ExecutionFailed {
+                        error: err.to_string(),
+                    },
+                }
+            }
+        };
+
+        diagnostics.push(MatchExecDiagnostic {
+            command: command.to_string(),
+            expanded_command,
+            outcome: outcome.clone(),
+        });
+
+        outcome.is_match()
+    }
+
     /// Look for `${NAME}` and substitute the value of the `NAME` env var
     /// into the provided string.
     fn expand_environment(&self, value: &mut String) {
@@ -795,6 +1003,20 @@ impl Config {
         }
 
         hosts
+    }
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("Config");
+        debug.field("config_files", &self.config_files);
+        debug.field("options", &self.options);
+        debug.field("tokens", &self.tokens);
+        debug.field("environment", &self.environment);
+        if self.match_exec_policy != MatchExecPolicy::Permit {
+            debug.field("match_exec_policy", &self.match_exec_policy);
+        }
+        debug.finish()
     }
 }
 
@@ -1446,6 +1668,176 @@ Config {
 }
 "#
         );
+    }
+
+    #[test]
+    fn parse_match_exec_preserves_quoted_command() {
+        let mut config = Config::new();
+        config.add_config_string(
+            r#"
+        Match exec "exit 0" host foo
+            Port 2200
+            "#,
+        );
+
+        snapshot!(
+            &config,
+            r#"
+Config {
+    config_files: [
+        ParsedConfigFile {
+            options: {},
+            groups: [
+                MatchGroup {
+                    criteria: [
+                        Exec(
+                            "exit 0",
+                        ),
+                        Host(
+                            [
+                                Pattern {
+                                    negated: false,
+                                    pattern: "^foo$",
+                                    original: "foo",
+                                    is_literal: true,
+                                },
+                            ],
+                        ),
+                    ],
+                    context: FirstPass,
+                    options: {
+                        "port": "2200",
+                    },
+                },
+            ],
+            loaded_files: [],
+        },
+    ],
+    options: {},
+    tokens: {},
+    environment: None,
+}
+"#
+        );
+    }
+
+    #[test]
+    fn match_exec_success_applies_options_and_reports_diagnostics() {
+        let mut config = Config::new();
+        let mut fake_env = ConfigMap::new();
+        fake_env.insert("HOME".to_string(), "/home/me".to_string());
+        fake_env.insert("USER".to_string(), "me".to_string());
+        fake_env.insert(
+            if cfg!(windows) {
+                "COMSPEC".to_string()
+            } else {
+                "SHELL".to_string()
+            },
+            if cfg!(windows) {
+                "cmd".to_string()
+            } else {
+                "sh".to_string()
+            },
+        );
+        config.assign_environment(fake_env);
+        config.add_config_string(
+            r#"
+        Match exec "exit 0"
+            SendEnv LANG
+            "#,
+        );
+
+        let (opts, diagnostics) = config.for_host_with_match_diagnostics("anyhost");
+        assert_eq!(opts.get("sendenv"), Some(&"LANG".to_string()));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].outcome,
+            MatchExecOutcome::Matched { exit_status: 0 }
+        );
+        assert_eq!(diagnostics[0].expanded_command, "exit 0");
+    }
+
+    #[test]
+    fn match_exec_false_skips_options_and_reports_diagnostics() {
+        let mut config = Config::new();
+        let mut fake_env = ConfigMap::new();
+        fake_env.insert("HOME".to_string(), "/home/me".to_string());
+        fake_env.insert("USER".to_string(), "me".to_string());
+        fake_env.insert(
+            if cfg!(windows) {
+                "COMSPEC".to_string()
+            } else {
+                "SHELL".to_string()
+            },
+            if cfg!(windows) {
+                "cmd".to_string()
+            } else {
+                "sh".to_string()
+            },
+        );
+        config.assign_environment(fake_env);
+        config.add_config_string(
+            r#"
+        Match exec "exit 7"
+            SendEnv LANG
+            "#,
+        );
+
+        let (opts, diagnostics) = config.for_host_with_match_diagnostics("anyhost");
+        assert!(!opts.contains_key("sendenv"));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].outcome,
+            MatchExecOutcome::False {
+                exit_status: Some(7),
+            }
+        );
+    }
+
+    #[test]
+    fn match_exec_denied_by_policy_is_explicit() {
+        let mut config = Config::new();
+        let mut fake_env = ConfigMap::new();
+        fake_env.insert("HOME".to_string(), "/home/me".to_string());
+        fake_env.insert("USER".to_string(), "me".to_string());
+        config.assign_environment(fake_env);
+        config.set_match_exec_policy(MatchExecPolicy::Deny);
+        config.add_config_string(
+            r#"
+        Match exec "exit 0"
+            SendEnv LANG
+            "#,
+        );
+
+        let (opts, diagnostics) = config.for_host_with_match_diagnostics("anyhost");
+        assert!(!opts.contains_key("sendenv"));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].outcome, MatchExecOutcome::DeniedByPolicy);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn match_exec_spawn_failure_is_reported() {
+        let mut config = Config::new();
+        let mut fake_env = ConfigMap::new();
+        fake_env.insert("HOME".to_string(), "/home/me".to_string());
+        fake_env.insert("USER".to_string(), "me".to_string());
+        fake_env.insert("SHELL".to_string(), "/definitely/missing-shell".to_string());
+        config.assign_environment(fake_env);
+        config.add_config_string(
+            r#"
+        Match exec "exit 0"
+            SendEnv LANG
+            "#,
+        );
+
+        let (opts, diagnostics) = config.for_host_with_match_diagnostics("anyhost");
+        assert!(!opts.contains_key("sendenv"));
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            diagnostics[0].outcome,
+            MatchExecOutcome::ExecutionFailed { .. }
+        ));
     }
 
     #[test]

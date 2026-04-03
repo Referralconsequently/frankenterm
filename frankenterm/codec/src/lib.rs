@@ -587,7 +587,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 45;
+pub const CODEC_VERSION: usize = 46;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -659,6 +659,7 @@ pdu! {
     SelectStackPane: 71,
     UpdatePaneConstraints: 72,
     SendKeyUp: 73,
+    SetActiveWorkspace: 74,
 }
 
 impl Pdu {
@@ -946,6 +947,11 @@ pub struct RenameWorkspace {
     pub new_workspace: String,
 }
 
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SetActiveWorkspace {
+    pub workspace: String,
+}
+
 /// This is used both as a notification from server->client
 /// and as a configuration request from client->server when
 /// the client's preferred configuration changes
@@ -1153,6 +1159,8 @@ pub struct LivenessResponse {
 pub struct GetPaneRenderChangesResponse {
     pub pane_id: PaneId,
     pub mouse_grabbed: bool,
+    #[serde(default)]
+    pub alt_screen_active: bool,
     pub cursor_position: StableCursorPosition,
     pub dimensions: RenderableDimensions,
     // NOTE: skip_serializing_if removed — varbincode is a positional binary format
@@ -2021,7 +2029,7 @@ mod test {
 
     #[test]
     fn codec_version_is_current() {
-        assert_eq!(CODEC_VERSION, 45);
+        assert_eq!(CODEC_VERSION, 46);
     }
 
     // --- CorruptResponse tests ---
@@ -2091,7 +2099,7 @@ mod test {
             executable_path: PathBuf::from("/usr/bin/ft"),
             config_file_path: Some(PathBuf::from("/etc/ft.toml")),
         };
-        assert_eq!(resp.codec_vers, 45);
+        assert_eq!(resp.codec_vers, 46);
         assert_eq!(resp.version_string, "1.0.0");
     }
 
@@ -2113,6 +2121,14 @@ mod test {
         };
         assert_eq!(msg.window_id, 1);
         assert_eq!(msg.workspace, "default");
+    }
+
+    #[test]
+    fn set_active_workspace_construction() {
+        let msg = SetActiveWorkspace {
+            workspace: "remote-dev".into(),
+        };
+        assert_eq!(msg.workspace, "remote-dev");
     }
 
     #[test]
@@ -2473,6 +2489,18 @@ mod test {
         assert_eq!(decoded.pdu, pdu);
     }
 
+    #[test]
+    fn pdu_roundtrip_set_active_workspace() {
+        let mut buf = Vec::new();
+        let pdu = Pdu::SetActiveWorkspace(SetActiveWorkspace {
+            workspace: "ops".into(),
+        });
+        pdu.encode(&mut buf, 889).unwrap();
+        let decoded = Pdu::decode(buf.as_slice()).unwrap();
+        assert_eq!(decoded.serial, 889);
+        assert_eq!(decoded.pdu, pdu);
+    }
+
     // --- Additional pdu_name tests ---
 
     #[test]
@@ -2504,6 +2532,13 @@ mod test {
             })
             .pdu_name(),
             "RenameWorkspace"
+        );
+        assert_eq!(
+            Pdu::SetActiveWorkspace(SetActiveWorkspace {
+                workspace: String::new(),
+            })
+            .pdu_name(),
+            "SetActiveWorkspace"
         );
     }
 
@@ -2647,6 +2682,7 @@ mod test {
         let pdu = Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
             pane_id: 7,
             mouse_grabbed: false,
+            alt_screen_active: false,
             cursor_position: StableCursorPosition {
                 x: 3,
                 y: 9,
@@ -2688,6 +2724,7 @@ mod test {
         let pdu = Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
             pane_id: 7,
             mouse_grabbed: false,
+            alt_screen_active: false,
             cursor_position: StableCursorPosition::default(),
             dimensions: RenderableDimensions {
                 cols: 80,
