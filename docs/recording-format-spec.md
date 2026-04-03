@@ -8,13 +8,13 @@
 ## Overview
 
 This document specifies the `.war` (ft recording) file format for storing terminal session
-recordings with efficient delta compression, rich metadata, and deterministic replay.
+recordings with compact binary framing, rich metadata, and deterministic replay.
 The format is designed to be parseable **without** `ft`, forward-compatible via versioning,
 and safe to store (redaction-aware for sensitive content).
 
 ## Design Goals
 
-1. Space-efficient recording via delta encoding and optional compression.
+1. Space-efficient recording via compact binary framing and optional compression.
 2. Accurate timing reconstruction (relative timestamps in milliseconds).
 3. Rich metadata for context (pane snapshot, environment, tags).
 4. Fast seeking via index section (keyframes + event lookup).
@@ -131,7 +131,7 @@ pub struct FrameHeader {
 
 ```rust
 pub enum FrameType {
-    Output = 1,   // Terminal output delta
+    Output = 1,   // Terminal output payload
     Resize = 2,   // Terminal size change
     Event = 3,    // ft detection event
     Marker = 4,   // User annotation
@@ -139,27 +139,22 @@ pub enum FrameType {
 }
 ```
 
-### Output Frame (Delta Encoding)
+### Output Frame
 
-Output frames store terminal output deltas relative to previous frames.
+Output frames store the redacted payload bytes for a captured output chunk.
+WAR v1 does not expose diff/repeat encodings; every output frame carries a full
+payload chunk, and the gap flag marks discontinuities.
 
 ```rust
 pub enum DeltaEncoding {
-    Full { data: Vec<u8> },
-    Diff { base_frame: u32, ops: Vec<DiffOp> },
-    Repeat { base_frame: u32 },
-}
-
-pub enum DiffOp {
-    Copy { offset: u32, len: u32 },
-    Insert { data: Vec<u8> },
+    Full(Vec<u8>),
 }
 ```
 
-**Delta rules**:
-- `Full` is used for the first frame or after discontinuities.
-- `Diff` uses copy/insert operations relative to `base_frame`.
-- `Repeat` references a prior frame with identical output.
+**Output rules**:
+- `Full` is the only supported output encoding in WAR v1.
+- The recorder writes the full captured chunk for every output frame.
+- Frame header gap bits, not alternate encodings, describe discontinuities.
 
 **Compression**:
 - If header `compression != 0`, compress **payload bytes** (not the frame header).

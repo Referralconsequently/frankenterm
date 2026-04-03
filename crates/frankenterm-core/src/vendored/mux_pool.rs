@@ -899,6 +899,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: req.pane_id,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -1066,6 +1067,7 @@ mod tests {
                                             GetPaneRenderChangesResponse {
                                                 pane_id: req.pane_id,
                                                 mouse_grabbed: false,
+                                                alt_screen_active: false,
                                                 cursor_position:
                                                     mux::renderable::StableCursorPosition::default(),
                                                 dimensions: mux::renderable::RenderableDimensions {

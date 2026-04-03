@@ -53,6 +53,7 @@ fn render_changes_response(pane_id: usize) -> GetPaneRenderChangesResponse {
     GetPaneRenderChangesResponse {
         pane_id,
         mouse_grabbed: false,
+        alt_screen_active: false,
         cursor_position: mux::renderable::StableCursorPosition::default(),
         dimensions: mux::renderable::RenderableDimensions {
             cols: 80,

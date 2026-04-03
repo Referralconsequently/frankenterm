@@ -10,8 +10,8 @@ use codec::{
     InputSerial, KillPane, ListPanes, ListPanesResponse, LivenessResponse, MovePaneToNewTab,
     MovePaneToNewTabResponse, NotifyAlert, Pdu, Ping, Pong, RenameWorkspace, Resize,
     SearchScrollbackRequest, SearchScrollbackResponse, SelectStackPane, SendKeyDown, SendKeyUp,
-    SendMouseEvent, SendPaste, SetClientId, SetFocusedPane, SetLayoutCycle, SetPalette,
-    SetPaneZoomed, SetWindowWorkspace, SpawnResponse, SpawnV2, SplitPane, SwapToLayout,
+    SendMouseEvent, SendPaste, SetActiveWorkspace, SetClientId, SetFocusedPane, SetLayoutCycle,
+    SetPalette, SetPaneZoomed, SetWindowWorkspace, SpawnResponse, SpawnV2, SplitPane, SwapToLayout,
     TabTitleChanged, UnitResponse, UpdatePaneConstraints, WindowTitleChanged, WriteToPane,
 };
 use config::TermConfig;
@@ -55,6 +55,7 @@ pub(crate) struct PerPane {
     dimensions: RenderableDimensions,
     tiered_scrollback_status: Option<PaneTieredScrollbackStatus>,
     mouse_grabbed: bool,
+    alt_screen_active: bool,
     sent_initial_palette: bool,
     seqno: SequenceNo,
     config_generation: usize,
@@ -70,6 +71,10 @@ impl PerPane {
         let mut changed = false;
         let mouse_grabbed = pane.is_mouse_grabbed();
         if mouse_grabbed != self.mouse_grabbed {
+            changed = true;
+        }
+        let alt_screen_active = pane.is_alt_screen_active();
+        if alt_screen_active != self.alt_screen_active {
             changed = true;
         }
 
@@ -146,11 +151,13 @@ impl PerPane {
         self.dimensions = dims;
         self.tiered_scrollback_status = tiered_scrollback_status;
         self.mouse_grabbed = mouse_grabbed;
+        self.alt_screen_active = alt_screen_active;
 
         let bonus_lines = bonus_lines.into();
         Some(GetPaneRenderChangesResponse {
             pane_id: pane.pane_id(),
             mouse_grabbed,
+            alt_screen_active,
             dirty_lines: all_dirty_lines.iter().cloned().collect(),
             dimensions: dims,
             tiered_scrollback_status,
@@ -318,6 +325,23 @@ impl SessionHandler {
                                 .get_window_mut(window_id)
                                 .ok_or_else(|| anyhow!("window {} is invalid", window_id))?;
                             window.set_workspace(&workspace);
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    );
+                })
+                .detach();
+            }
+            Pdu::SetActiveWorkspace(SetActiveWorkspace { workspace }) => {
+                let client_id = self.client_id.clone();
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let client_id = client_id.ok_or_else(|| {
+                                anyhow!("set active workspace before SetClientId")
+                            })?;
+                            let mux = Mux::get();
+                            mux.set_active_workspace_for_client(&client_id, &workspace);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -1298,6 +1322,7 @@ mod tests {
     use mux::domain::DomainId;
     use mux::pane::{CachePolicy, ForEachPaneLogicalLine, LogicalLine, Pane, WithPaneLines};
     use parking_lot::MappedMutexGuard;
+    use promise::spawn::SimpleExecutor;
     use rangeset::RangeSet;
     use std::ops::Range;
     use std::sync::Mutex as StdMutex;
@@ -1334,6 +1359,7 @@ mod tests {
         tiered_scrollback_status: Option<PaneTieredScrollbackStatus>,
         title: String,
         working_dir: Option<Url>,
+        alt_screen_active: bool,
         seqno: SequenceNo,
         lines: Vec<Line>,
     }
@@ -1367,6 +1393,7 @@ mod tests {
                     tiered_scrollback_status,
                     title: "tiered-pane".to_string(),
                     working_dir: Url::parse("file:///tmp/tiered-pane").ok(),
+                    alt_screen_active: false,
                     seqno: 11,
                     lines: vec![
                         Line::from_text("alpha", &Default::default(), 1, None),
@@ -1489,7 +1516,7 @@ mod tests {
         }
 
         fn is_alt_screen_active(&self) -> bool {
-            false
+            self.state.lock().unwrap().alt_screen_active
         }
 
         fn get_current_working_dir(&self, _policy: CachePolicy) -> Option<Url> {
@@ -1922,6 +1949,41 @@ mod tests {
     }
 
     #[test]
+    fn set_active_workspace_updates_registered_client_workspace() {
+        let _lock = SET_CLIENT_ID_TEST_LOCK.lock().unwrap();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        let _mux_guard = ScopedMux::install(&mux);
+        let client = test_client_id("workspace-owner", 41_004);
+        let (sender, captured) = capturing_sender();
+        let mut handler = SessionHandler::new(sender);
+
+        handler.process_one(DecodedPdu {
+            serial: 21,
+            pdu: Pdu::SetClientId(SetClientId {
+                client_id: client.clone(),
+                is_proxy: false,
+            }),
+        });
+        let _ = take_response(&captured);
+
+        handler.process_one(DecodedPdu {
+            serial: 22,
+            pdu: Pdu::SetActiveWorkspace(SetActiveWorkspace {
+                workspace: "remote-dev".to_string(),
+            }),
+        });
+        executor.tick().unwrap();
+
+        let resp = take_response(&captured);
+        assert_eq!(resp.serial, 22);
+        assert_eq!(resp.pdu, Pdu::UnitResponse(UnitResponse {}));
+
+        let client = Arc::new(client);
+        assert_eq!(mux.active_workspace_for_client(&client), "remote-dev");
+    }
+
+    #[test]
     fn get_codec_version_returns_version_info() {
         let (sender, captured) = capturing_sender();
         let mut handler = SessionHandler::new(sender);
@@ -2082,6 +2144,31 @@ mod tests {
         assert!(response.dirty_lines.is_empty());
         assert_eq!(response.tiered_scrollback_status, None);
         assert_eq!(per_pane.tiered_scrollback_status, None);
+    }
+
+    #[test]
+    fn compute_changes_detects_alt_screen_transition_without_other_deltas() {
+        let pane = Arc::new(FakePane::new(None));
+        let pane_dyn: Arc<dyn Pane> = pane.clone();
+        let mut per_pane = PerPane::default();
+
+        assert!(
+            per_pane.compute_changes(&pane_dyn, None).is_some(),
+            "first snapshot should populate cached pane state"
+        );
+        assert!(
+            per_pane.compute_changes(&pane_dyn, None).is_none(),
+            "unchanged pane state should not emit a redundant render delta"
+        );
+
+        pane.state.lock().unwrap().alt_screen_active = true;
+
+        let response = per_pane
+            .compute_changes(&pane_dyn, None)
+            .expect("alt-screen transition should produce a response");
+
+        assert!(response.alt_screen_active);
+        assert!(per_pane.alt_screen_active);
     }
 
     #[test]

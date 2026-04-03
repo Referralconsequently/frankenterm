@@ -2806,6 +2806,9 @@ mod tests {
             "stats": {"panes": 0, "segments": 0, "events": 0, "audit_actions": 0, "workflow_executions": 0}
         }"#;
         let manifest: BackupManifest = serde_json::from_str(json).unwrap();
-        assert!(!manifest.compressed, "compressed should default to false for old manifests");
+        assert!(
+            !manifest.compressed,
+            "compressed should default to false for old manifests"
+        );
     }
 }

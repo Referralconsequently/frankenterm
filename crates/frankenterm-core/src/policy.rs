@@ -414,7 +414,7 @@ fn derive_identity_resource(
 }
 
 // ============================================================================
-// Pane Capabilities (stub - full impl in wa-4vx.8.8)
+// Pane Capabilities
 // ============================================================================
 
 /// Pane capability snapshot for policy evaluation
@@ -427,9 +427,9 @@ fn derive_identity_resource(
 ///
 /// # Safety Behavior
 ///
-/// When `alt_screen` is `None` (unknown), policy should default to deny or
-/// require approval for `SendText` actions, since we cannot safely determine
-/// if input is appropriate.
+/// When `alt_screen` is `None` (unknown), `Send*` actions stay conservative:
+/// untrusted actors require approval before injection, and trusted actors may
+/// proceed only with the unknown state preserved in the decision trace.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PaneCapabilities {
@@ -440,7 +440,7 @@ pub struct PaneCapabilities {
     /// Whether the pane is in alternate screen mode (vim, less, etc.)
     /// - `Some(true)` - confidently detected alt-screen active
     /// - `Some(false)` - confidently detected normal screen
-    /// - `None` - unknown state (should trigger conservative policy)
+    /// - `None` - unknown state (never input-safe; send policy stays conservative)
     pub alt_screen: Option<bool>,
     /// Whether there's a recent capture gap (cleared after verified prompt boundary)
     pub has_recent_gap: bool,
@@ -5308,28 +5308,42 @@ impl PolicyEngine {
                 )
                 .with_context(context);
             }
-            // Require approval if alt-screen state is unknown (conservative)
-            if input.capabilities.alt_screen.is_none() && !input.actor.is_trusted() {
-                context.record_rule(
-                    "policy.alt_screen_unknown",
-                    true,
-                    Some("require_approval"),
-                    Some("alt screen state unknown".to_string()),
-                );
-                context.set_determining_rule("policy.alt_screen_unknown");
-                return PolicyDecision::require_approval_with_rule(
-                    "Alt-screen state unknown - approval required before sending",
-                    "policy.alt_screen_unknown",
-                )
-                .with_context(context);
+            match input.capabilities.alt_screen {
+                Some(false) => {
+                    context.record_rule(
+                        "policy.alt_screen",
+                        false,
+                        None,
+                        Some("alt screen not active".to_string()),
+                    );
+                }
+                None if !input.actor.is_trusted() => {
+                    context.record_rule(
+                        "policy.alt_screen_unknown",
+                        true,
+                        Some("require_approval"),
+                        Some("alt screen state unknown".to_string()),
+                    );
+                    context.set_determining_rule("policy.alt_screen_unknown");
+                    return PolicyDecision::require_approval_with_rule(
+                        "Alt-screen state unknown - approval required before sending",
+                        "policy.alt_screen_unknown",
+                    )
+                    .with_context(context);
+                }
+                None => {
+                    context.record_rule(
+                        "policy.alt_screen_unknown",
+                        true,
+                        None,
+                        Some(
+                            "alt screen state unknown; trusted actor bypassed approval".to_string(),
+                        ),
+                    );
+                }
+                Some(true) => unreachable!("alt-screen deny path returned earlier"),
             }
         }
-        context.record_rule(
-            "policy.alt_screen",
-            false,
-            None,
-            Some("alt screen not active".to_string()),
-        );
 
         // Check for recent capture gaps (safety check for send actions)
         if matches!(
@@ -6155,8 +6169,9 @@ impl InjectionResult {
 ///
 /// # Safety
 ///
-/// Attempting to inject input while pane state is `AltScreen` will be denied.
-/// Unknown alt-screen state also triggers denial (conservative by default).
+/// Attempting to inject input while pane state is `AltScreen` is denied.
+/// Unknown alt-screen state requires approval for untrusted actors; trusted
+/// actors may proceed, but the unknown state remains explicit in the trace.
 ///
 /// # Example
 ///
@@ -7653,6 +7668,28 @@ mod tests {
 
         let decision = engine.authorize(&input);
         assert!(decision.is_allowed());
+
+        let context = decision
+            .context()
+            .expect("allowed decision should retain context");
+        let alt_screen_unknown = context
+            .rules_evaluated
+            .iter()
+            .find(|rule| rule.rule_id == "policy.alt_screen_unknown")
+            .expect("unknown alt-screen trace should be preserved");
+        assert!(alt_screen_unknown.matched);
+        assert_eq!(alt_screen_unknown.decision, None);
+        assert_eq!(
+            alt_screen_unknown.reason.as_deref(),
+            Some("alt screen state unknown; trusted actor bypassed approval")
+        );
+        assert!(
+            !context.rules_evaluated.iter().any(|rule| {
+                rule.rule_id == "policy.alt_screen"
+                    && rule.reason.as_deref() == Some("alt screen not active")
+            }),
+            "unknown alt-screen state must not be misreported as inactive"
+        );
     }
 
     #[test]

@@ -1938,6 +1938,7 @@ fn b23k_explicit_cx_public_render_batch_timeout_contract() {
                                         GetPaneRenderChangesResponse {
                                             pane_id: request.pane_id,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -2068,6 +2069,7 @@ fn b23l_explicit_cx_public_subscription_cancel_shutdown_contract() {
                             Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                 pane_id: 91,
                                 mouse_grabbed: false,
+                                alt_screen_active: false,
                                 cursor_position: mux::renderable::StableCursorPosition::default(),
                                 dimensions: mux::renderable::RenderableDimensions {
                                     cols: 80,
@@ -2235,6 +2237,7 @@ fn b23p_explicit_cx_public_subscription_startup_cancellation_contract() {
                             Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                 pane_id: 92,
                                 mouse_grabbed: false,
+                                alt_screen_active: false,
                                 cursor_position: mux::renderable::StableCursorPosition::default(),
                                 dimensions: mux::renderable::RenderableDimensions {
                                     cols: 80,

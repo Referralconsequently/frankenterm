@@ -124,6 +124,7 @@ fn build_render_changes_response(pane_id: usize, seqno: usize) -> GetPaneRenderC
     GetPaneRenderChangesResponse {
         pane_id,
         mouse_grabbed: false,
+        alt_screen_active: false,
         cursor_position: StableCursorPosition::default(),
         dimensions: RenderableDimensions {
             cols: 80,

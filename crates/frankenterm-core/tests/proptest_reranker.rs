@@ -41,7 +41,7 @@ proptest! {
         prop_assert!(result.is_err(), "empty docs must return Err");
         match result.unwrap_err() {
             RerankError::EmptyInput => {} // expected
-            other @ RerankError::ModelError(_) => prop_assert!(false, "expected EmptyInput, got {:?}", other),
+            other => prop_assert!(false, "expected EmptyInput, got {:?}", other),
         }
     }
 

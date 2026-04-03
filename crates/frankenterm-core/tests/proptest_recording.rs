@@ -26,25 +26,7 @@ fn arb_frame_type() -> impl Strategy<Value = FrameType> {
 }
 
 fn arb_delta_encoding() -> impl Strategy<Value = DeltaEncoding> {
-    prop_oneof![
-        proptest::collection::vec(any::<u8>(), 0..64).prop_map(DeltaEncoding::Full),
-        (0u32..1000, arb_diff_ops()).prop_map(|(base, ops)| DeltaEncoding::Diff {
-            base_frame: base,
-            ops,
-        }),
-        (0u32..1000).prop_map(|base| DeltaEncoding::Repeat { base_frame: base }),
-    ]
-}
-
-fn arb_diff_op() -> impl Strategy<Value = DiffOp> {
-    prop_oneof![
-        (0u32..1000, 1u32..500).prop_map(|(offset, len)| DiffOp::Copy { offset, len }),
-        proptest::collection::vec(any::<u8>(), 0..32).prop_map(|data| DiffOp::Insert { data }),
-    ]
-}
-
-fn arb_diff_ops() -> impl Strategy<Value = Vec<DiffOp>> {
-    proptest::collection::vec(arb_diff_op(), 0..8)
+    proptest::collection::vec(any::<u8>(), 0..64).prop_map(DeltaEncoding::Full)
 }
 
 fn arb_event_source() -> impl Strategy<Value = RecorderEventSource> {
@@ -312,22 +294,7 @@ proptest! {
 }
 
 // =============================================================================
-// 3. DiffOp serde roundtrip
-// =============================================================================
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(200))]
-
-    #[test]
-    fn diff_op_serde_roundtrip(op in arb_diff_op()) {
-        let json = serde_json::to_string(&op).unwrap();
-        let back: DiffOp = serde_json::from_str(&json).unwrap();
-        prop_assert_eq!(op, back);
-    }
-}
-
-// =============================================================================
-// 4. RecordingFrame::encode() produces exactly 14 + payload.len() bytes
+// 3. RecordingFrame::encode() produces exactly 14 + payload.len() bytes
 // =============================================================================
 
 proptest! {

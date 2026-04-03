@@ -1251,6 +1251,7 @@ impl DirectMuxClient {
         GetPaneRenderChangesResponse {
             pane_id: payload.pane_id,
             mouse_grabbed: payload.mouse_grabbed,
+            alt_screen_active: payload.alt_screen_active,
             cursor_position: payload.cursor_position,
             dimensions: payload.dimensions,
             tiered_scrollback_status: payload.tiered_scrollback_status,
@@ -2332,6 +2333,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: request.pane_id,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -2757,6 +2759,7 @@ mod tests {
                                     GetPaneRenderChangesResponse {
                                         pane_id: request.pane_id,
                                         mouse_grabbed: false,
+                                        alt_screen_active: false,
                                         cursor_position:
                                             mux::renderable::StableCursorPosition::default(),
                                         dimensions: mux::renderable::RenderableDimensions {
@@ -2864,6 +2867,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: request.pane_id,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -3219,6 +3223,7 @@ mod tests {
                                             GetPaneRenderChangesResponse {
                                                 pane_id: *pane_id,
                                                 mouse_grabbed: false,
+                                                alt_screen_active: false,
                                                 cursor_position:
                                                     mux::renderable::StableCursorPosition::default(),
                                                 dimensions: mux::renderable::RenderableDimensions {
@@ -3328,6 +3333,7 @@ mod tests {
                                             GetPaneRenderChangesResponse {
                                                 pane_id: *pane_id,
                                                 mouse_grabbed: false,
+                                                alt_screen_active: false,
                                                 cursor_position:
                                                     mux::renderable::StableCursorPosition::default(),
                                                 dimensions: mux::renderable::RenderableDimensions {
@@ -3435,6 +3441,7 @@ mod tests {
                                     GetPaneRenderChangesResponse {
                                         pane_id: request.pane_id,
                                         mouse_grabbed: false,
+                                        alt_screen_active: false,
                                         cursor_position:
                                             mux::renderable::StableCursorPosition::default(),
                                         dimensions: mux::renderable::RenderableDimensions {
@@ -3535,6 +3542,7 @@ mod tests {
                                     GetPaneRenderChangesResponse {
                                         pane_id: request.pane_id,
                                         mouse_grabbed: false,
+                                        alt_screen_active: false,
                                         cursor_position:
                                             mux::renderable::StableCursorPosition::default(),
                                         dimensions: mux::renderable::RenderableDimensions {
@@ -3626,6 +3634,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: request.pane_id,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -3959,6 +3968,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: request.pane_id,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -4078,6 +4088,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: request.pane_id,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -5502,6 +5513,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: request.pane_id,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -5747,6 +5759,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: request.pane_id,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -6509,6 +6522,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: 7,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -6634,6 +6648,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: 31,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -6753,6 +6768,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: 32,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -6880,6 +6896,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: 31,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -7016,6 +7033,7 @@ mod tests {
                                                 GetPaneRenderChangesResponse {
                                                     pane_id: request.pane_id,
                                                     mouse_grabbed: false,
+                                                    alt_screen_active: false,
                                                     cursor_position:
                                                         mux::renderable::StableCursorPosition::default(),
                                                     dimensions: mux::renderable::RenderableDimensions {
@@ -7165,6 +7183,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: 11,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -7278,6 +7297,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: 12,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -7397,6 +7417,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: 13,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -7527,6 +7548,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: 13,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -7658,6 +7680,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: 13,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -7794,6 +7817,7 @@ mod tests {
                                         GetPaneRenderChangesResponse {
                                             pane_id: 13,
                                             mouse_grabbed: false,
+                                            alt_screen_active: false,
                                             cursor_position:
                                                 mux::renderable::StableCursorPosition::default(),
                                             dimensions: mux::renderable::RenderableDimensions {
@@ -7916,6 +7940,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: 13,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {
@@ -8024,6 +8049,7 @@ mod tests {
                                 Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
                                     pane_id: 0,
                                     mouse_grabbed: false,
+                                    alt_screen_active: false,
                                     cursor_position: mux::renderable::StableCursorPosition::default(
                                     ),
                                     dimensions: mux::renderable::RenderableDimensions {

@@ -25,7 +25,7 @@ use crate::policy::Redactor;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum FrameType {
-    /// Terminal output delta.
+    /// Terminal output payload.
     Output = 1,
     /// Terminal resize event.
     Resize = 2,
@@ -38,23 +38,13 @@ pub enum FrameType {
 }
 
 /// Output encoding used for output frames.
+///
+/// Recording v1 only stores full payload chunks. The recorder does not expose
+/// diff/repeat variants until there is real encode/decode support for them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeltaEncoding {
     /// Full frame payload (no delta).
     Full(Vec<u8>),
-    /// Placeholder for diff encoding (to be implemented).
-    #[allow(dead_code)]
-    Diff { base_frame: u32, ops: Vec<DiffOp> },
-    /// Placeholder for repeat encoding (to be implemented).
-    #[allow(dead_code)]
-    Repeat { base_frame: u32 },
-}
-
-/// Diff operation placeholder for future delta encoding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiffOp {
-    Copy { offset: u32, len: u32 },
-    Insert { data: Vec<u8> },
 }
 
 /// Frame header written to disk before payload.
@@ -1068,11 +1058,8 @@ mod tests {
     fn delta_encoding_full_variant() {
         let data = vec![1u8, 2, 3, 4, 5];
         let enc = DeltaEncoding::Full(data.clone());
-        if let DeltaEncoding::Full(inner) = enc {
-            assert_eq!(inner, data);
-        } else {
-            panic!("expected Full variant");
-        }
+        let DeltaEncoding::Full(inner) = enc;
+        assert_eq!(inner, data);
     }
 
     #[test]
@@ -1084,16 +1071,21 @@ mod tests {
     }
 
     #[test]
-    fn diff_op_serde_roundtrip() {
-        let ops = vec![
-            DiffOp::Copy { offset: 0, len: 10 },
-            DiffOp::Insert {
-                data: vec![1, 2, 3],
-            },
-        ];
-        let json = serde_json::to_string(&ops).unwrap();
-        let back: Vec<DiffOp> = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, ops);
+    fn delta_encoding_rejects_legacy_placeholder_variants() {
+        let diff = r#"{"Diff":{"base_frame":7,"ops":[]}}"#;
+        let repeat = r#"{"Repeat":{"base_frame":7}}"#;
+
+        let diff_err = serde_json::from_str::<DeltaEncoding>(diff).unwrap_err();
+        let repeat_err = serde_json::from_str::<DeltaEncoding>(repeat).unwrap_err();
+
+        assert!(
+            diff_err.to_string().contains("unknown variant"),
+            "unexpected error: {diff_err}"
+        );
+        assert!(
+            repeat_err.to_string().contains("unknown variant"),
+            "unexpected error: {repeat_err}"
+        );
     }
 
     #[test]
