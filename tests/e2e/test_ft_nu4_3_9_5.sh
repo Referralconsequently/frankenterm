@@ -16,6 +16,59 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib_rch_guards.sh"
 rch_init "${LOG_DIR}" "${RUN_ID}" "nu4_3_9_5"
 ensure_rch_ready
 
+resolve_wezterm_bin() {
+  local candidate=""
+
+  for candidate in "${FT_WEZTERM_CLI:-}" "${WEZTERM_BIN:-}"; do
+    if [[ -z "${candidate}" ]]; then
+      continue
+    fi
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    if command -v "${candidate}" >/dev/null 2>&1; then
+      command -v "${candidate}"
+      return 0
+    fi
+  done
+
+  if command -v wezterm >/dev/null 2>&1; then
+    command -v wezterm
+    return 0
+  fi
+
+  for candidate in \
+    "/Applications/WezTerm.app/Contents/MacOS/wezterm" \
+    "${HOME}/Applications/WezTerm.app/Contents/MacOS/wezterm" \
+    "${HOME}/.local/bin/wezterm"; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+run_wezterm_cli() {
+  local wezterm_bin="$1"
+  shift
+
+  if [[ -z "${TIMEOUT_BIN:-}" ]]; then
+    resolve_timeout_bin
+  fi
+
+  if [[ -n "${TIMEOUT_BIN:-}" ]]; then
+    "${TIMEOUT_BIN}" --signal=TERM --kill-after=10 \
+      "${FT_DOGFOOD_WEZTERM_TIMEOUT_SECS:-15}" \
+      "${wezterm_bin}" cli --no-auto-start "$@"
+    return
+  fi
+
+  "${wezterm_bin}" cli --no-auto-start "$@"
+}
+
 emit_log() {
   local outcome="$1"
   local scenario="$2"
@@ -185,25 +238,26 @@ if ! command -v ft >/dev/null 2>&1; then
     "Install or expose ft in PATH before running live dogfood capture"
 fi
 
-if ! command -v wezterm >/dev/null 2>&1; then
+if ! WEZTERM_BIN="$(resolve_wezterm_bin)"; then
   fail_now \
     "live_capture" \
     "preflight_wezterm" \
     "wezterm_binary_missing" \
     "wezterm_not_found" \
     "$(basename "${LOG_FILE}")" \
-    "Install or expose wezterm in PATH before running live dogfood capture"
+    "Install or expose wezterm, or set FT_WEZTERM_CLI/WEZTERM_BIN before running live dogfood capture"
 fi
 
 WEZTERM_LIST_LOG="${LOG_DIR}/ft_nu4_3_9_5_${RUN_ID}_wezterm_list.json"
-if ! wezterm cli list > "${WEZTERM_LIST_LOG}" 2>"${WEZTERM_LIST_LOG}.stderr"; then
+if ! run_wezterm_cli "${WEZTERM_BIN}" list --format json \
+  > "${WEZTERM_LIST_LOG}" 2>"${WEZTERM_LIST_LOG}.stderr"; then
   fail_now \
     "live_capture" \
     "wezterm_cli_list" \
     "wezterm_mux_unreachable" \
     "wezterm_cli_failed" \
     "$(basename "${WEZTERM_LIST_LOG}.stderr")" \
-    "Ensure mux is running (example: wezterm start --mux)"
+    "Ensure the target mux is running and reachable via FT_WEZTERM_CLI/WEZTERM_BIN or WEZTERM_UNIX_SOCKET"
 fi
 
 STATE_JSON="${LOG_DIR}/ft_nu4_3_9_5_${RUN_ID}_robot_state.json"

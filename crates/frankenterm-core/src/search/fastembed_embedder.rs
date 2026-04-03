@@ -25,6 +25,15 @@ use super::embedder::{EmbedError, Embedder, EmbedderInfo, EmbedderTier};
 // Re-export key fastembed types for callers that need to specify models.
 pub use fastembed::EmbeddingModel;
 
+const SUPPORTED_FASTEMBED_MODEL_SELECTORS: &[&str] = &[
+    "fastembed",
+    "fastembed-bge-small",
+    "fastembed-bge-base",
+    "fastembed-bge-large",
+    "fastembed-minilm-l6",
+    "fastembed-minilm-l12",
+];
+
 /// Configuration for the FastEmbed ONNX embedder.
 #[derive(Debug, Clone)]
 pub struct FastEmbedConfig {
@@ -167,36 +176,6 @@ impl FastEmbedEmbedder {
         })
     }
 
-    /// Backward-compatible constructor matching the original stub API.
-    ///
-    /// **Deprecated**: prefer `try_new()` or `try_new_default()` which
-    /// actually load the model. This creates a stub that will fail on
-    /// first embed call unless the model is already cached.
-    pub fn new(model_name: impl Into<String>, dimension: usize) -> Self {
-        // Best-effort: create with default config. If it fails, we store
-        // a sentinel that will error on embed().
-        let model_name_str = model_name.into();
-        let config = FastEmbedConfig::default();
-        match Self::try_new(config.clone()) {
-            Ok(mut emb) => {
-                emb.model_name = model_name_str;
-                emb.dimension = dimension;
-                emb
-            }
-            Err(_) => {
-                // Return a struct that will fail on embed() — matches old stub behavior.
-                // We need a valid inner, so we'll panic-path here.
-                // Since `new()` is the legacy API, callers should migrate to try_new().
-                Self {
-                    inner: Arc::new(Mutex::new(stub_text_embedding())),
-                    model_name: model_name_str,
-                    dimension,
-                    config,
-                }
-            }
-        }
-    }
-
     /// The model name/identifier.
     pub fn model_name(&self) -> &str {
         &self.model_name
@@ -213,25 +192,25 @@ impl FastEmbedEmbedder {
     }
 }
 
-/// Create a minimal TextEmbedding for the legacy `new()` fallback path.
-/// This will fail on any actual embed call.
-fn stub_text_embedding() -> fastembed::TextEmbedding {
-    // Use default options — if the model happens to be cached, it works.
-    // If not, embed() calls will return errors.
-    fastembed::TextEmbedding::try_new(
-        fastembed::InitOptions::new(EmbeddingModel::BGESmallENV15)
-            .with_show_download_progress(false),
-    )
-    .unwrap_or_else(|_| {
-        // Last resort: try with AllMiniLM which is the smallest model.
-        fastembed::TextEmbedding::try_new(
-            fastembed::InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-                .with_show_download_progress(false),
-        )
-        .expect(
-            "FastEmbedEmbedder::new() requires at least one cached model; use try_new() instead",
-        )
-    })
+/// Return every model selector that this crate can honestly support.
+#[must_use]
+pub fn supported_fastembed_model_selectors() -> &'static [&'static str] {
+    SUPPORTED_FASTEMBED_MODEL_SELECTORS
+}
+
+/// Resolve a user-facing selector string into a concrete FastEmbed model.
+pub fn resolve_fastembed_model_selector(selector: &str) -> Result<EmbeddingModel, String> {
+    match selector {
+        "fastembed" | "fastembed-bge-small" => Ok(EmbeddingModel::BGESmallENV15),
+        "fastembed-bge-base" => Ok(EmbeddingModel::BGEBaseENV15),
+        "fastembed-bge-large" => Ok(EmbeddingModel::BGELargeENV15),
+        "fastembed-minilm-l6" => Ok(EmbeddingModel::AllMiniLML6V2),
+        "fastembed-minilm-l12" => Ok(EmbeddingModel::AllMiniLML12V2),
+        other => Err(format!(
+            "unknown fastembed model selector: '{other}'. Supported: {}",
+            supported_fastembed_model_selectors().join(", ")
+        )),
+    }
 }
 
 impl Embedder for FastEmbedEmbedder {
@@ -431,6 +410,34 @@ mod tests {
         let config = FastEmbedConfig::default().with_max_length(256);
         let cloned = config.clone();
         assert_eq!(cloned.max_length, 256);
+    }
+
+    #[test]
+    fn supported_fastembed_model_selectors_are_explicit() {
+        assert_eq!(
+            supported_fastembed_model_selectors(),
+            &[
+                "fastembed",
+                "fastembed-bge-small",
+                "fastembed-bge-base",
+                "fastembed-bge-large",
+                "fastembed-minilm-l6",
+                "fastembed-minilm-l12",
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_fastembed_model_selector_accepts_default_alias() {
+        let model = resolve_fastembed_model_selector("fastembed").unwrap();
+        assert!(matches!(model, EmbeddingModel::BGESmallENV15));
+    }
+
+    #[test]
+    fn resolve_fastembed_model_selector_rejects_unknown_values() {
+        let err = resolve_fastembed_model_selector("fastembed-nonexistent").unwrap_err();
+        assert!(err.contains("unknown fastembed model selector"));
+        assert!(err.contains("fastembed-bge-small"));
     }
 
     // =========================================================================
@@ -675,6 +682,20 @@ mod tests {
                 assert!(!error.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn try_new_fails_eagerly_when_cache_dir_is_a_file() {
+        let temp_file = tempfile::NamedTempFile::new().expect("create temp file");
+        let config = FastEmbedConfig::default().with_cache_dir(temp_file.path());
+        let err = match FastEmbedEmbedder::try_new(config) {
+            Ok(_) => panic!("cache dir pointing at a file should fail eagerly"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            EmbedError::ModelNotFound(_) | EmbedError::InferenceFailed(_)
+        ));
     }
 
     // =========================================================================

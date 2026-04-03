@@ -16,6 +16,8 @@
 //! references to avoid locking complexity. The caller (runtime maintenance
 //! loop) is responsible for providing the pressure signals and pane handles.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::backpressure::BackpressureTier;
@@ -269,7 +271,7 @@ impl FleetScrollbackCoordinator {
         }
     }
 
-    /// Collect per-pane scrollback info from a set of TieredScrollback instances.
+    /// Collect per-pane scrollback info from any scrollback access adapter.
     ///
     /// Convenience helper for callers that hold pane data in a map-like structure.
     pub fn collect_pane_infos(panes: &dyn PaneScrollbackAccess) -> Vec<PaneScrollbackInfo> {
@@ -510,20 +512,56 @@ impl<S: std::hash::BuildHasher> PaneScrollbackAccess
 }
 
 // =============================================================================
-// Null (no-op) PaneScrollbackAccess — used when the runtime does not yet
-// hold real TieredScrollback instances (pre-wiring phase).  Evaluate still
-// runs the pressure-signal / fleet-tier logic; eviction requests are silently
-// dropped.
+// Snapshot-backed PaneScrollbackAccess
 // =============================================================================
 
-/// No-op implementation of [`PaneScrollbackAccess`].
+/// Read-only pane scrollback adapter backed by already-collected snapshots.
 ///
-/// Returns no panes, no snapshots, and silently ignores eviction requests.
-/// Used by the runtime maintenance loop before real pane scrollback storage
-/// is wired in, so the coordinator's pressure evaluation and telemetry still
-/// run.
+/// The runtime uses this adapter once it has gathered authoritative pane
+/// scrollback state from the current pane/session boundary. Reads stay bounded
+/// because the adapter stores compact per-pane snapshots rather than copying
+/// full scrollback content.
+///
+/// Eviction calls are currently advisory no-ops for this adapter because the
+/// vendored backend exposes live tiered scrollback telemetry but does not yet
+/// expose a runtime-side warm-eviction mutation hook.
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotPaneScrollbackAccess {
+    snapshots: HashMap<u64, ScrollbackTierSnapshot>,
+}
+
+impl SnapshotPaneScrollbackAccess {
+    /// Create an adapter from pre-collected pane snapshots.
+    #[must_use]
+    pub fn new(snapshots: HashMap<u64, ScrollbackTierSnapshot>) -> Self {
+        Self { snapshots }
+    }
+}
+
+impl PaneScrollbackAccess for SnapshotPaneScrollbackAccess {
+    fn pane_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<_> = self.snapshots.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn snapshot(&self, pane_id: u64) -> Option<ScrollbackTierSnapshot> {
+        self.snapshots.get(&pane_id).cloned()
+    }
+
+    fn evict_warm_pages(&mut self, _pane_id: u64, _count: usize) -> usize {
+        0
+    }
+
+    fn evict_all_warm(&mut self, _pane_id: u64) {}
+}
+
+#[cfg(test)]
+/// Test-only null adapter preserving the historical placeholder behavior for
+/// regression coverage.
 pub struct NullPaneScrollbackAccess;
 
+#[cfg(test)]
 impl PaneScrollbackAccess for NullPaneScrollbackAccess {
     fn pane_ids(&self) -> Vec<u64> {
         Vec::new()
@@ -1099,6 +1137,91 @@ mod tests {
         // Edge case: zero capacity should not panic
         let signals = FleetScrollbackCoordinator::signals_from_queue_depths(0, 0, 0, 0, 10, 0);
         assert_eq!(signals.backpressure, BackpressureTier::Green);
+    }
+
+    #[test]
+    fn snapshot_pane_access_returns_real_snapshots() {
+        let mut snapshots = HashMap::new();
+        snapshots.insert(
+            7,
+            ScrollbackTierSnapshot {
+                hot_lines: 64,
+                warm_pages: 3,
+                warm_bytes: 120_000,
+                warm_lines: 600,
+                cold_lines: 0,
+                cold_pages: 0,
+                total_lines_added: 664,
+                activity_counter: 42,
+                cold_uncompressed_bytes: 0,
+            },
+        );
+
+        let access = SnapshotPaneScrollbackAccess::new(snapshots);
+        assert_eq!(access.pane_ids(), vec![7]);
+
+        let snapshot = access.snapshot(7).expect("snapshot");
+        assert_eq!(snapshot.hot_lines, 64);
+        assert_eq!(snapshot.warm_pages, 3);
+        assert_eq!(snapshot.warm_bytes, 120_000);
+        assert_eq!(snapshot.activity_counter, 42);
+    }
+
+    #[test]
+    fn snapshot_pane_access_returns_none_for_missing_pane() {
+        let access = SnapshotPaneScrollbackAccess::default();
+        assert!(access.snapshot(99).is_none());
+    }
+
+    #[test]
+    fn snapshot_pane_access_repeated_reads_are_stable() {
+        let mut snapshots = HashMap::new();
+        snapshots.insert(
+            11,
+            ScrollbackTierSnapshot {
+                hot_lines: 16,
+                warm_pages: 1,
+                warm_bytes: 2_048,
+                warm_lines: 32,
+                cold_lines: 0,
+                cold_pages: 0,
+                total_lines_added: 48,
+                activity_counter: 9,
+                cold_uncompressed_bytes: 0,
+            },
+        );
+
+        let access = SnapshotPaneScrollbackAccess::new(snapshots);
+        let first = access.snapshot(11).expect("first snapshot");
+        let second = access.snapshot(11).expect("second snapshot");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn snapshot_pane_access_evict_calls_are_explicit_noops() {
+        let mut snapshots = HashMap::new();
+        snapshots.insert(
+            5,
+            ScrollbackTierSnapshot {
+                hot_lines: 8,
+                warm_pages: 2,
+                warm_bytes: 4_096,
+                warm_lines: 64,
+                cold_lines: 0,
+                cold_pages: 0,
+                total_lines_added: 72,
+                activity_counter: 3,
+                cold_uncompressed_bytes: 0,
+            },
+        );
+
+        let mut access = SnapshotPaneScrollbackAccess::new(snapshots);
+        assert_eq!(access.evict_warm_pages(5, 10), 0);
+        access.evict_all_warm(5);
+
+        let snapshot = access.snapshot(5).expect("snapshot after noop eviction");
+        assert_eq!(snapshot.warm_pages, 2);
+        assert_eq!(snapshot.warm_bytes, 4_096);
     }
 
     // ── NullPaneScrollbackAccess tests ──────────────────────────────────

@@ -4772,15 +4772,10 @@ fn effective_search_indexing_config(
 }
 
 fn search_embedder_tiers(config: &frankenterm_core::config::Config) -> Vec<String> {
-    let mut tiers = vec!["hash".to_string()];
-    if cfg!(feature = "semantic-search") && config.search.enabled {
-        tiers.push("model2vec".to_string());
-        tiers.push("fastembed".to_string());
-        if config.search.reranker_enabled {
-            tiers.push("cross-encoder".to_string());
-        }
-    }
-    tiers
+    frankenterm_core::search::advertised_embedder_tiers(
+        config.search.enabled,
+        config.search.reranker_enabled,
+    )
 }
 
 fn build_segment_index_documents(
@@ -9929,9 +9924,7 @@ fn build_ntm_not_implemented_response(
 
     let mut response = RobotResponse::<serde_json::Value>::error_with_code(
         ROBOT_ERR_NOT_IMPLEMENTED,
-        format!(
-            "Command `ft robot {family} {action}` is recognized but not yet implemented.",
-        ),
+        format!("Command `ft robot {family} {action}` is recognized but not yet implemented.",),
         Some(format!(
             "This command will be available in a future release. \
              NTM equivalent: {}.",
@@ -33610,8 +33603,7 @@ async fn handle_config_command(
 
 /// Format the current UTC time as ISO 8601 (e.g., `2026-04-03T02:44:10Z`).
 fn utc_now_iso8601() -> String {
-    chrono::Utc::now()
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// Compute a simple line-level diff summary between two TOML strings
@@ -50822,7 +50814,7 @@ log_level = "debug"
             freshness_age_ms: Some(500),
             last_update_ts: Some(1_700_000_000_000),
             source_counts,
-            embedder_tiers_available: vec!["hash".to_string(), "model2vec".to_string()],
+            embedder_tiers_available: vec!["hash".to_string(), "fastembed".to_string()],
             background_job_status: "idle".to_string(),
             indexing_error_count: 1,
             last_error: Some("disk full".to_string()),
@@ -51115,7 +51107,13 @@ log_level = "debug"
             response.error_code.as_deref(),
             Some(ROBOT_ERR_NOT_IMPLEMENTED)
         );
-        assert!(response.error.as_ref().unwrap().contains("not yet implemented"));
+        assert!(
+            response
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("not yet implemented")
+        );
         assert!(response.hint.is_some());
 
         // Must still carry parsed command metadata in data
@@ -51153,7 +51151,10 @@ log_level = "debug"
             "response must not contain stub status: {json_str}"
         );
         assert!(!response.ok, "response must not signal success");
-        assert_eq!(response.error_code.as_deref(), Some("robot.not_implemented"));
+        assert_eq!(
+            response.error_code.as_deref(),
+            Some("robot.not_implemented")
+        );
     }
 
     #[test]
@@ -51174,9 +51175,7 @@ log_level = "debug"
                 label_filter: None,
                 limit: 50,
             })),
-            RobotNtmCommand::Fleet(FleetCommand::Status(FleetStatusRequest {
-                detailed: false,
-            })),
+            RobotNtmCommand::Fleet(FleetCommand::Status(FleetStatusRequest { detailed: false })),
             RobotNtmCommand::Profile(ProfileCommand::List(ProfileListRequest {
                 role_filter: None,
                 tag_filter: None,
@@ -51223,9 +51222,8 @@ log_level = "debug"
             FleetCommand, FleetStatusRequest, RobotNtmCommand,
         };
 
-        let cmd = RobotNtmCommand::Fleet(FleetCommand::Status(FleetStatusRequest {
-            detailed: true,
-        }));
+        let cmd =
+            RobotNtmCommand::Fleet(FleetCommand::Status(FleetStatusRequest { detailed: true }));
 
         let response = build_ntm_not_implemented_response(&cmd, 999);
         assert_eq!(response.elapsed_ms, 999);
@@ -51266,7 +51264,10 @@ log_level = "debug"
     #[test]
     fn format_epoch_ms_handles_zero() {
         let result = format_epoch_ms(0);
-        assert!(result.starts_with("1970-01-01"), "epoch 0 should be 1970-01-01, got: {result}");
+        assert!(
+            result.starts_with("1970-01-01"),
+            "epoch 0 should be 1970-01-01, got: {result}"
+        );
     }
 
     #[test]

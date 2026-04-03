@@ -82,33 +82,13 @@ fn build_embedder(model: Option<&str>) -> Result<Box<dyn Embedder>, String> {
 }
 
 /// Build a FastEmbed embedder from a model selector string.
-///
-/// Supported selectors:
-/// - `"fastembed"` → default model (BGESmallENV15)
-/// - `"fastembed-bge-small"` → BGESmallENV15
-/// - `"fastembed-bge-base"` → BGEBaseENV15
-/// - `"fastembed-bge-large"` → BGELargeENV15
-/// - `"fastembed-minilm-l6"` → AllMiniLML6V2
-/// - `"fastembed-minilm-l12"` → AllMiniLML12V2
 #[cfg(feature = "semantic-search")]
 fn build_fastembed_embedder(selector: &str) -> Result<Box<dyn Embedder>, String> {
-    use crate::search::fastembed_embedder::{EmbeddingModel, FastEmbedConfig, FastEmbedEmbedder};
-
-    let model = match selector {
-        "fastembed" | "fastembed-bge-small" => EmbeddingModel::BGESmallENV15,
-        "fastembed-bge-base" => EmbeddingModel::BGEBaseENV15,
-        "fastembed-bge-large" => EmbeddingModel::BGELargeENV15,
-        "fastembed-minilm-l6" => EmbeddingModel::AllMiniLML6V2,
-        "fastembed-minilm-l12" => EmbeddingModel::AllMiniLML12V2,
-        other => {
-            return Err(format!(
-                "unknown fastembed model selector: '{}'. \
-                 Supported: fastembed, fastembed-bge-small, fastembed-bge-base, \
-                 fastembed-bge-large, fastembed-minilm-l6, fastembed-minilm-l12",
-                other
-            ));
-        }
+    use crate::search::fastembed_embedder::{
+        FastEmbedConfig, FastEmbedEmbedder, resolve_fastembed_model_selector,
     };
+
+    let model = resolve_fastembed_model_selector(selector)?;
 
     let config = FastEmbedConfig::default().with_model(model);
     let emb = FastEmbedEmbedder::try_new(config).map_err(|e| e.to_string())?;
@@ -269,6 +249,13 @@ mod tests {
     #[test]
     fn build_embedder_unsupported_model_err() {
         let result = build_embedder(Some("openai-ada-002"));
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains("unsupported embed model"));
+    }
+
+    #[test]
+    fn build_embedder_rejects_retired_model2vec_selector() {
+        let result = build_embedder(Some("model2vec"));
         assert!(result.is_err());
         assert!(result.err().unwrap().contains("unsupported embed model"));
     }

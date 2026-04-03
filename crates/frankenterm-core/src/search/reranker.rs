@@ -1346,16 +1346,30 @@ mod tests {
     fn rerank_error_model_not_loaded_display() {
         let err = RerankError::ModelNotLoaded("/path/to/model".to_string());
         let msg = err.to_string();
-        assert!(msg.contains("not loaded"), "error should mention 'not loaded': {msg}");
-        assert!(msg.contains("/path/to/model"), "error should include model path: {msg}");
+        assert!(
+            msg.contains("not loaded"),
+            "error should mention 'not loaded': {msg}"
+        );
+        assert!(
+            msg.contains("/path/to/model"),
+            "error should include model path: {msg}"
+        );
     }
 
     #[test]
     fn passthrough_reranker_returns_docs_unchanged() {
         let reranker = PassthroughReranker;
         let docs = vec![
-            ScoredDoc { id: 1, text: "first".into(), score: 0.5 },
-            ScoredDoc { id: 2, text: "second".into(), score: 0.9 },
+            ScoredDoc {
+                id: 1,
+                text: "first".into(),
+                score: 0.5,
+            },
+            ScoredDoc {
+                id: 2,
+                text: "second".into(),
+                score: 0.9,
+            },
         ];
         let result = reranker.rerank("query", docs).unwrap();
         assert_eq!(result.len(), 2);

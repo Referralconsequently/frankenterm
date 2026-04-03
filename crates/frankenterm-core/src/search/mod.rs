@@ -29,8 +29,6 @@ pub mod vector_index_bridge;
 #[cfg(feature = "semantic-search")]
 mod fastembed_embedder;
 #[cfg(feature = "semantic-search")]
-mod model2vec_embedder;
-#[cfg(feature = "semantic-search")]
 mod model_registry;
 
 #[cfg(feature = "semantic-search")]
@@ -100,14 +98,46 @@ pub use reranker_bridge::{
 #[cfg(feature = "semantic-search")]
 pub use fastembed_embedder::{
     FastEmbedConfig, FastEmbedEmbedder, FastEmbedInitResult, best_available_embedder,
-    try_init_fastembed,
+    resolve_fastembed_model_selector, supported_fastembed_model_selectors, try_init_fastembed,
 };
 #[cfg(feature = "semantic-search")]
 pub use model_registry::{ModelInfo, ModelRegistry};
 #[cfg(feature = "semantic-search")]
-pub use model2vec_embedder::Model2VecEmbedder;
-#[cfg(feature = "semantic-search")]
 pub use reranker::CrossEncoderReranker;
+
+/// Report the embedder backends that this build can truthfully advertise.
+#[must_use]
+pub fn advertised_embedder_tiers(search_enabled: bool, reranker_enabled: bool) -> Vec<String> {
+    let _ = (search_enabled, reranker_enabled);
+    let mut tiers = vec!["hash".to_string()];
+
+    #[cfg(feature = "semantic-search")]
+    if search_enabled {
+        tiers.push("fastembed".to_string());
+        if reranker_enabled {
+            tiers.push("cross-encoder".to_string());
+        }
+    }
+
+    tiers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::advertised_embedder_tiers;
+
+    #[test]
+    fn advertised_embedder_tiers_without_semantic_search_only_reports_hash() {
+        let tiers = advertised_embedder_tiers(false, true);
+        assert_eq!(tiers, vec!["hash".to_string()]);
+    }
+
+    #[test]
+    fn advertised_embedder_tiers_never_reports_retired_model2vec_backend() {
+        let tiers = advertised_embedder_tiers(true, true);
+        assert!(!tiers.iter().any(|tier| tier == "model2vec"));
+    }
+}
 
 pub use facade::{FacadeConfig, FacadeResult, FacadeRouting, SearchFacade, ShadowComparison};
 pub use migration_controller::{

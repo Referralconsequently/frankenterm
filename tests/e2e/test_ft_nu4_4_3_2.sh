@@ -23,6 +23,11 @@ RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|running locally'
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 TIMEOUT_BIN=""
 
+# `cargo bench` uses RCH's build timeout bucket. Cold workers need longer than
+# the default 300s for the wa-agent benchmark crate graph, and the fail-open
+# fallback is forbidden for this bead.
+export RCH_BUILD_TIMEOUT_SEC="${RCH_BUILD_TIMEOUT_SEC:-1200}"
+
 # This harness already performs explicit `rch check`, worker probe/status, and
 # fail-closed guarded remote test/bench steps below. Skip the shared smoke
 # preflight here because `rch exec -- cargo check --help` is hanging before the

@@ -119,10 +119,6 @@ pub struct SearchConfig {
     pub mode: String,
     /// Directory for downloaded model files.
     pub models_dir: String,
-    /// Model name for the fast tier (Model2Vec).
-    pub fast_model: String,
-    /// Model name for the quality tier (MiniLM).
-    pub quality_model: String,
     /// RRF fusion K parameter.
     pub rrf_k: u32,
     /// Two-tier blending weight for quality tier (0.0-1.0).
@@ -147,8 +143,6 @@ impl Default for SearchConfig {
             enabled: false,
             mode: "fts5".into(),
             models_dir: "~/.ft/models".into(),
-            fast_model: "potion-multilingual-128M".into(),
-            quality_model: "all-MiniLM-L6-v2".into(),
             rrf_k: 60,
             quality_weight: 0.7,
             quality_timeout_ms: 200,

@@ -12,7 +12,7 @@ use frankenterm_core::fleet_memory_controller::{
     PaneScrollbackInfo, PressureSignals,
 };
 use frankenterm_core::fleet_scrollback_coordinator::{
-    CoordinatorConfig, FleetScrollbackCoordinator,
+    CoordinatorConfig, FleetScrollbackCoordinator, SnapshotPaneScrollbackAccess,
 };
 use frankenterm_core::memory_budget::BudgetLevel;
 use frankenterm_core::memory_pressure::MemoryPressureTier;
@@ -442,6 +442,61 @@ fn pane_infos(map: &std::collections::HashMap<u64, TieredScrollback>) -> Vec<Pan
             }
         })
         .collect()
+}
+
+fn snapshot_pane_access(
+    map: &std::collections::HashMap<u64, TieredScrollback>,
+) -> SnapshotPaneScrollbackAccess {
+    SnapshotPaneScrollbackAccess::new(map.iter().map(|(&id, sb)| (id, sb.snapshot())).collect())
+}
+
+#[test]
+fn snapshot_adapter_observes_real_fleet_state_without_placeholder_emptiness() {
+    let mut coord = FleetScrollbackCoordinator::new(
+        CoordinatorConfig {
+            min_fleet_warm_bytes_for_eviction: 0,
+            ..CoordinatorConfig::default()
+        },
+        FleetMemoryConfig {
+            escalation_threshold: 1,
+            deescalation_threshold: 1,
+            ..FleetMemoryConfig::default()
+        },
+    );
+
+    let panes = make_pane_map(8, 500);
+    let mut snapshot_access = snapshot_pane_access(&panes);
+    let infos = FleetScrollbackCoordinator::collect_pane_infos(&snapshot_access);
+    let repeated_infos = FleetScrollbackCoordinator::collect_pane_infos(&snapshot_access);
+
+    assert_eq!(infos.len(), 8);
+    assert_eq!(infos.len(), repeated_infos.len());
+    assert!(
+        infos
+            .iter()
+            .all(|info| info.warm_bytes > 0 && info.warm_pages > 0),
+        "snapshot adapter should expose real warm scrollback data: {infos:?}"
+    );
+
+    let signals = PressureSignals {
+        backpressure: BackpressureTier::Red,
+        memory_pressure: MemoryPressureTier::Orange,
+        worst_budget: BudgetLevel::Normal,
+        pane_count: infos.len(),
+        paused_pane_count: 0,
+    };
+
+    let result = coord.evaluate(&signals, &infos, &mut snapshot_access);
+
+    assert_eq!(result.compound_tier, FleetPressureTier::Critical);
+    assert!(
+        result.eviction_plan.is_some(),
+        "real snapshot data should produce an eviction plan instead of placeholder emptiness"
+    );
+    assert_eq!(result.targets_applied, 0);
+    assert_eq!(result.pages_evicted, 0);
+    assert_eq!(result.bytes_reclaimed, 0);
+    assert!(coord.telemetry().plans_produced > 0);
 }
 
 #[test]

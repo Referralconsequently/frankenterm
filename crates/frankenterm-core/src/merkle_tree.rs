@@ -418,7 +418,7 @@ impl Eq for MerkleTree {}
 // ── Merkle Proof ────────────────────────────────────────────────────
 
 /// A step in a Merkle proof path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofStep {
     /// The sibling hash is on the left.
     Left(MerkleHash),
@@ -427,7 +427,7 @@ pub enum ProofStep {
 }
 
 /// An inclusion proof for a key-value pair.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MerkleProof {
     /// The key being proved.
     pub key: Vec<u8>,

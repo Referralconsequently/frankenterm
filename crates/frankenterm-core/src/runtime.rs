@@ -38,7 +38,7 @@ use crate::error::Result;
 use crate::events::{Event, EventBus, UserVarPayload, event_identity_key};
 use crate::fleet_memory_controller::{FleetMemoryConfig, PaneScrollbackInfo};
 use crate::fleet_scrollback_coordinator::{
-    CoordinatorConfig, FleetScrollbackCoordinator, NullPaneScrollbackAccess,
+    CoordinatorConfig, FleetScrollbackCoordinator, SnapshotPaneScrollbackAccess,
 };
 use crate::gc::{CacheGcSettings, compact_u64_map, should_vacuum};
 use crate::ingest::{
@@ -56,6 +56,7 @@ use crate::runtime_compat::{
     task::{self, JoinHandle},
     timeout, watch,
 };
+use crate::scrollback_tiers::ScrollbackTierSnapshot;
 #[cfg(all(feature = "vendored", unix))]
 use crate::sharding::decode_sharded_pane_id;
 use crate::spsc_ring_buffer::{SpscConsumer, SpscProducer, channel as spsc_channel};
@@ -1804,21 +1805,29 @@ impl ObservationRuntime {
                         &observed_pane_ids,
                     )
                     .await;
-                    let fleet_pane_infos = {
+                    let (fleet_pane_infos, fleet_pane_snapshots) = {
                         let reg = registry.read().await;
                         let cur = cursors.read().await;
-                        fleet_pane_infos_from_registry(
-                            &reg,
-                            &cur,
-                            &tiered_scrollback_fetch.summaries,
+                        (
+                            fleet_pane_infos_from_registry(
+                                &reg,
+                                &cur,
+                                &tiered_scrollback_fetch.summaries,
+                            ),
+                            fleet_pane_scrollback_snapshots_from_registry(
+                                &reg,
+                                &cur,
+                                &tiered_scrollback_fetch.summaries,
+                            ),
                         )
                     };
-
-                    let mut null_panes = NullPaneScrollbackAccess;
+                    let pane_scrollback_snapshot_count = fleet_pane_snapshots.len();
+                    let mut pane_snapshots =
+                        SnapshotPaneScrollbackAccess::new(fleet_pane_snapshots);
                     let fleet_eval = fleet_coordinator.evaluate(
                         &fleet_signals,
                         &fleet_pane_infos,
-                        &mut null_panes,
+                        &mut pane_snapshots,
                     );
 
                     if fleet_eval.pages_evicted > 0 || fleet_eval.bytes_reclaimed > 0 {
@@ -1876,6 +1885,7 @@ impl ObservationRuntime {
                             "actions": fleet_eval.actions.len(),
                             "observed_panes": observed_panes,
                             "pane_status_snapshots": tiered_scrollback_fetch.summaries.len(),
+                            "pane_scrollback_snapshots": pane_scrollback_snapshot_count,
                             "pane_status_errors": tiered_scrollback_fetch.errors,
                             "pane_status_error_samples": tiered_scrollback_fetch.error_samples,
                             "tiered_scrollback_telemetry_blind": telemetry_blind,
@@ -3501,6 +3511,50 @@ fn estimated_memory_bytes_from_tiered_scrollback(summary: &PaneTieredScrollbackS
             .in_memory_scrollback_rows
             .saturating_mul(APPROX_IN_MEMORY_SCROLLBACK_LINE_BYTES),
     )
+}
+
+fn scrollback_snapshot_from_tiered_scrollback_summary(
+    activity_counter: u64,
+    summary: &PaneTieredScrollbackSummary,
+) -> ScrollbackTierSnapshot {
+    // The mux telemetry surfaces the resident hot/warm state the coordinator
+    // needs for bounded fleet reads, but not the full historical spill totals
+    // tracked by the in-process TieredScrollback implementation.
+    let hot_lines = summary.in_memory_scrollback_rows;
+    let warm_lines = summary.warm_resident_lines;
+    let resident_lines = hot_lines.saturating_add(warm_lines);
+
+    ScrollbackTierSnapshot {
+        hot_lines,
+        warm_pages: approximate_warm_page_count(summary),
+        warm_bytes: summary.warm_resident_bytes,
+        warm_lines,
+        cold_lines: 0,
+        cold_pages: 0,
+        total_lines_added: u64::try_from(resident_lines).unwrap_or(u64::MAX),
+        activity_counter,
+        cold_uncompressed_bytes: 0,
+    }
+}
+
+fn fleet_pane_scrollback_snapshots_from_registry(
+    registry: &PaneRegistry,
+    cursors: &HashMap<u64, PaneCursor>,
+    tiered_scrollback_by_pane: &HashMap<u64, PaneTieredScrollbackSummary>,
+) -> HashMap<u64, ScrollbackTierSnapshot> {
+    registry
+        .entries()
+        .filter(|(_, entry)| entry.should_observe())
+        .filter_map(|(pane_id, _)| {
+            tiered_scrollback_by_pane.get(pane_id).map(|summary| {
+                let activity_counter = cursors.get(pane_id).map_or(0, |cursor| cursor.next_seq);
+                (
+                    *pane_id,
+                    scrollback_snapshot_from_tiered_scrollback_summary(activity_counter, summary),
+                )
+            })
+        })
+        .collect()
 }
 
 fn fleet_pane_infos_from_registry(
@@ -6804,6 +6858,88 @@ mod tests {
         let infos = fleet_pane_infos_from_registry(&registry, &cursors, &HashMap::new());
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].activity_counter, 0);
+    }
+
+    #[test]
+    fn scrollback_snapshot_from_live_tiered_scrollback_status() {
+        let snapshot = scrollback_snapshot_from_tiered_scrollback_summary(
+            7,
+            &PaneTieredScrollbackSummary {
+                tiering_enabled: true,
+                configured_scrollback_rows: 10_000,
+                configured_hot_lines: 1_024,
+                configured_warm_max_bytes: 2_000_000,
+                visible_rows: 40,
+                in_memory_scrollback_rows: 64,
+                warm_resident_lines: 600,
+                warm_resident_bytes: 120_000,
+            },
+        );
+
+        assert_eq!(snapshot.hot_lines, 64);
+        assert_eq!(snapshot.warm_lines, 600);
+        assert_eq!(snapshot.warm_pages, 3);
+        assert_eq!(snapshot.warm_bytes, 120_000);
+        assert_eq!(snapshot.total_lines_added, 664);
+        assert_eq!(snapshot.activity_counter, 7);
+    }
+
+    #[test]
+    fn fleet_pane_scrollback_snapshots_skip_panes_without_live_tiers() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "test")]);
+
+        let cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let snapshots =
+            fleet_pane_scrollback_snapshots_from_registry(&registry, &cursors, &HashMap::new());
+        assert!(snapshots.is_empty());
+    }
+
+    #[test]
+    fn fleet_pane_scrollback_snapshots_use_live_tiered_scrollback_status() {
+        let mut registry = PaneRegistry::new();
+        registry.discovery_tick(vec![make_pane(1, "bash"), make_pane(2, "ignored")]);
+
+        if let Some(entry) = registry.get_entry_mut(2) {
+            entry.observation = crate::ingest::ObservationDecision::Ignored {
+                reason: "excluded by filter".to_string(),
+            };
+        }
+
+        let mut ext_cursors: HashMap<u64, PaneCursor> = HashMap::new();
+        let mut cursor = PaneCursor::new(1);
+        cursor.next_seq = 7;
+        ext_cursors.insert(1, cursor);
+
+        let mut tiered_scrollback = HashMap::new();
+        tiered_scrollback.insert(
+            1,
+            PaneTieredScrollbackSummary {
+                tiering_enabled: true,
+                configured_scrollback_rows: 10_000,
+                configured_hot_lines: 1_024,
+                configured_warm_max_bytes: 2_000_000,
+                visible_rows: 40,
+                in_memory_scrollback_rows: 64,
+                warm_resident_lines: 600,
+                warm_resident_bytes: 120_000,
+            },
+        );
+        tiered_scrollback.insert(2, PaneTieredScrollbackSummary::default());
+
+        let snapshots = fleet_pane_scrollback_snapshots_from_registry(
+            &registry,
+            &ext_cursors,
+            &tiered_scrollback,
+        );
+
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = snapshots.get(&1).expect("snapshot for observed pane");
+        assert_eq!(snapshot.hot_lines, 64);
+        assert_eq!(snapshot.warm_lines, 600);
+        assert_eq!(snapshot.warm_pages, 3);
+        assert_eq!(snapshot.warm_bytes, 120_000);
+        assert_eq!(snapshot.activity_counter, 7);
     }
 
     #[test]
