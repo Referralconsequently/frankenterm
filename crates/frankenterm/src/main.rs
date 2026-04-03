@@ -32144,53 +32144,11 @@ fn render_secret_scan_report_plain(report: &frankenterm_core::secrets::SecretSca
     }
 }
 
-/// Format epoch milliseconds as ISO 8601 string (basic, no chrono dependency).
+/// Format epoch milliseconds as ISO 8601 string with millisecond precision.
 fn format_epoch_ms(ms: i64) -> String {
-    let secs = ms / 1000;
-    let subsec_ms = (ms % 1000).unsigned_abs();
-    // Use the same approach as chrono_stub_now but from epoch
-    let days = secs / 86400;
-    let day_secs = secs % 86400;
-    let hours = day_secs / 3600;
-    let mins = (day_secs % 3600) / 60;
-    let s = day_secs % 60;
-
-    // Approximate date from days since epoch (1970-01-01)
-    // This is a simplified calculation sufficient for display
-    let mut y = 1970i64;
-    let mut remaining = days;
-    loop {
-        let days_in_year = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
-            366
-        } else {
-            365
-        };
-        if remaining < days_in_year {
-            break;
-        }
-        remaining -= days_in_year;
-        y += 1;
-    }
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let month_days: [i64; 12] = if leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut m = 0usize;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining < md {
-            m = i;
-            break;
-        }
-        remaining -= md;
-    }
-    let d = remaining + 1;
-
-    format!(
-        "{y:04}-{:02}-{d:02}T{hours:02}:{mins:02}:{s:02}.{subsec_ms:03}Z",
-        m + 1
-    )
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| format!("{ms}ms (out of range)"))
 }
 
 fn parse_history_time_ms(raw: &str) -> Result<i64, String> {
@@ -33485,7 +33443,7 @@ async fn handle_config_command(
             } else {
                 let mut header = String::new();
                 header.push_str("# ft configuration export\n");
-                header.push_str(&format!("# Exported: {}\n", chrono_stub_now()));
+                header.push_str(&format!("# Exported: {}\n", utc_now_iso8601()));
                 header.push_str(&format!("# ft version: {}\n\n", frankenterm_core::VERSION));
 
                 let toml_body = config.to_toml()?;
@@ -33591,7 +33549,7 @@ async fn handle_config_command(
                 // Full replacement
                 let header = format!(
                     "# ft configuration (imported)\n# Imported: {}\n# Source: {}\n\n",
-                    chrono_stub_now(),
+                    utc_now_iso8601(),
                     source,
                 );
                 std::fs::write(&config_path, format!("{header}{incoming_toml}"))?;
@@ -33623,55 +33581,10 @@ async fn handle_config_command(
     Ok(())
 }
 
-/// Stub for timestamp generation (avoids chrono dependency)
-fn chrono_stub_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Basic ISO 8601 approximation
-    let days = secs / 86400;
-    let time = secs % 86400;
-    let hours = time / 3600;
-    let mins = (time % 3600) / 60;
-    let secs_rem = time % 60;
-
-    let mut year: u64 = 1970;
-    let mut rem = days;
-    loop {
-        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if rem < ydays {
-            break;
-        }
-        rem -= ydays;
-        year += 1;
-    }
-    let mut month: u64 = 1;
-    loop {
-        let mdays = match month {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            2 => {
-                if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-                    29
-                } else {
-                    28
-                }
-            }
-            _ => 30,
-        };
-        if rem < mdays {
-            break;
-        }
-        rem -= mdays;
-        month += 1;
-    }
-    let day = rem + 1;
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{mins:02}:{secs_rem:02}Z")
+/// Format the current UTC time as ISO 8601 (e.g., `2026-04-03T02:44:10Z`).
+fn utc_now_iso8601() -> String {
+    chrono::Utc::now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// Compute a simple line-level diff summary between two TOML strings
@@ -51289,6 +51202,54 @@ log_level = "debug"
 
         let response = build_ntm_not_implemented_response(&cmd, 999);
         assert_eq!(response.elapsed_ms, 999);
+    }
+
+    #[test]
+    fn utc_now_iso8601_returns_valid_rfc3339() {
+        let ts = utc_now_iso8601();
+        // Must be parseable back by chrono
+        let parsed = chrono::DateTime::parse_from_rfc3339(&ts);
+        assert!(parsed.is_ok(), "failed to parse: {ts}");
+        // Must end with Z (UTC, not offset)
+        assert!(ts.ends_with('Z'), "expected UTC marker Z, got: {ts}");
+        // Must NOT contain fractional seconds (SecondsFormat::Secs)
+        assert!(
+            !ts.contains('.'),
+            "expected no fractional seconds, got: {ts}"
+        );
+    }
+
+    #[test]
+    fn format_epoch_ms_returns_valid_rfc3339_with_millis() {
+        // 2026-01-15T12:30:45.123Z in epoch ms
+        let ms = 1_768_562_245_123_i64;
+        let result = format_epoch_ms(ms);
+
+        // Must be parseable
+        let parsed = chrono::DateTime::parse_from_rfc3339(&result);
+        assert!(parsed.is_ok(), "failed to parse: {result}");
+
+        // Must contain milliseconds
+        assert!(result.contains('.'), "expected millis in: {result}");
+
+        // Must end with Z
+        assert!(result.ends_with('Z'), "expected UTC marker Z: {result}");
+    }
+
+    #[test]
+    fn format_epoch_ms_handles_zero() {
+        let result = format_epoch_ms(0);
+        assert!(result.starts_with("1970-01-01"), "epoch 0 should be 1970-01-01, got: {result}");
+    }
+
+    #[test]
+    fn format_epoch_ms_known_date() {
+        // 2024-01-01T00:00:00.000Z = 1704067200000ms
+        let result = format_epoch_ms(1_704_067_200_000);
+        assert!(
+            result.starts_with("2024-01-01T00:00:00"),
+            "expected 2024-01-01, got: {result}"
+        );
     }
 
     #[test]
