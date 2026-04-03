@@ -2296,6 +2296,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "env-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "env_logger",
+ "log",
+]
+
+[[package]]
 name = "env_filter"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
