@@ -25,6 +25,9 @@ _LIB_RCH_GUARDS_LOADED=1
 RCH_FAIL_OPEN_REGEX='\[RCH\][[:space:]]+local|Remote execution failed: .*running locally|running locally|Failed to connect to ubuntu@|too long for Unix domain socket'
 RCH_STEP_TIMEOUT_SECS="${RCH_STEP_TIMEOUT_SECS:-900}"
 RCH_SMOKE_TIMEOUT_SECS="${RCH_SMOKE_TIMEOUT_SECS:-600}"
+# Set this to 1 for harnesses whose first material verification steps already
+# run through `run_rch_cargo_logged`. That keeps remote execution fail-closed
+# without paying a duplicate full-repo sync for a cargo smoke command.
 RCH_SKIP_SMOKE_PREFLIGHT="${RCH_SKIP_SMOKE_PREFLIGHT:-0}"
 
 # Populated by rch_init().
@@ -51,6 +54,54 @@ resolve_timeout_bin() {
     else
         TIMEOUT_BIN=""
     fi
+}
+
+rch_probe_log_path() {
+    printf '%s\n' "${_RCH_PROBE_LOG}"
+}
+
+rch_smoke_log_path() {
+    printf '%s\n' "${_RCH_SMOKE_LOG}"
+}
+
+rch_log_meta_path() {
+    printf '%s.rch_meta.json\n' "$1"
+}
+
+rch_extract_selected_worker() {
+    local output_file="$1"
+    sed -nE 's/.*Selected worker: ([^ ]+) at .*/\1/p' "${output_file}" 2>/dev/null | tail -n 1
+}
+
+rch_extract_probe_worker_ids() {
+    local output_file="$1"
+    grep -Eo '"id"[[:space:]]*:[[:space:]]*"[^"]+"' "${output_file}" 2>/dev/null \
+        | sed -E 's/.*"id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
+        | sort -u || true
+}
+
+rch_extract_probe_worker_count() {
+    local output_file="$1"
+    local count
+    count="$(rch_extract_probe_worker_ids "${output_file}" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if [[ -n "${count}" ]]; then
+        printf '%s\n' "${count}"
+    fi
+}
+
+rch_extract_sync_duration_ms() {
+    local output_file="$1"
+    sed -nE 's/.*Sync complete: .* in ([0-9]+)ms.*/\1/p' "${output_file}" 2>/dev/null | tail -n 1 | tr -cd '0-9'
+}
+
+rch_extract_remote_duration_ms() {
+    local output_file="$1"
+    sed -nE 's/.*Remote command finished: exit=[-0-9]+ in ([0-9]+)ms.*/\1/p' "${output_file}" 2>/dev/null | tail -n 1 | tr -cd '0-9'
+}
+
+rch_extract_remote_exit_code() {
+    local output_file="$1"
+    sed -nE 's/.*Remote command finished: exit=([-0-9]+) in [0-9]+ms.*/\1/p' "${output_file}" 2>/dev/null | tail -n 1 | tr -cd '0-9-'
 }
 
 probe_has_reachable_workers() {
@@ -221,6 +272,7 @@ ensure_rch_ready() {
     fi
 
     if [[ "${RCH_SKIP_SMOKE_PREFLIGHT}" == "1" ]]; then
+        printf '%s\n' "Smoke preflight skipped because RCH_SKIP_SMOKE_PREFLIGHT=1" >"${_RCH_SMOKE_LOG}"
         return 0
     fi
 
