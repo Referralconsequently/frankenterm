@@ -4539,6 +4539,7 @@ const ROBOT_ERR_TIMEOUT: &str = "robot.timeout";
 const ROBOT_ERR_WORKFLOW_ABORTED: &str = "robot.workflow_aborted";
 const ROBOT_ERR_WORKFLOW_ERROR: &str = "robot.workflow_error";
 const ROBOT_ERR_WORKFLOW_NOT_FOUND: &str = "robot.workflow_not_found";
+const ROBOT_ERR_NOT_IMPLEMENTED: &str = "robot.not_implemented";
 const ROBOT_BATCH_GET_TEXT_MAX_CONCURRENT: usize = 16;
 /// Cooldown period between account refreshes (milliseconds)
 const ROBOT_REFRESH_COOLDOWN_MS: i64 = 30_000;
@@ -8350,6 +8351,257 @@ fn print_scrollback_restore_summary(
     );
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SnapshotRestoreWorkflowOptions {
+    layout_only: bool,
+    launch_agents: bool,
+    wezterm_timeout_secs: u64,
+}
+
+fn snapshot_restore_dry_run_json(
+    checkpoint: &frankenterm_core::session_restore::CheckpointData,
+    options: SnapshotRestoreWorkflowOptions,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "dry_run": true,
+        "snapshot": {
+            "checkpoint_id": checkpoint.checkpoint_id,
+            "session_id": checkpoint.session_id,
+            "checkpoint_at": checkpoint.checkpoint_at,
+            "checkpoint_type": checkpoint.checkpoint_type,
+            "pane_count": checkpoint.pane_count,
+        },
+        "layout_only": options.layout_only,
+        "launch_agents": options.launch_agents,
+    })
+}
+
+fn snapshot_restore_plan_lines(
+    checkpoint: &frankenterm_core::session_restore::CheckpointData,
+    options: SnapshotRestoreWorkflowOptions,
+) -> Vec<String> {
+    vec![
+        format!("Restore plan for snapshot #{}:", checkpoint.checkpoint_id),
+        format!("  Session:    {}", checkpoint.session_id),
+        format!(
+            "  Captured:   {}",
+            format_epoch_display(checkpoint.checkpoint_at)
+        ),
+        format!("  Pane count: {}", checkpoint.pane_count),
+        format!("  layout_only={}", options.layout_only),
+        format!("  launch_agents={}", options.launch_agents),
+        "Dry-run requested; no actions were executed.".to_string(),
+    ]
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+struct SnapshotRestoreAbort {
+    phase: &'static str,
+    checkpoint_id: i64,
+    error: String,
+    hint: Option<String>,
+}
+
+#[cfg(unix)]
+impl SnapshotRestoreAbort {
+    fn new(phase: &'static str, checkpoint_id: i64, error: impl std::fmt::Display) -> Self {
+        Self {
+            phase,
+            checkpoint_id,
+            error: error.to_string(),
+            hint: None,
+        }
+    }
+
+    fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+}
+
+#[cfg(unix)]
+fn snapshot_restore_abort_json(abort: &SnapshotRestoreAbort) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "ok": false,
+        "phase": abort.phase,
+        "checkpoint_id": abort.checkpoint_id,
+        "error": abort.error,
+    });
+
+    if let Some(hint) = abort.hint.as_deref()
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert("hint".to_string(), serde_json::json!(hint));
+    }
+
+    payload
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct SnapshotRestoreWorkflowResult {
+    summary: frankenterm_core::session_restore::RestoreSummary,
+    layout_only: bool,
+}
+
+#[cfg(unix)]
+fn snapshot_restore_result_json(result: &SnapshotRestoreWorkflowResult) -> serde_json::Value {
+    let summary = &result.summary;
+
+    serde_json::json!({
+        "ok": true,
+        "checkpoint_id": summary.checkpoint_id,
+        "session_id": summary.session_id,
+        "layout_only": result.layout_only,
+        "restored_panes": summary.restored_count(),
+        "failed_panes": summary.failed_count(),
+        "total_panes": summary.total_count(),
+        "elapsed_ms": summary.elapsed_ms,
+        "scrollback": restore_scrollback_json(summary, !result.layout_only),
+    })
+}
+
+#[cfg(unix)]
+fn print_snapshot_restore_abort_plain(abort: &SnapshotRestoreAbort) {
+    match abort.phase {
+        "preflight" => eprintln!("Snapshot restore aborted during preflight: {}", abort.error),
+        phase => eprintln!("Snapshot restore failed during {phase}: {}", abort.error),
+    }
+    if let Some(hint) = abort.hint.as_deref() {
+        eprintln!("Hint: {hint}");
+    }
+}
+
+#[cfg(unix)]
+fn print_snapshot_restore_result_plain(result: &SnapshotRestoreWorkflowResult) {
+    let summary = &result.summary;
+
+    println!(
+        "Snapshot restore complete: {}/{} panes in {}ms (checkpoint #{})",
+        summary.restored_count(),
+        summary.total_count(),
+        summary.elapsed_ms,
+        summary.checkpoint_id
+    );
+    print_scrollback_restore_summary(summary, !result.layout_only);
+}
+
+#[cfg(unix)]
+async fn execute_snapshot_restore_post_preflight<Restore, RestoreFut>(
+    checkpoint_id: i64,
+    options: SnapshotRestoreWorkflowOptions,
+    restore_snapshot: Restore,
+) -> Result<SnapshotRestoreWorkflowResult, SnapshotRestoreAbort>
+where
+    Restore: FnOnce(i64, bool, bool) -> RestoreFut,
+    RestoreFut: std::future::Future<
+            Output = anyhow::Result<frankenterm_core::session_restore::RestoreSummary>,
+        >,
+{
+    let summary = restore_snapshot(checkpoint_id, options.layout_only, options.launch_agents)
+        .await
+        .map_err(|error| SnapshotRestoreAbort::new("restore", checkpoint_id, error))?;
+
+    Ok(SnapshotRestoreWorkflowResult {
+        summary,
+        layout_only: options.layout_only,
+    })
+}
+
+#[cfg(unix)]
+async fn execute_snapshot_restore_workflow(
+    db_path: &str,
+    checkpoint_id: i64,
+    process_relaunch: &frankenterm_core::config::ProcessRelaunchConfig,
+    options: SnapshotRestoreWorkflowOptions,
+) -> Result<SnapshotRestoreWorkflowResult, SnapshotRestoreAbort> {
+    let _restart_lock = acquire_restart_operation_lock(db_path).map_err(|error| {
+        SnapshotRestoreAbort::new("preflight", checkpoint_id, error)
+            .with_hint("Wait for the other snapshot restore or restart to finish, then retry.")
+    })?;
+
+    let wezterm_timeout_secs = options.wezterm_timeout_secs;
+    execute_snapshot_restore_post_preflight(
+        checkpoint_id,
+        options,
+        move |checkpoint_id, layout_only, launch_agents| async move {
+            restore_snapshot_checkpoint(
+                db_path,
+                checkpoint_id,
+                wezterm_timeout_secs,
+                layout_only,
+                process_relaunch,
+                launch_agents,
+            )
+            .await
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RestartWorkflowOptions {
+    stop_timeout_secs: u64,
+    start_timeout_secs: u64,
+    skip_restore: bool,
+    layout_only: bool,
+    launch_agents: bool,
+    wezterm_timeout_secs: u64,
+}
+
+impl RestartWorkflowOptions {
+    fn stop_timeout(self) -> Duration {
+        Duration::from_secs(self.stop_timeout_secs)
+    }
+
+    fn start_timeout(self) -> Duration {
+        Duration::from_secs(self.start_timeout_secs)
+    }
+}
+
+fn restart_dry_run_json(options: RestartWorkflowOptions) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "dry_run": true,
+        "planned": {
+            "snapshot_trigger": "pre_restart",
+            "stop_timeout_secs": options.stop_timeout_secs,
+            "start_timeout_secs": options.start_timeout_secs,
+            "skip_restore": options.skip_restore,
+            "layout_only": options.layout_only,
+            "launch_agents": options.launch_agents,
+        },
+        "version": frankenterm_core::VERSION,
+    })
+}
+
+fn restart_plan_lines(options: RestartWorkflowOptions) -> Vec<String> {
+    let mut lines = vec![
+        "Restart plan:".to_string(),
+        "  1. Capture pre-restart snapshot".to_string(),
+        format!(
+            "  2. Stop `frankenterm-mux-server` (timeout: {}s)",
+            options.stop_timeout_secs
+        ),
+        format!(
+            "  3. Start `frankenterm-mux-server` (readiness timeout: {}s)",
+            options.start_timeout_secs
+        ),
+    ];
+    if options.skip_restore {
+        lines.push("  4. Skip restore phase (--skip-restore)".to_string());
+    } else {
+        lines.push(format!(
+            "  4. Restore from captured snapshot (layout_only={}, launch_agents={})",
+            options.layout_only, options.launch_agents
+        ));
+    }
+    lines.push("Dry-run requested; no actions were executed.".to_string());
+    lines
+}
+
 #[cfg(unix)]
 fn restart_snapshot_json(
     snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
@@ -8371,20 +8623,55 @@ fn restart_snapshot_json(
 }
 
 #[cfg(unix)]
-fn restart_abort_json(
+#[derive(Debug, Clone)]
+struct RestartWorkflowAbort {
     phase: &'static str,
-    error: impl std::fmt::Display,
-    snapshot: Option<&frankenterm_core::snapshot_engine::SnapshotResult>,
-    stopped_mux_pids: Option<&[i32]>,
-    hint: Option<&str>,
-) -> serde_json::Value {
+    error: String,
+    snapshot: Option<frankenterm_core::snapshot_engine::SnapshotResult>,
+    stopped_mux_pids: Vec<i32>,
+    hint: Option<String>,
+}
+
+#[cfg(unix)]
+impl RestartWorkflowAbort {
+    fn new(phase: &'static str, error: impl std::fmt::Display) -> Self {
+        Self {
+            phase,
+            error: error.to_string(),
+            snapshot: None,
+            stopped_mux_pids: Vec::new(),
+            hint: None,
+        }
+    }
+
+    fn with_snapshot(
+        mut self,
+        snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
+    ) -> Self {
+        self.snapshot = Some(snapshot.clone());
+        self
+    }
+
+    fn with_stopped_mux_pids(mut self, stopped_mux_pids: &[i32]) -> Self {
+        self.stopped_mux_pids = stopped_mux_pids.to_vec();
+        self
+    }
+
+    fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+}
+
+#[cfg(unix)]
+fn restart_abort_json(abort: &RestartWorkflowAbort) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "ok": false,
-        "phase": phase,
-        "error": error.to_string(),
+        "phase": abort.phase,
+        "error": &abort.error,
     });
 
-    if let Some(snapshot) = snapshot
+    if let Some(snapshot) = abort.snapshot.as_ref()
         && let Some(object) = payload.as_object_mut()
     {
         object.insert(
@@ -8392,15 +8679,15 @@ fn restart_abort_json(
             restart_snapshot_json(snapshot, false),
         );
     }
-    if let Some(stopped_mux_pids) = stopped_mux_pids
+    if !abort.stopped_mux_pids.is_empty()
         && let Some(object) = payload.as_object_mut()
     {
         object.insert(
             "stopped_mux_pids".to_string(),
-            serde_json::json!(stopped_mux_pids),
+            serde_json::json!(&abort.stopped_mux_pids),
         );
     }
-    if let Some(hint) = hint
+    if let Some(hint) = abort.hint.as_deref()
         && let Some(object) = payload.as_object_mut()
     {
         object.insert("hint".to_string(), serde_json::json!(hint));
@@ -8423,52 +8710,273 @@ fn restart_restore_summary_json(
 }
 
 #[cfg(unix)]
-fn restart_skip_restore_json(
-    snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
-    layout_only: bool,
-) -> serde_json::Value {
-    serde_json::json!({
-        "ok": true,
-        "phase": "complete",
-        "restored": false,
-        "skip_restore": true,
-        "layout_only": layout_only,
-        "snapshot": restart_snapshot_json(snapshot, true),
-    })
+#[derive(Debug)]
+enum RestartWorkflowResult {
+    SkippedRestore {
+        snapshot: frankenterm_core::snapshot_engine::SnapshotResult,
+        layout_only: bool,
+    },
+    Restored {
+        snapshot: frankenterm_core::snapshot_engine::SnapshotResult,
+        summary: frankenterm_core::session_restore::RestoreSummary,
+        layout_only: bool,
+    },
+    RestoreFailed {
+        snapshot: frankenterm_core::snapshot_engine::SnapshotResult,
+        error: String,
+        layout_only: bool,
+    },
 }
 
 #[cfg(unix)]
-fn restart_complete_json(
-    snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
-    summary: &frankenterm_core::session_restore::RestoreSummary,
-    layout_only: bool,
-) -> serde_json::Value {
-    serde_json::json!({
-        "ok": true,
-        "phase": "complete",
-        "restored": true,
-        "layout_only": layout_only,
-        "snapshot": restart_snapshot_json(snapshot, true),
-        "restore": restart_restore_summary_json(summary),
-        "scrollback": restore_scrollback_json(summary, !layout_only),
-    })
+impl RestartWorkflowResult {
+    fn layout_only(&self) -> bool {
+        match self {
+            Self::SkippedRestore { layout_only, .. }
+            | Self::Restored { layout_only, .. }
+            | Self::RestoreFailed { layout_only, .. } => *layout_only,
+        }
+    }
 }
 
 #[cfg(unix)]
-fn restart_restore_failed_json(
-    snapshot: &frankenterm_core::snapshot_engine::SnapshotResult,
-    layout_only: bool,
-    error: impl std::fmt::Display,
-) -> serde_json::Value {
-    serde_json::json!({
-        "ok": true,
-        "phase": "restore_failed",
-        "restored": false,
-        "layout_only": layout_only,
-        "error": error.to_string(),
-        "snapshot": restart_snapshot_json(snapshot, false),
-        "hint": "Mux restarted. Run `ft snapshot restore <checkpoint_id>` to retry restore.",
-    })
+fn restart_result_json(result: &RestartWorkflowResult) -> serde_json::Value {
+    match result {
+        RestartWorkflowResult::SkippedRestore {
+            snapshot,
+            layout_only,
+        } => serde_json::json!({
+            "ok": true,
+            "phase": "complete",
+            "restored": false,
+            "skip_restore": true,
+            "layout_only": layout_only,
+            "snapshot": restart_snapshot_json(snapshot, true),
+        }),
+        RestartWorkflowResult::Restored {
+            snapshot,
+            summary,
+            layout_only,
+        } => serde_json::json!({
+            "ok": true,
+            "phase": "complete",
+            "restored": true,
+            "layout_only": layout_only,
+            "snapshot": restart_snapshot_json(snapshot, true),
+            "restore": restart_restore_summary_json(summary),
+            "scrollback": restore_scrollback_json(summary, !layout_only),
+        }),
+        RestartWorkflowResult::RestoreFailed {
+            snapshot,
+            error,
+            layout_only,
+        } => serde_json::json!({
+            "ok": true,
+            "phase": "restore_failed",
+            "restored": false,
+            "layout_only": layout_only,
+            "error": error,
+            "snapshot": restart_snapshot_json(snapshot, false),
+            "hint": "Mux restarted. Run `ft snapshot restore <checkpoint_id>` to retry restore.",
+        }),
+    }
+}
+
+#[cfg(unix)]
+fn print_restart_abort_plain(abort: &RestartWorkflowAbort) {
+    match abort.phase {
+        "preflight" => eprintln!("Restart aborted during preflight: {}", abort.error),
+        "snapshot" => eprintln!("Restart aborted: snapshot capture failed: {}", abort.error),
+        "stop" => {
+            eprintln!("Restart aborted during mux shutdown: {}", abort.error);
+            if let Some(snapshot) = abort.snapshot.as_ref() {
+                eprintln!(
+                    "Snapshot saved for recovery: session={} checkpoint={}",
+                    snapshot.session_id, snapshot.checkpoint_id
+                );
+            }
+        }
+        "start" => {
+            eprintln!("Restart failed while starting mux server: {}", abort.error);
+            if let Some(snapshot) = abort.snapshot.as_ref() {
+                eprintln!(
+                    "Snapshot preserved for manual recovery: session={} checkpoint={}",
+                    snapshot.session_id, snapshot.checkpoint_id
+                );
+            }
+        }
+        phase => eprintln!("Restart failed during {phase}: {}", abort.error),
+    }
+    if let Some(hint) = abort.hint.as_deref() {
+        eprintln!("Hint: {hint}");
+    }
+}
+
+#[cfg(unix)]
+fn print_restart_result_plain(result: &RestartWorkflowResult) {
+    match result {
+        RestartWorkflowResult::SkippedRestore { snapshot, .. } => {
+            println!(
+                "Restart complete (restore skipped). Snapshot: session={} checkpoint={}",
+                snapshot.session_id, snapshot.checkpoint_id
+            );
+        }
+        RestartWorkflowResult::Restored { summary, .. } => {
+            println!(
+                "Restart complete: restored {}/{} panes in {}ms (checkpoint #{})",
+                summary.restored_count(),
+                summary.total_count(),
+                summary.elapsed_ms,
+                summary.checkpoint_id
+            );
+            print_scrollback_restore_summary(summary, !result.layout_only());
+        }
+        RestartWorkflowResult::RestoreFailed {
+            snapshot, error, ..
+        } => {
+            eprintln!("Mux restarted, but restore failed: {error}");
+            eprintln!("Retry with: ft snapshot restore {}", snapshot.checkpoint_id);
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn execute_restart_post_preflight<
+    Capture,
+    CaptureFut,
+    Stop,
+    StopFut,
+    Start,
+    StartFut,
+    Restore,
+    RestoreFut,
+>(
+    options: RestartWorkflowOptions,
+    capture_snapshot: Capture,
+    stop_mux: Stop,
+    start_mux: Start,
+    restore_snapshot: Restore,
+) -> Result<RestartWorkflowResult, RestartWorkflowAbort>
+where
+    Capture: FnOnce() -> CaptureFut,
+    CaptureFut: std::future::Future<
+            Output = anyhow::Result<frankenterm_core::snapshot_engine::SnapshotResult>,
+        >,
+    Stop: FnOnce(Duration) -> StopFut,
+    StopFut: std::future::Future<Output = anyhow::Result<Vec<i32>>>,
+    Start: FnOnce(Duration, u64) -> StartFut,
+    StartFut: std::future::Future<Output = anyhow::Result<()>>,
+    Restore: FnOnce(i64, bool, bool) -> RestoreFut,
+    RestoreFut: std::future::Future<
+            Output = anyhow::Result<frankenterm_core::session_restore::RestoreSummary>,
+        >,
+{
+    let snapshot = capture_snapshot()
+        .await
+        .map_err(|error| RestartWorkflowAbort::new("snapshot", error))?;
+
+    let stopped_pids = stop_mux(options.stop_timeout()).await.map_err(|error| {
+        RestartWorkflowAbort::new("stop", error)
+            .with_snapshot(&snapshot)
+            .with_hint("Snapshot captured successfully; restart after fixing mux shutdown issue.")
+    })?;
+
+    start_mux(options.start_timeout(), options.wezterm_timeout_secs)
+        .await
+        .map_err(|error| {
+            RestartWorkflowAbort::new("start", error)
+                .with_snapshot(&snapshot)
+                .with_stopped_mux_pids(&stopped_pids)
+                .with_hint(
+                    "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
+                )
+        })?;
+
+    if options.skip_restore {
+        return Ok(RestartWorkflowResult::SkippedRestore {
+            snapshot,
+            layout_only: options.layout_only,
+        });
+    }
+
+    match restore_snapshot(
+        snapshot.checkpoint_id,
+        options.layout_only,
+        options.launch_agents,
+    )
+    .await
+    {
+        Ok(summary) => Ok(RestartWorkflowResult::Restored {
+            snapshot,
+            summary,
+            layout_only: options.layout_only,
+        }),
+        Err(error) => Ok(RestartWorkflowResult::RestoreFailed {
+            snapshot,
+            error: error.to_string(),
+            layout_only: options.layout_only,
+        }),
+    }
+}
+
+#[cfg(unix)]
+async fn execute_restart_workflow(
+    db_path: &str,
+    snapshot_config: frankenterm_core::config::SnapshotConfig,
+    options: RestartWorkflowOptions,
+) -> Result<RestartWorkflowResult, RestartWorkflowAbort> {
+    use frankenterm_core::snapshot_engine::{SnapshotEngine, SnapshotTrigger};
+
+    let _restart_lock = acquire_restart_operation_lock(db_path).map_err(|error| {
+        RestartWorkflowAbort::new("preflight", error)
+            .with_hint("Wait for the other snapshot restore or restart to finish, then retry.")
+    })?;
+
+    let snapshot_engine =
+        SnapshotEngine::new(Arc::new(db_path.to_string()), snapshot_config.clone());
+    let wezterm =
+        frankenterm_core::wezterm::wezterm_handle_with_timeout(options.wezterm_timeout_secs);
+
+    let panes = wezterm.list_panes().await.map_err(|error| {
+        RestartWorkflowAbort::new("preflight", format!("Failed to list panes: {error}"))
+    })?;
+    let existing_mux_pids =
+        mux_server_pids().map_err(|error| RestartWorkflowAbort::new("preflight", error))?;
+    validate_restart_preflight(&existing_mux_pids, panes.len())
+        .map_err(|error| RestartWorkflowAbort::new("preflight", error))?;
+
+    let process_relaunch = snapshot_config.process_relaunch.clone();
+    let wezterm_timeout_secs = options.wezterm_timeout_secs;
+    execute_restart_post_preflight(
+        options,
+        move || async move {
+            snapshot_engine
+                .capture(&panes, SnapshotTrigger::Shutdown)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        stop_mux_server_processes,
+        |start_timeout, wezterm_timeout_secs| async move {
+            start_mux_server_process(start_timeout, wezterm_timeout_secs)
+                .await
+                .map(|_| ())
+        },
+        move |checkpoint_id, layout_only, launch_agents| {
+            let process_relaunch = process_relaunch.clone();
+            async move {
+                restore_snapshot_checkpoint(
+                    db_path,
+                    checkpoint_id,
+                    wezterm_timeout_secs,
+                    layout_only,
+                    &process_relaunch,
+                    launch_agents,
+                )
+                .await
+            }
+        },
+    )
+    .await
 }
 
 #[cfg(unix)]
@@ -9407,31 +9915,49 @@ fn build_robot_context(
     Ok(RobotContext { effective })
 }
 
-/// Build a stub JSON response for an NTM-gap command that has been parsed but
-/// whose handler backend is not yet connected. Returns the parsed command
-/// metadata (family, action, mutation flag, NTM equivalence) so callers can
-/// verify end-to-end CLI→type bridging.
-fn build_ntm_stub_response(
+/// Build a proper error response for an NTM-gap command that has been parsed
+/// but whose handler backend is not yet connected. Returns an error envelope
+/// with `robot.not_implemented` error code so callers get an explicit signal
+/// that the command surface exists but has no backend wired yet.
+fn build_ntm_not_implemented_response(
     cmd: &frankenterm_core::robot_ntm_surface::RobotNtmCommand,
-) -> serde_json::Value {
+    elapsed_ms: u64,
+) -> RobotResponse<serde_json::Value> {
     let equivalence = cmd.ntm_equivalence();
-    serde_json::json!({
-        "family": cmd.family_name(),
-        "action": cmd.action_name(),
-        "is_mutation": cmd.is_mutation(),
-        "status": "stub",
-        "message": format!(
-            "NTM command `ft robot {} {}` parsed successfully. Handler implementation pending.",
-            cmd.family_name(),
-            cmd.action_name(),
+    let family = cmd.family_name();
+    let action = cmd.action_name();
+
+    let mut response = RobotResponse::<serde_json::Value>::error_with_code(
+        ROBOT_ERR_NOT_IMPLEMENTED,
+        format!(
+            "Command `ft robot {family} {action}` is recognized but not yet implemented.",
         ),
+        Some(format!(
+            "This command will be available in a future release. \
+             NTM equivalent: {}.",
+            equivalence
+                .ntm_commands
+                .first()
+                .map(String::as_str)
+                .unwrap_or("none"),
+        )),
+        elapsed_ms,
+    );
+
+    // Attach parsed command metadata so callers can still verify CLI→type bridging.
+    response.data = Some(serde_json::json!({
+        "family": family,
+        "action": action,
+        "is_mutation": cmd.is_mutation(),
         "ntm_equivalence": {
             "ntm_commands": equivalence.ntm_commands,
             "census_domain": equivalence.census_domain,
             "classification": equivalence.classification.label(),
         },
         "parsed_request": serde_json::to_value(cmd).unwrap_or(serde_json::Value::Null),
-    })
+    }));
+
+    response
 }
 
 fn build_robot_help() -> RobotHelp {
@@ -21244,8 +21770,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     ),
                                 ),
                             };
-                            let data = build_ntm_stub_response(&ntm_cmd);
-                            let response = RobotResponse::success(data, elapsed_ms(start));
+                            let response =
+                                build_ntm_not_implemented_response(&ntm_cmd, elapsed_ms(start));
                             print_robot_response(&response, format, stats)?;
                         }
                         RobotCommands::Context { command } => {
@@ -21291,8 +21817,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     )
                                 }
                             };
-                            let data = build_ntm_stub_response(&ntm_cmd);
-                            let response = RobotResponse::success(data, elapsed_ms(start));
+                            let response =
+                                build_ntm_not_implemented_response(&ntm_cmd, elapsed_ms(start));
                             print_robot_response(&response, format, stats)?;
                         }
                         RobotCommands::Work { command } => {
@@ -21369,8 +21895,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     ),
                                 ),
                             };
-                            let data = build_ntm_stub_response(&ntm_cmd);
-                            let response = RobotResponse::success(data, elapsed_ms(start));
+                            let response =
+                                build_ntm_not_implemented_response(&ntm_cmd, elapsed_ms(start));
                             print_robot_response(&response, format, stats)?;
                         }
                         RobotCommands::Fleet { command } => {
@@ -21429,8 +21955,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     )
                                 }
                             };
-                            let data = build_ntm_stub_response(&ntm_cmd);
-                            let response = RobotResponse::success(data, elapsed_ms(start));
+                            let response =
+                                build_ntm_not_implemented_response(&ntm_cmd, elapsed_ms(start));
                             print_robot_response(&response, format, stats)?;
                         }
                         RobotCommands::Profile { command } => {
@@ -21478,8 +22004,8 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                     )
                                 }
                             };
-                            let data = build_ntm_stub_response(&ntm_cmd);
-                            let response = RobotResponse::success(data, elapsed_ms(start));
+                            let response =
+                                build_ntm_not_implemented_response(&ntm_cmd, elapsed_ms(start));
                             print_robot_response(&response, format, stats)?;
                         }
                         RobotCommands::Help | RobotCommands::QuickStart => {
@@ -25315,40 +25841,25 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
         }) => {
             let output_format = resolve_prepare_output_format(&format);
             let emit_json = matches!(output_format, frankenterm_core::output::OutputFormat::Json);
+            let restart_options = RestartWorkflowOptions {
+                stop_timeout_secs: stop_timeout,
+                start_timeout_secs: start_timeout,
+                skip_restore,
+                layout_only,
+                launch_agents,
+                wezterm_timeout_secs: config.cli.timeout_seconds,
+            };
 
             if dry_run {
                 if emit_json {
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "ok": true,
-                            "dry_run": true,
-                            "planned": {
-                                "snapshot_trigger": "pre_restart",
-                                "stop_timeout_secs": stop_timeout,
-                                "start_timeout_secs": start_timeout,
-                                "skip_restore": skip_restore,
-                                "layout_only": layout_only,
-                                "launch_agents": launch_agents,
-                            },
-                            "version": frankenterm_core::VERSION,
-                        }))?
+                        serde_json::to_string_pretty(&restart_dry_run_json(restart_options))?
                     );
                 } else {
-                    println!("Restart plan:");
-                    println!("  1. Capture pre-restart snapshot");
-                    println!("  2. Stop `frankenterm-mux-server` (timeout: {stop_timeout}s)");
-                    println!(
-                        "  3. Start `frankenterm-mux-server` (readiness timeout: {start_timeout}s)"
-                    );
-                    if skip_restore {
-                        println!("  4. Skip restore phase (--skip-restore)");
-                    } else {
-                        println!(
-                            "  4. Restore from captured snapshot (layout_only={layout_only}, launch_agents={launch_agents})"
-                        );
+                    for line in restart_plan_lines(restart_options) {
+                        println!("{line}");
                     }
-                    println!("Dry-run requested; no actions were executed.");
                 }
                 return Ok(());
             }
@@ -25362,6 +25873,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                     layout_only,
                     launch_agents,
                     emit_json,
+                    restart_options,
                 );
                 eprintln!("ft restart is currently supported only on Unix platforms.");
                 std::process::exit(1);
@@ -25369,241 +25881,30 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
 
             #[cfg(unix)]
             {
-                use frankenterm_core::snapshot_engine::{SnapshotEngine, SnapshotTrigger};
-
-                let db_path = Arc::new(layout.db_path.to_string_lossy().to_string());
-                let _restart_lock = match acquire_restart_operation_lock(db_path.as_str()) {
-                    Ok(lock) => lock,
-                    Err(e) => {
-                        if emit_json {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&restart_abort_json(
-                                    "preflight",
-                                    &e,
-                                    None,
-                                    None,
-                                    Some(
-                                        "Wait for the other snapshot restore or restart to finish, then retry.",
-                                    ),
-                                ))?
-                            );
-                        } else {
-                            eprintln!("Restart aborted during preflight: {e}");
-                        }
-                        std::process::exit(1);
-                    }
-                };
-                let snapshot_engine =
-                    SnapshotEngine::new(Arc::clone(&db_path), config.snapshots.clone());
-                let wezterm = frankenterm_core::wezterm::wezterm_handle_with_timeout(
-                    config.cli.timeout_seconds,
-                );
-
-                let panes = match wezterm.list_panes().await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        if emit_json {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&restart_abort_json(
-                                    "preflight",
-                                    format!("Failed to list panes: {e}"),
-                                    None,
-                                    None,
-                                    None,
-                                ))?
-                            );
-                        } else {
-                            eprintln!(
-                                "Restart aborted during preflight: failed to list panes: {e}"
-                            );
-                        }
-                        std::process::exit(1);
-                    }
-                };
-
-                let existing_mux_pids = match mux_server_pids() {
-                    Ok(pids) => pids,
-                    Err(e) => {
-                        if emit_json {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&restart_abort_json(
-                                    "preflight",
-                                    &e,
-                                    None,
-                                    None,
-                                    None,
-                                ))?
-                            );
-                        } else {
-                            eprintln!("Restart aborted during preflight: {e}");
-                        }
-                        std::process::exit(1);
-                    }
-                };
-
-                if let Err(e) = validate_restart_preflight(&existing_mux_pids, panes.len()) {
-                    if emit_json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&restart_abort_json(
-                                "preflight",
-                                &e,
-                                None,
-                                None,
-                                None,
-                            ))?
-                        );
-                    } else {
-                        eprintln!("Restart aborted during preflight: {e}");
-                    }
-                    std::process::exit(1);
-                }
-
-                let snapshot = match snapshot_engine
-                    .capture(&panes, SnapshotTrigger::Shutdown)
+                let db_path = layout.db_path.to_string_lossy().to_string();
+                match execute_restart_workflow(&db_path, config.snapshots.clone(), restart_options)
                     .await
                 {
-                    Ok(result) => result,
-                    Err(e) => {
+                    Ok(result) => {
                         if emit_json {
                             println!(
                                 "{}",
-                                serde_json::to_string_pretty(&restart_abort_json(
-                                    "snapshot", &e, None, None, None,
-                                ))?
+                                serde_json::to_string_pretty(&restart_result_json(&result))?
                             );
                         } else {
-                            eprintln!("Restart aborted: snapshot capture failed: {e}");
+                            print_restart_result_plain(&result);
+                        }
+                    }
+                    Err(abort) => {
+                        if emit_json {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&restart_abort_json(&abort))?
+                            );
+                        } else {
+                            print_restart_abort_plain(&abort);
                         }
                         std::process::exit(1);
-                    }
-                };
-
-                let stop_result =
-                    stop_mux_server_processes(Duration::from_secs(stop_timeout)).await;
-                let stopped_pids = match stop_result {
-                    Ok(pids) => pids,
-                    Err(e) => {
-                        if emit_json {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&restart_abort_json(
-                                    "stop",
-                                    &e,
-                                    Some(&snapshot),
-                                    None,
-                                    Some(
-                                        "Snapshot captured successfully; restart after fixing mux shutdown issue.",
-                                    ),
-                                ))?
-                            );
-                        } else {
-                            eprintln!("Restart aborted during mux shutdown: {e}");
-                            eprintln!(
-                                "Snapshot saved for recovery: session={} checkpoint={}",
-                                snapshot.session_id, snapshot.checkpoint_id
-                            );
-                        }
-                        std::process::exit(1);
-                    }
-                };
-
-                if let Err(e) = start_mux_server_process(
-                    Duration::from_secs(start_timeout),
-                    config.cli.timeout_seconds,
-                )
-                .await
-                {
-                    if emit_json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&restart_abort_json(
-                                "start",
-                                &e,
-                                Some(&snapshot),
-                                Some(&stopped_pids),
-                                Some(
-                                    "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
-                                ),
-                            ))?
-                        );
-                    } else {
-                        eprintln!("Restart failed while starting mux server: {e}");
-                        eprintln!(
-                            "Snapshot preserved for manual recovery: session={} checkpoint={}",
-                            snapshot.session_id, snapshot.checkpoint_id
-                        );
-                    }
-                    std::process::exit(1);
-                }
-
-                if skip_restore {
-                    if emit_json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&restart_skip_restore_json(
-                                &snapshot,
-                                layout_only,
-                            ))?
-                        );
-                    } else {
-                        println!(
-                            "Restart complete (restore skipped). Snapshot: session={} checkpoint={}",
-                            snapshot.session_id, snapshot.checkpoint_id
-                        );
-                    }
-                    return Ok(());
-                }
-
-                match restore_snapshot_checkpoint(
-                    db_path.as_str(),
-                    snapshot.checkpoint_id,
-                    config.cli.timeout_seconds,
-                    layout_only,
-                    &config.snapshots.process_relaunch,
-                    launch_agents,
-                )
-                .await
-                {
-                    Ok(summary) => {
-                        if emit_json {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&restart_complete_json(
-                                    &snapshot,
-                                    &summary,
-                                    layout_only,
-                                ))?
-                            );
-                        } else {
-                            println!(
-                                "Restart complete: restored {}/{} panes in {}ms (checkpoint #{})",
-                                summary.restored_count(),
-                                summary.total_count(),
-                                summary.elapsed_ms,
-                                summary.checkpoint_id
-                            );
-                            print_scrollback_restore_summary(&summary, !layout_only);
-                        }
-                    }
-                    Err(e) => {
-                        // Keep restart successful even if restore fails; snapshot is preserved.
-                        if emit_json {
-                            println!(
-                                "{}",
-                                serde_json::to_string_pretty(&restart_restore_failed_json(
-                                    &snapshot,
-                                    layout_only,
-                                    &e,
-                                ))?
-                            );
-                        } else {
-                            eprintln!("Mux restarted, but restore failed: {e}");
-                            eprintln!("Retry with: ft snapshot restore {}", snapshot.checkpoint_id);
-                        }
                     }
                 }
             }
@@ -37593,6 +37894,11 @@ async fn handle_snapshot_command(
         } => {
             let output_format = resolve_prepare_output_format(&format);
             let emit_json = matches!(output_format, frankenterm_core::output::OutputFormat::Json);
+            let restore_options = SnapshotRestoreWorkflowOptions {
+                layout_only,
+                launch_agents,
+                wezterm_timeout_secs: config.cli.timeout_seconds,
+            };
 
             let checkpoint_id = match resolve_checkpoint_id(db_path.as_str(), &snapshot_id) {
                 Ok(id) => id,
@@ -37637,106 +37943,52 @@ async fn handle_snapshot_command(
                 if emit_json {
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "ok": true,
-                            "dry_run": true,
-                            "snapshot": {
-                                "checkpoint_id": checkpoint.checkpoint_id,
-                                "session_id": checkpoint.session_id,
-                                "checkpoint_at": checkpoint.checkpoint_at,
-                                "checkpoint_type": checkpoint.checkpoint_type,
-                                "pane_count": checkpoint.pane_count,
-                            },
-                            "layout_only": layout_only,
-                            "launch_agents": launch_agents,
-                        }))?
+                        serde_json::to_string_pretty(&snapshot_restore_dry_run_json(
+                            &checkpoint,
+                            restore_options,
+                        ))?
                     );
                 } else {
-                    println!("Restore plan for snapshot #{}:", checkpoint.checkpoint_id);
-                    println!("  Session:    {}", checkpoint.session_id);
-                    println!(
-                        "  Captured:   {}",
-                        format_epoch_display(checkpoint.checkpoint_at)
-                    );
-                    println!("  Pane count: {}", checkpoint.pane_count);
-                    println!("  layout_only={layout_only}");
-                    println!("  launch_agents={launch_agents}");
-                    println!("Dry-run requested; no actions were executed.");
+                    for line in snapshot_restore_plan_lines(&checkpoint, restore_options) {
+                        println!("{line}");
+                    }
                 }
                 return Ok(());
             }
 
-            #[cfg(unix)]
-            let _restart_lock = match acquire_restart_operation_lock(db_path.as_str()) {
-                Ok(lock) => lock,
-                Err(e) => {
-                    if emit_json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "ok": false,
-                                "phase": "preflight",
-                                "checkpoint_id": checkpoint.checkpoint_id,
-                                "error": e.to_string(),
-                                "hint": "Wait for the other snapshot restore or restart to finish, then retry.",
-                            }))?
-                        );
-                    } else {
-                        eprintln!("Snapshot restore aborted during preflight: {e}");
-                    }
-                    std::process::exit(1);
-                }
-            };
+            #[cfg(not(unix))]
+            {
+                eprintln!("ft snapshot restore is currently supported only on Unix platforms.");
+                std::process::exit(1);
+            }
 
-            match restore_snapshot_checkpoint(
+            #[cfg(unix)]
+            match execute_snapshot_restore_workflow(
                 db_path.as_str(),
                 checkpoint.checkpoint_id,
-                config.cli.timeout_seconds,
-                layout_only,
                 &config.snapshots.process_relaunch,
-                launch_agents,
+                restore_options,
             )
             .await
             {
-                Ok(summary) => {
+                Ok(result) => {
                     if emit_json {
                         println!(
                             "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "ok": true,
-                                "checkpoint_id": summary.checkpoint_id,
-                                "session_id": summary.session_id,
-                                "layout_only": layout_only,
-                                "restored_panes": summary.restored_count(),
-                                "failed_panes": summary.failed_count(),
-                                "total_panes": summary.total_count(),
-                                "elapsed_ms": summary.elapsed_ms,
-                                "scrollback": restore_scrollback_json(&summary, !layout_only),
-                            }))?
+                            serde_json::to_string_pretty(&snapshot_restore_result_json(&result))?
                         );
                     } else {
-                        println!(
-                            "Snapshot restore complete: {}/{} panes in {}ms (checkpoint #{})",
-                            summary.restored_count(),
-                            summary.total_count(),
-                            summary.elapsed_ms,
-                            summary.checkpoint_id
-                        );
-                        print_scrollback_restore_summary(&summary, !layout_only);
+                        print_snapshot_restore_result_plain(&result);
                     }
                 }
-                Err(e) => {
+                Err(abort) => {
                     if emit_json {
                         println!(
                             "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "ok": false,
-                                "checkpoint_id": checkpoint.checkpoint_id,
-                                "error": e.to_string(),
-                            }))?
+                            serde_json::to_string_pretty(&snapshot_restore_abort_json(&abort))?
                         );
                     } else {
-                        eprintln!("Snapshot restore failed: {e}");
+                        print_snapshot_restore_abort_plain(&abort);
                     }
                     std::process::exit(1);
                 }
@@ -41113,16 +41365,432 @@ mod tests {
         }
     }
 
+    fn sample_snapshot_restore_checkpoint() -> frankenterm_core::session_restore::CheckpointData {
+        frankenterm_core::session_restore::CheckpointData {
+            checkpoint_id: 42,
+            session_id: "session-restart".to_string(),
+            checkpoint_at: 1_735_689_600,
+            checkpoint_type: Some("shutdown".to_string()),
+            pane_count: 3,
+            pane_states: Vec::new(),
+        }
+    }
+
+    fn sample_snapshot_restore_options() -> SnapshotRestoreWorkflowOptions {
+        SnapshotRestoreWorkflowOptions {
+            layout_only: false,
+            launch_agents: true,
+            wezterm_timeout_secs: 5,
+        }
+    }
+
+    fn sample_restart_options() -> RestartWorkflowOptions {
+        RestartWorkflowOptions {
+            stop_timeout_secs: 15,
+            start_timeout_secs: 10,
+            skip_restore: false,
+            layout_only: false,
+            launch_agents: true,
+            wezterm_timeout_secs: 5,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_restore_post_preflight_forwards_options_and_summary() {
+        run_async_test(async {
+            let mut options = sample_snapshot_restore_options();
+            options.layout_only = true;
+            options.launch_agents = false;
+            let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+
+            let result = execute_snapshot_restore_post_preflight(42, options, {
+                let observed = std::sync::Arc::clone(&observed);
+                move |checkpoint_id, layout_only, launch_agents| async move {
+                    *observed.lock().expect("lock observed restore args") =
+                        Some((checkpoint_id, layout_only, launch_agents));
+                    Ok(sample_restart_restore_summary())
+                }
+            })
+            .await
+            .expect("snapshot restore should succeed");
+
+            assert_eq!(result.summary.checkpoint_id, 42);
+            assert!(result.layout_only);
+            assert_eq!(
+                *observed.lock().expect("lock observed restore args"),
+                Some((42, true, false)),
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_restore_post_preflight_restore_failure_preserves_checkpoint_id() {
+        run_async_test(async {
+            let abort = execute_snapshot_restore_post_preflight(
+                77,
+                sample_snapshot_restore_options(),
+                |_, _, _| async { Err(anyhow::anyhow!("restore planner mismatch")) },
+            )
+            .await
+            .expect_err("restore failure should abort snapshot restore");
+
+            assert_eq!(abort.phase, "restore");
+            assert_eq!(abort.checkpoint_id, 77);
+            assert_eq!(abort.error, "restore planner mismatch");
+            assert!(abort.hint.is_none());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_post_preflight_snapshot_failure_aborts_before_stop() {
+        run_async_test(async {
+            let stop_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+            let abort = execute_restart_post_preflight(
+                sample_restart_options(),
+                || async { Err(anyhow::anyhow!("capture failed")) },
+                {
+                    let stop_called = std::sync::Arc::clone(&stop_called);
+                    move |_| async move {
+                        stop_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(vec![111])
+                    }
+                },
+                |_, _| async { Ok(()) },
+                |_, _, _| async { Ok(sample_restart_restore_summary()) },
+            )
+            .await
+            .expect_err("snapshot failure should abort workflow");
+
+            assert_eq!(abort.phase, "snapshot");
+            assert_eq!(abort.error, "capture failed");
+            assert!(abort.snapshot.is_none());
+            assert!(!stop_called.load(std::sync::atomic::Ordering::SeqCst));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_post_preflight_stop_failure_preserves_snapshot_metadata() {
+        run_async_test(async {
+            let start_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+            let abort = execute_restart_post_preflight(
+                sample_restart_options(),
+                || async { Ok(sample_restart_snapshot_result()) },
+                |_| async { Err(anyhow::anyhow!("mux shutdown timed out")) },
+                {
+                    let start_called = std::sync::Arc::clone(&start_called);
+                    move |_, _| async move {
+                        start_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    }
+                },
+                |_, _, _| async { Ok(sample_restart_restore_summary()) },
+            )
+            .await
+            .expect_err("stop failure should abort workflow");
+
+            assert_eq!(abort.phase, "stop");
+            assert_eq!(abort.error, "mux shutdown timed out");
+            assert_eq!(abort.snapshot.as_ref().map(|s| s.checkpoint_id), Some(42));
+            assert_eq!(
+                abort.hint.as_deref(),
+                Some("Snapshot captured successfully; restart after fixing mux shutdown issue."),
+            );
+            assert!(!start_called.load(std::sync::atomic::Ordering::SeqCst));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_post_preflight_start_failure_reports_stopped_pids() {
+        run_async_test(async {
+            let restore_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+            let abort = execute_restart_post_preflight(
+                sample_restart_options(),
+                || async { Ok(sample_restart_snapshot_result()) },
+                |_| async { Ok(vec![111, 222]) },
+                |_, _| async { Err(anyhow::anyhow!("mux failed to daemonize")) },
+                {
+                    let restore_called = std::sync::Arc::clone(&restore_called);
+                    move |_, _, _| async move {
+                        restore_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(sample_restart_restore_summary())
+                    }
+                },
+            )
+            .await
+            .expect_err("start failure should abort workflow");
+
+            assert_eq!(abort.phase, "start");
+            assert_eq!(abort.error, "mux failed to daemonize");
+            assert_eq!(abort.snapshot.as_ref().map(|s| s.checkpoint_id), Some(42));
+            assert_eq!(abort.stopped_mux_pids, vec![111, 222]);
+            assert_eq!(
+                abort.hint.as_deref(),
+                Some(
+                    "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
+                ),
+            );
+            assert!(!restore_called.load(std::sync::atomic::Ordering::SeqCst));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_post_preflight_skip_restore_short_circuits_restore_phase() {
+        run_async_test(async {
+            let mut options = sample_restart_options();
+            options.skip_restore = true;
+            let restore_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+            let result = execute_restart_post_preflight(
+                options,
+                || async { Ok(sample_restart_snapshot_result()) },
+                |_| async { Ok(vec![111]) },
+                |_, _| async { Ok(()) },
+                {
+                    let restore_called = std::sync::Arc::clone(&restore_called);
+                    move |_, _, _| async move {
+                        restore_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(sample_restart_restore_summary())
+                    }
+                },
+            )
+            .await
+            .expect("skip restore should still succeed");
+
+            match result {
+                RestartWorkflowResult::SkippedRestore {
+                    snapshot,
+                    layout_only,
+                } => {
+                    assert_eq!(snapshot.checkpoint_id, 42);
+                    assert!(!layout_only);
+                }
+                other => panic!("expected skipped restore result, got {other:?}"),
+            }
+            assert!(!restore_called.load(std::sync::atomic::Ordering::SeqCst));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_post_preflight_restore_success_forwards_checkpoint_and_flags() {
+        run_async_test(async {
+            let mut options = sample_restart_options();
+            options.layout_only = true;
+            options.launch_agents = false;
+            let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+
+            let result = execute_restart_post_preflight(
+                options,
+                || async { Ok(sample_restart_snapshot_result()) },
+                |_| async { Ok(vec![111]) },
+                |_, _| async { Ok(()) },
+                {
+                    let observed = std::sync::Arc::clone(&observed);
+                    move |checkpoint_id, layout_only, launch_agents| async move {
+                        *observed.lock().expect("lock observed restore args") =
+                            Some((checkpoint_id, layout_only, launch_agents));
+                        Ok(sample_restart_restore_summary())
+                    }
+                },
+            )
+            .await
+            .expect("restore success should succeed");
+
+            match result {
+                RestartWorkflowResult::Restored {
+                    snapshot,
+                    summary,
+                    layout_only,
+                } => {
+                    assert_eq!(snapshot.checkpoint_id, 42);
+                    assert_eq!(summary.checkpoint_id, 42);
+                    assert!(layout_only);
+                }
+                other => panic!("expected restored result, got {other:?}"),
+            }
+            assert_eq!(
+                *observed.lock().expect("lock observed restore args"),
+                Some((42, true, false)),
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_post_preflight_restore_failure_is_nonfatal() {
+        run_async_test(async {
+            let result = execute_restart_post_preflight(
+                sample_restart_options(),
+                || async { Ok(sample_restart_snapshot_result()) },
+                |_| async { Ok(vec![111]) },
+                |_, _| async { Ok(()) },
+                |_, _, _| async { Err(anyhow::anyhow!("restore planner mismatch")) },
+            )
+            .await
+            .expect("restore failure should still return success envelope");
+
+            match result {
+                RestartWorkflowResult::RestoreFailed {
+                    snapshot,
+                    error,
+                    layout_only,
+                } => {
+                    assert_eq!(snapshot.checkpoint_id, 42);
+                    assert_eq!(error, "restore planner mismatch");
+                    assert!(!layout_only);
+                }
+                other => panic!("expected restore-failed result, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn snapshot_restore_dry_run_json_includes_checkpoint_and_options() {
+        let payload = snapshot_restore_dry_run_json(
+            &sample_snapshot_restore_checkpoint(),
+            sample_snapshot_restore_options(),
+        );
+
+        assert_eq!(payload["ok"].as_bool(), Some(true));
+        assert_eq!(payload["dry_run"].as_bool(), Some(true));
+        assert_eq!(payload["snapshot"]["checkpoint_id"].as_i64(), Some(42));
+        assert_eq!(
+            payload["snapshot"]["session_id"].as_str(),
+            Some("session-restart")
+        );
+        assert_eq!(payload["snapshot"]["pane_count"].as_u64(), Some(3));
+        assert_eq!(payload["layout_only"].as_bool(), Some(false));
+        assert_eq!(payload["launch_agents"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn snapshot_restore_plan_lines_reflect_launch_options() {
+        let mut options = sample_snapshot_restore_options();
+        options.layout_only = true;
+        options.launch_agents = false;
+
+        let lines = snapshot_restore_plan_lines(&sample_snapshot_restore_checkpoint(), options);
+
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("Restore plan for snapshot #42:")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Session:    session-restart"))
+        );
+        assert!(lines.iter().any(|line| line.contains("layout_only=true")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("launch_agents=false"))
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("Dry-run requested; no actions were executed."),
+        );
+    }
+
+    #[test]
+    fn restart_dry_run_json_includes_plan_fields() {
+        let payload = restart_dry_run_json(sample_restart_options());
+
+        assert_eq!(payload["ok"].as_bool(), Some(true));
+        assert_eq!(payload["dry_run"].as_bool(), Some(true));
+        assert_eq!(
+            payload["planned"]["snapshot_trigger"].as_str(),
+            Some("pre_restart")
+        );
+        assert_eq!(payload["planned"]["stop_timeout_secs"].as_u64(), Some(15));
+        assert_eq!(payload["planned"]["start_timeout_secs"].as_u64(), Some(10));
+        assert_eq!(payload["planned"]["skip_restore"].as_bool(), Some(false));
+        assert_eq!(payload["planned"]["layout_only"].as_bool(), Some(false));
+        assert_eq!(payload["planned"]["launch_agents"].as_bool(), Some(true));
+        assert_eq!(payload["version"].as_str(), Some(frankenterm_core::VERSION),);
+    }
+
+    #[test]
+    fn restart_plan_lines_reflect_skip_restore_mode() {
+        let mut options = sample_restart_options();
+        options.skip_restore = true;
+
+        let lines = restart_plan_lines(options);
+
+        assert!(lines.iter().any(|line| line == "Restart plan:"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Stop `frankenterm-mux-server` (timeout: 15s)"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Skip restore phase (--skip-restore)"))
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("Dry-run requested; no actions were executed."),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_restore_abort_json_preserves_hint_and_checkpoint_id() {
+        let payload = snapshot_restore_abort_json(
+            &SnapshotRestoreAbort::new("preflight", 42, "lock held")
+                .with_hint("Wait for the other snapshot restore or restart to finish, then retry."),
+        );
+
+        assert_eq!(payload["ok"].as_bool(), Some(false));
+        assert_eq!(payload["phase"].as_str(), Some("preflight"));
+        assert_eq!(payload["checkpoint_id"].as_i64(), Some(42));
+        assert_eq!(payload["error"].as_str(), Some("lock held"));
+        assert_eq!(
+            payload["hint"].as_str(),
+            Some("Wait for the other snapshot restore or restart to finish, then retry."),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_restore_result_json_includes_scrollback_metrics() {
+        let payload = snapshot_restore_result_json(&SnapshotRestoreWorkflowResult {
+            summary: sample_restart_restore_summary(),
+            layout_only: false,
+        });
+
+        assert_eq!(payload["ok"].as_bool(), Some(true));
+        assert_eq!(payload["checkpoint_id"].as_i64(), Some(42));
+        assert_eq!(payload["session_id"].as_str(), Some("session-restart"));
+        assert_eq!(payload["layout_only"].as_bool(), Some(false));
+        assert_eq!(payload["restored_panes"].as_u64(), Some(2));
+        assert_eq!(payload["failed_panes"].as_u64(), Some(1));
+        assert_eq!(payload["total_panes"].as_u64(), Some(3));
+        assert_eq!(payload["elapsed_ms"].as_u64(), Some(2500));
+        assert_eq!(payload["scrollback"]["enabled"].as_bool(), Some(true));
+        assert_eq!(payload["scrollback"]["bytes_written"].as_u64(), Some(256));
+    }
+
     #[cfg(unix)]
     #[test]
     fn restart_stop_failure_json_preserves_snapshot_and_hint() {
         let snapshot = sample_restart_snapshot_result();
         let payload = restart_abort_json(
-            "stop",
-            "mux shutdown timed out",
-            Some(&snapshot),
-            None,
-            Some("Snapshot captured successfully; restart after fixing mux shutdown issue."),
+            &RestartWorkflowAbort::new("stop", "mux shutdown timed out")
+                .with_snapshot(&snapshot)
+                .with_hint(
+                    "Snapshot captured successfully; restart after fixing mux shutdown issue.",
+                ),
         );
 
         assert_eq!(payload["ok"].as_bool(), Some(false));
@@ -41145,13 +41813,12 @@ mod tests {
     fn restart_start_failure_json_reports_stopped_mux_pids() {
         let snapshot = sample_restart_snapshot_result();
         let payload = restart_abort_json(
-            "start",
-            "mux failed to daemonize",
-            Some(&snapshot),
-            Some(&[111, 222]),
-            Some(
-                "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
-            ),
+            &RestartWorkflowAbort::new("start", "mux failed to daemonize")
+                .with_snapshot(&snapshot)
+                .with_stopped_mux_pids(&[111, 222])
+                .with_hint(
+                    "Mux restart failed after stop. Use `ft snapshot restore` with the checkpoint once mux is healthy.",
+                ),
         );
 
         assert_eq!(payload["ok"].as_bool(), Some(false));
@@ -41170,7 +41837,11 @@ mod tests {
     fn restart_complete_json_includes_restore_and_scrollback_metrics() {
         let snapshot = sample_restart_snapshot_result();
         let summary = sample_restart_restore_summary();
-        let payload = restart_complete_json(&snapshot, &summary, false);
+        let payload = restart_result_json(&RestartWorkflowResult::Restored {
+            snapshot,
+            summary,
+            layout_only: false,
+        });
 
         assert_eq!(payload["ok"].as_bool(), Some(true));
         assert_eq!(payload["phase"].as_str(), Some("complete"));
@@ -41189,7 +41860,11 @@ mod tests {
     #[test]
     fn restart_restore_failed_json_preserves_retry_metadata() {
         let snapshot = sample_restart_snapshot_result();
-        let payload = restart_restore_failed_json(&snapshot, true, "restore planner mismatch");
+        let payload = restart_result_json(&RestartWorkflowResult::RestoreFailed {
+            snapshot,
+            error: "restore planner mismatch".to_string(),
+            layout_only: true,
+        });
 
         assert_eq!(payload["ok"].as_bool(), Some(true));
         assert_eq!(payload["phase"].as_str(), Some("restore_failed"));
@@ -50477,6 +51152,143 @@ log_level = "debug"
         assert_eq!(ROBOT_ERR_RESERVATION_CONFLICT, "robot.reservation_conflict");
         assert_eq!(ROBOT_ERR_STORAGE, "robot.storage_error");
         assert_eq!(ROBOT_ERR_TIMEOUT, "robot.timeout");
+        assert_eq!(ROBOT_ERR_NOT_IMPLEMENTED, "robot.not_implemented");
+    }
+
+    #[test]
+    fn ntm_not_implemented_response_returns_error_envelope() {
+        use frankenterm_core::robot_ntm_surface::{
+            CheckpointCommand, CheckpointSaveRequest, RobotNtmCommand,
+        };
+
+        let cmd = RobotNtmCommand::Checkpoint(CheckpointCommand::Save(CheckpointSaveRequest {
+            label: Some("test-label".to_string()),
+            include_scrollback: false,
+            pane_ids: vec![],
+        }));
+
+        let response = build_ntm_not_implemented_response(&cmd, 42);
+
+        // Must be an error, not a success
+        assert!(!response.ok);
+        assert_eq!(
+            response.error_code.as_deref(),
+            Some(ROBOT_ERR_NOT_IMPLEMENTED)
+        );
+        assert!(response.error.as_ref().unwrap().contains("not yet implemented"));
+        assert!(response.hint.is_some());
+
+        // Must still carry parsed command metadata in data
+        let data = response.data.as_ref().unwrap();
+        assert_eq!(data["family"], "checkpoint");
+        assert_eq!(data["action"], "save");
+        assert_eq!(data["is_mutation"], true);
+
+        // NTM equivalence must be present
+        assert!(data["ntm_equivalence"]["ntm_commands"].is_array());
+        assert!(data["ntm_equivalence"]["census_domain"].is_string());
+        assert!(data["ntm_equivalence"]["classification"].is_string());
+
+        // parsed_request must be non-null
+        assert!(!data["parsed_request"].is_null());
+    }
+
+    #[test]
+    fn ntm_not_implemented_response_no_stub_status() {
+        use frankenterm_core::robot_ntm_surface::{
+            ContextCommand, ContextStatusRequest, RobotNtmCommand,
+        };
+
+        let cmd = RobotNtmCommand::Context(ContextCommand::Status(ContextStatusRequest {
+            pane_id: Some(7),
+        }));
+
+        let response = build_ntm_not_implemented_response(&cmd, 0);
+        let json = serde_json::to_value(&response).unwrap();
+
+        // The word "stub" must not appear anywhere in the serialized response
+        let json_str = serde_json::to_string(&json).unwrap();
+        assert!(
+            !json_str.contains("\"stub\""),
+            "response must not contain stub status: {json_str}"
+        );
+        assert!(!response.ok, "response must not signal success");
+        assert_eq!(response.error_code.as_deref(), Some("robot.not_implemented"));
+    }
+
+    #[test]
+    fn ntm_not_implemented_response_covers_all_families() {
+        use frankenterm_core::robot_ntm_surface::*;
+
+        let commands: Vec<RobotNtmCommand> = vec![
+            RobotNtmCommand::Checkpoint(CheckpointCommand::List(CheckpointListRequest {
+                limit: 10,
+                offset: 0,
+            })),
+            RobotNtmCommand::Context(ContextCommand::Status(ContextStatusRequest {
+                pane_id: None,
+            })),
+            RobotNtmCommand::Work(WorkCommand::List(WorkListRequest {
+                status_filter: None,
+                agent_filter: None,
+                label_filter: None,
+                limit: 50,
+            })),
+            RobotNtmCommand::Fleet(FleetCommand::Status(FleetStatusRequest {
+                detailed: false,
+            })),
+            RobotNtmCommand::Profile(ProfileCommand::List(ProfileListRequest {
+                role_filter: None,
+                tag_filter: None,
+            })),
+        ];
+
+        let expected_families = ["checkpoint", "context", "work", "fleet", "profile"];
+
+        for (cmd, expected_family) in commands.iter().zip(expected_families.iter()) {
+            let response = build_ntm_not_implemented_response(cmd, 1);
+            assert!(!response.ok);
+            assert_eq!(
+                response.error_code.as_deref(),
+                Some(ROBOT_ERR_NOT_IMPLEMENTED)
+            );
+            let data = response.data.as_ref().unwrap();
+            assert_eq!(data["family"].as_str().unwrap(), *expected_family);
+        }
+    }
+
+    #[test]
+    fn ntm_not_implemented_response_hint_mentions_ntm_equivalent() {
+        use frankenterm_core::robot_ntm_surface::{
+            CheckpointCommand, CheckpointSaveRequest, RobotNtmCommand,
+        };
+
+        let cmd = RobotNtmCommand::Checkpoint(CheckpointCommand::Save(CheckpointSaveRequest {
+            label: None,
+            include_scrollback: true,
+            pane_ids: vec![1, 2, 3],
+        }));
+
+        let response = build_ntm_not_implemented_response(&cmd, 5);
+        let hint = response.hint.as_ref().unwrap();
+        assert!(
+            hint.contains("NTM equivalent"),
+            "hint should mention NTM equivalent, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn ntm_not_implemented_response_elapsed_ms_propagated() {
+        use frankenterm_core::robot_ntm_surface::{
+            FleetCommand, FleetStatusRequest, RobotNtmCommand,
+        };
+
+        let cmd = RobotNtmCommand::Fleet(FleetCommand::Status(FleetStatusRequest {
+            detailed: true,
+        }));
+
+        let response = build_ntm_not_implemented_response(&cmd, 999);
+        assert_eq!(response.elapsed_ms, 999);
     }
 
     #[test]

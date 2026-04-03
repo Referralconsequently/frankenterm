@@ -176,6 +176,7 @@ impl ErrorCode {
             | "robot.feature_not_available"
             | "robot.invalid_service"
             | "robot.unsupported"
+            | "robot.not_implemented"
             | "robot.invalid_args"
             | "robot.unknown_subcommand"
             | "robot.code_not_found"
@@ -2186,6 +2187,7 @@ mod tests {
             "robot.mission_not_found",
             "robot.mission_read_failed",
             "robot.mission_validation_failed",
+            "robot.not_implemented",
             "robot.pane_not_found",
             "robot.policy_denied",
             "robot.rate_limited",
