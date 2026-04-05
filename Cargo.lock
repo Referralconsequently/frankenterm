@@ -498,6 +498,7 @@ version = "0.1.0"
 dependencies = [
  "asupersync",
  "async-io",
+ "futures",
  "openssl",
 ]
 
@@ -3494,7 +3495,6 @@ name = "frankenterm-mux-server-impl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-io",
  "async_ossl",
  "codec",
  "config",
@@ -3642,6 +3642,7 @@ version = "0.1.0"
 dependencies = [
  "asupersync",
  "async-io",
+ "futures",
  "uds_windows",
 ]
 
