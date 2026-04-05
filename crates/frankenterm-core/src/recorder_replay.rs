@@ -1430,7 +1430,7 @@ mod tests {
         let frames = session.collect_remaining();
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].delay, Duration::ZERO);
-        assert_eq!(frames[1].delay, Duration::from_millis(2000));
+        assert_eq!(frames[1].delay, Duration::from_secs(2));
     }
 
     // -----------------------------------------------------------------------

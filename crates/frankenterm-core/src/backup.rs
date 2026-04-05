@@ -2778,7 +2778,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             workspace: "/tmp".to_string(),
             db_size_bytes: 0,
-            db_checksum: "".to_string(),
+            db_checksum: String::new(),
             stats: BackupStats::default(),
             compressed: false,
         };

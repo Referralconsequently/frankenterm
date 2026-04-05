@@ -1020,6 +1020,10 @@ impl TuningConfig {
 mod tests {
     use super::*;
 
+    fn assert_f64_eq(left: f64, right: f64) {
+        assert!((left - right).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn default_validates_clean() {
         let cfg = TuningConfig::default();
@@ -1040,19 +1044,19 @@ mod tests {
 
     #[test]
     fn partial_override_preserves_other_defaults() {
-        let toml_str = r#"
+        let toml_str = r"
 [runtime]
 output_coalesce_window_ms = 100
 
 [web]
 default_port = 9000
-"#;
+";
         let cfg: TuningConfig = toml::from_str(toml_str).expect("parse");
         assert_eq!(cfg.runtime.output_coalesce_window_ms, 100);
         assert_eq!(cfg.web.default_port, 9000);
         // Other fields retain defaults
         assert_eq!(cfg.runtime.output_coalesce_max_delay_ms, 200);
-        assert_eq!(cfg.backpressure.warn_ratio, 0.75);
+        assert_f64_eq(cfg.backpressure.warn_ratio, 0.75);
         assert_eq!(cfg.policy.rate_limit_window_secs, 60);
     }
 
@@ -1069,8 +1073,8 @@ default_port = 9000
         assert_eq!(cfg.runtime.resize_watchdog_critical_ms, 8_000);
         assert_eq!(cfg.runtime.resize_watchdog_stalled_limit, 2);
         assert_eq!(cfg.runtime.resize_watchdog_sample_limit, 8);
-        assert_eq!(cfg.runtime.storage_lock_wait_warn_ms, 15.0);
-        assert_eq!(cfg.runtime.storage_lock_hold_warn_ms, 75.0);
+        assert_f64_eq(cfg.runtime.storage_lock_wait_warn_ms, 15.0);
+        assert_f64_eq(cfg.runtime.storage_lock_hold_warn_ms, 75.0);
         assert_eq!(
             cfg.runtime.cursor_snapshot_memory_warn_bytes,
             64 * 1024 * 1024
@@ -1078,7 +1082,7 @@ default_port = 9000
         assert_eq!(cfg.runtime.state_detection_max_age_secs, 300);
 
         // Backpressure
-        assert_eq!(cfg.backpressure.warn_ratio, 0.75);
+        assert_f64_eq(cfg.backpressure.warn_ratio, 0.75);
 
         // Snapshot
         assert_eq!(cfg.snapshot.trigger_bridge_tick_secs, 30);
@@ -1092,7 +1096,7 @@ default_port = 9000
         // Patterns
         assert_eq!(cfg.patterns.max_seen_keys, 1000);
         assert_eq!(cfg.patterns.max_tail_size_bytes, 2048);
-        assert_eq!(cfg.patterns.bloom_false_positive_rate, 0.01);
+        assert_f64_eq(cfg.patterns.bloom_false_positive_rate, 0.01);
 
         // Policy
         assert_eq!(cfg.policy.rate_limit_window_secs, 60);
@@ -1228,37 +1232,46 @@ default_port = 9000
     /// This catches accidental divergence between the const and the Default.
     #[test]
     fn associated_consts_match_default_impl() {
-        let r = RuntimeTuning::default();
+        let runtime = RuntimeTuning::default();
         assert_eq!(
-            r.output_coalesce_window_ms,
+            runtime.output_coalesce_window_ms,
             RuntimeTuning::DEFAULT_OUTPUT_COALESCE_WINDOW_MS
         );
         assert_eq!(
-            r.resize_watchdog_warning_ms,
+            runtime.resize_watchdog_warning_ms,
             RuntimeTuning::DEFAULT_RESIZE_WATCHDOG_WARNING_MS
         );
         assert_eq!(
-            r.state_detection_max_age_secs,
+            runtime.state_detection_max_age_secs,
             RuntimeTuning::DEFAULT_STATE_DETECTION_MAX_AGE_SECS
         );
 
-        let b = BackpressureTuning::default();
-        assert_eq!(b.warn_ratio, BackpressureTuning::DEFAULT_WARN_RATIO);
+        let backpressure = BackpressureTuning::default();
+        assert_f64_eq(
+            backpressure.warn_ratio,
+            BackpressureTuning::DEFAULT_WARN_RATIO,
+        );
 
-        let s = SnapshotTuning::default();
-        assert_eq!(s.idle_window_secs, SnapshotTuning::DEFAULT_IDLE_WINDOW_SECS);
-
-        let i = IngestTuning::default();
+        let snapshot = SnapshotTuning::default();
         assert_eq!(
-            i.max_persist_segment_bytes,
+            snapshot.idle_window_secs,
+            SnapshotTuning::DEFAULT_IDLE_WINDOW_SECS
+        );
+
+        let ingest = IngestTuning::default();
+        assert_eq!(
+            ingest.max_persist_segment_bytes,
             IngestTuning::DEFAULT_MAX_PERSIST_SEGMENT_BYTES
         );
 
-        let p = PatternsTuning::default();
-        assert_eq!(p.max_seen_keys, PatternsTuning::DEFAULT_MAX_SEEN_KEYS);
+        let patterns = PatternsTuning::default();
         assert_eq!(
-            p.bloom_false_positive_rate,
-            PatternsTuning::DEFAULT_BLOOM_FALSE_POSITIVE_RATE
+            patterns.max_seen_keys,
+            PatternsTuning::DEFAULT_MAX_SEEN_KEYS
+        );
+        assert_f64_eq(
+            patterns.bloom_false_positive_rate,
+            PatternsTuning::DEFAULT_BLOOM_FALSE_POSITIVE_RATE,
         );
 
         let pol = PolicyTuning::default();
@@ -1275,14 +1288,17 @@ default_port = 9000
             PolicyTuning::DEFAULT_COST_TRACKER_MAX_PANES
         );
 
-        let a = AuditTuning::default();
-        assert_eq!(a.retention_days, AuditTuning::DEFAULT_RETENTION_DAYS);
-        assert_eq!(a.approval_ttl_secs, AuditTuning::DEFAULT_APPROVAL_TTL_SECS);
+        let audit = AuditTuning::default();
+        assert_eq!(audit.retention_days, AuditTuning::DEFAULT_RETENTION_DAYS);
+        assert_eq!(
+            audit.approval_ttl_secs,
+            AuditTuning::DEFAULT_APPROVAL_TTL_SECS
+        );
 
-        let w = WebTuning::default();
-        assert_eq!(w.default_port, WebTuning::DEFAULT_PORT);
-        assert_eq!(w.max_list_limit, WebTuning::DEFAULT_MAX_LIST_LIMIT);
-        assert_eq!(w.stream_scan_limit, WebTuning::DEFAULT_STREAM_SCAN_LIMIT);
+        let web = WebTuning::default();
+        assert_eq!(web.default_port, WebTuning::DEFAULT_PORT);
+        assert_eq!(web.max_list_limit, WebTuning::DEFAULT_MAX_LIST_LIMIT);
+        assert_eq!(web.stream_scan_limit, WebTuning::DEFAULT_STREAM_SCAN_LIMIT);
 
         let wf = WorkflowsTuning::default();
         assert_eq!(wf.max_steps, WorkflowsTuning::DEFAULT_MAX_STEPS);

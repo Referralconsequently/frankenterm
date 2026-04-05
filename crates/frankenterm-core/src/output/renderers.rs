@@ -1649,6 +1649,24 @@ pub fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
+fn format_bytes_compact(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let bytes_f64 = bytes as f64;
+    if bytes_f64 >= GIB {
+        format!("{:.1} GiB", bytes_f64 / GIB)
+    } else if bytes_f64 >= MIB {
+        format!("{:.1} MiB", bytes_f64 / MIB)
+    } else if bytes_f64 >= KIB {
+        format!("{:.1} KiB", bytes_f64 / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 // =============================================================================
 // Health Snapshot Renderer (wa-upg.12.4)
 // =============================================================================
@@ -1744,6 +1762,54 @@ impl HealthSnapshotRenderer {
             "  Observed:      {} pane(s)\n",
             snapshot.observed_panes
         ));
+
+        if !snapshot.leak_risk_inventory.is_empty() {
+            let inventory = &snapshot.leak_risk_inventory;
+            output.push_str(&format!(
+                "  Lifecycle:     {} tracked / {} observed, {} tab(s), {} window(s), {} workspace(s)\n",
+                inventory.tracked_pane_entries,
+                inventory.observed_pane_count,
+                inventory.tab_count,
+                inventory.window_count,
+                inventory.workspace_count
+            ));
+            output.push_str(&format!(
+                "  Pane arenas:   {} live, {} tracked, {} peak\n",
+                inventory.pane_arena_count,
+                format_bytes_compact(inventory.pane_arena_tracked_bytes),
+                format_bytes_compact(inventory.pane_arena_peak_tracked_bytes)
+            ));
+            output.push_str(&format!(
+                "  Lock/memory:   {} contention event(s), wait max {:.2}ms, hold max {:.2}ms, cursor {} / peak {}\n",
+                inventory.storage_lock_contention_events,
+                inventory.storage_lock_wait_max_ms,
+                inventory.storage_lock_hold_max_ms,
+                format_bytes_compact(inventory.cursor_snapshot_bytes),
+                format_bytes_compact(inventory.cursor_snapshot_peak_bytes)
+            ));
+            if let Some(overall) = inventory.watchdog.overall {
+                let unhealthy = inventory.watchdog.unhealthy_components.len();
+                let health_checks = inventory
+                    .watchdog
+                    .telemetry
+                    .as_ref()
+                    .map_or(0, |telemetry| telemetry.health_checks);
+                output.push_str(&format!(
+                    "  Watchdog:      {overall} ({unhealthy} unhealthy component(s), {health_checks} health checks)\n"
+                ));
+                if ctx.is_verbose() {
+                    for component in &inventory.watchdog.unhealthy_components {
+                        let age = component
+                            .age_ms
+                            .map_or_else(|| "never".to_string(), |age_ms| format!("{age_ms}ms"));
+                        output.push_str(&format!(
+                            "    - {}: {} (age {}, threshold {}ms)\n",
+                            component.component, component.status, age, component.threshold_ms
+                        ));
+                    }
+                }
+            }
+        }
 
         // Runtime pane priority overrides (operator-set).
         if !snapshot.pane_priority_overrides.is_empty() {
@@ -1897,6 +1963,21 @@ impl HealthSnapshotRenderer {
             }
         }
 
+        if !snapshot.leak_risk_inventory.is_empty() {
+            let inventory = &snapshot.leak_risk_inventory;
+            let watchdog = inventory
+                .watchdog
+                .overall
+                .map_or_else(|| "unknown".to_string(), |status| status.to_string());
+            output.push_str(&format!(
+                "  Leak risk: {} tracked, {} arenas, cursor peak {}, watchdog {}\n",
+                inventory.tracked_pane_entries,
+                inventory.pane_arena_count,
+                format_bytes_compact(inventory.cursor_snapshot_peak_bytes),
+                watchdog
+            ));
+        }
+
         // Surface warnings inline
         for w in &snapshot.warnings {
             output.push_str(&format!("  {} {w}\n", style.yellow("WARNING:")));
@@ -1969,6 +2050,64 @@ impl HealthSnapshotRenderer {
                 status: HealthDiagnosticStatus::Error,
                 detail: "database is NOT writable".to_string(),
             });
+        }
+
+        if !snapshot.leak_risk_inventory.is_empty() {
+            let inventory = &snapshot.leak_risk_inventory;
+            let orphaned_arenas = inventory
+                .pane_arena_count
+                .saturating_sub(inventory.tracked_pane_entries);
+            checks.push(HealthDiagnostic {
+                name: "lifecycle inventory",
+                status: if orphaned_arenas > 0 {
+                    HealthDiagnosticStatus::Warning
+                } else {
+                    HealthDiagnosticStatus::Ok
+                },
+                detail: format!(
+                    "{} tracked pane entries, {} pane arenas, {} tab(s), {} window(s), {} workspace(s)",
+                    inventory.tracked_pane_entries,
+                    inventory.pane_arena_count,
+                    inventory.tab_count,
+                    inventory.window_count,
+                    inventory.workspace_count
+                ),
+            });
+            checks.push(HealthDiagnostic {
+                name: "pane arena memory",
+                status: if orphaned_arenas > 0 {
+                    HealthDiagnosticStatus::Warning
+                } else if inventory.pane_arena_tracked_bytes > 0
+                    || inventory.pane_arena_peak_tracked_bytes > 0
+                {
+                    HealthDiagnosticStatus::Info
+                } else {
+                    HealthDiagnosticStatus::Ok
+                },
+                detail: format!(
+                    "{} live arena(s), {} tracked, {} peak",
+                    inventory.pane_arena_count,
+                    format_bytes_compact(inventory.pane_arena_tracked_bytes),
+                    format_bytes_compact(inventory.pane_arena_peak_tracked_bytes)
+                ),
+            });
+            if let Some(status) = inventory.watchdog.overall {
+                let diagnostic_status = match status {
+                    crate::watchdog::HealthStatus::Healthy => HealthDiagnosticStatus::Ok,
+                    crate::watchdog::HealthStatus::Degraded => HealthDiagnosticStatus::Warning,
+                    crate::watchdog::HealthStatus::Critical
+                    | crate::watchdog::HealthStatus::Hung => HealthDiagnosticStatus::Error,
+                };
+                checks.push(HealthDiagnostic {
+                    name: "watchdog health",
+                    status: diagnostic_status,
+                    detail: format!(
+                        "{} ({} unhealthy component(s))",
+                        status,
+                        inventory.watchdog.unhealthy_components.len()
+                    ),
+                });
+            }
         }
 
         // Stuck pane detection: panes with no activity for > 5 minutes
@@ -4140,6 +4279,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: crate::crash::LeakRiskInventorySnapshot::default(),
         }
     }
 
@@ -4178,6 +4318,58 @@ mod tests {
         let output = HealthSnapshotRenderer::render(&snapshot, &ctx);
 
         assert!(output.contains("Observed:      3 pane(s)"));
+    }
+
+    #[test]
+    fn health_snapshot_plain_shows_leak_risk_inventory() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.leak_risk_inventory = crate::crash::LeakRiskInventorySnapshot {
+            tracked_pane_entries: 4,
+            observed_pane_count: 3,
+            window_count: 1,
+            tab_count: 2,
+            workspace_count: 1,
+            pane_arena_count: 4,
+            pane_arena_tracked_bytes: 32 * 1024,
+            pane_arena_peak_tracked_bytes: 48 * 1024,
+            cursor_snapshot_bytes: 12 * 1024,
+            cursor_snapshot_peak_bytes: 16 * 1024,
+            storage_lock_contention_events: 2,
+            storage_lock_wait_max_ms: 7.5,
+            storage_lock_hold_max_ms: 3.0,
+            watchdog: crate::crash::LeakRiskWatchdogSnapshot {
+                overall: Some(crate::watchdog::HealthStatus::Degraded),
+                unhealthy_components: vec![crate::crash::LeakRiskWatchdogComponentSnapshot {
+                    component: crate::watchdog::Component::Capture,
+                    status: crate::watchdog::HealthStatus::Degraded,
+                    age_ms: Some(6_000),
+                    threshold_ms: 5_000,
+                }],
+                telemetry: Some(crate::watchdog::WatchdogTelemetrySnapshot {
+                    discovery_heartbeats: 4,
+                    capture_heartbeats: 30,
+                    persistence_heartbeats: 29,
+                    maintenance_heartbeats: 2,
+                    health_checks: 5,
+                }),
+            },
+        };
+
+        let ctx = RenderContext::new(OutputFormat::Plain).verbose(1);
+        let output = HealthSnapshotRenderer::render(&snapshot, &ctx);
+        println!(
+            "leak_risk_inventory_json={}",
+            serde_json::to_string_pretty(&snapshot.leak_risk_inventory).unwrap()
+        );
+        println!("plain_leak_risk_render:\n{output}");
+
+        assert!(output.contains("Lifecycle:"));
+        assert!(output.contains("4 tracked / 3 observed"));
+        assert!(output.contains("Pane arenas:"));
+        assert!(output.contains("32.0 KiB"));
+        assert!(output.contains("Watchdog:"));
+        assert!(output.contains("degraded"));
+        assert!(output.contains("capture"));
     }
 
     #[test]
@@ -4256,6 +4448,40 @@ mod tests {
     }
 
     #[test]
+    fn health_compact_shows_leak_risk_summary() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.leak_risk_inventory = crate::crash::LeakRiskInventorySnapshot {
+            tracked_pane_entries: 5,
+            observed_pane_count: 5,
+            window_count: 2,
+            tab_count: 3,
+            workspace_count: 1,
+            pane_arena_count: 5,
+            pane_arena_tracked_bytes: 64 * 1024,
+            pane_arena_peak_tracked_bytes: 96 * 1024,
+            cursor_snapshot_bytes: 8 * 1024,
+            cursor_snapshot_peak_bytes: 24 * 1024,
+            storage_lock_contention_events: 1,
+            storage_lock_wait_max_ms: 2.0,
+            storage_lock_hold_max_ms: 1.0,
+            watchdog: crate::crash::LeakRiskWatchdogSnapshot {
+                overall: Some(crate::watchdog::HealthStatus::Healthy),
+                unhealthy_components: vec![],
+                telemetry: None,
+            },
+        };
+
+        let ctx = RenderContext::new(OutputFormat::Plain);
+        let output = HealthSnapshotRenderer::render_compact(&snapshot, &ctx);
+        println!("compact_leak_risk_render:\n{output}");
+
+        assert!(output.contains("Leak risk:"));
+        assert!(output.contains("5 tracked"));
+        assert!(output.contains("24.0 KiB"));
+        assert!(output.contains("watchdog healthy"));
+    }
+
+    #[test]
     fn health_compact_json_returns_empty() {
         let snapshot = sample_health_snapshot();
         let ctx = RenderContext::new(OutputFormat::Json);
@@ -4308,6 +4534,75 @@ mod tests {
 
         let db = checks.iter().find(|c| c.name == "database health").unwrap();
         assert_eq!(db.status, HealthDiagnosticStatus::Error);
+    }
+
+    #[test]
+    fn health_diagnostics_lifecycle_inventory_warns_on_orphaned_arenas() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.leak_risk_inventory = crate::crash::LeakRiskInventorySnapshot {
+            tracked_pane_entries: 2,
+            observed_pane_count: 2,
+            window_count: 1,
+            tab_count: 1,
+            workspace_count: 1,
+            pane_arena_count: 3,
+            pane_arena_tracked_bytes: 32 * 1024,
+            pane_arena_peak_tracked_bytes: 48 * 1024,
+            cursor_snapshot_bytes: 4 * 1024,
+            cursor_snapshot_peak_bytes: 8 * 1024,
+            storage_lock_contention_events: 0,
+            storage_lock_wait_max_ms: 0.0,
+            storage_lock_hold_max_ms: 0.0,
+            watchdog: crate::crash::LeakRiskWatchdogSnapshot::default(),
+        };
+
+        let checks = HealthSnapshotRenderer::diagnostic_checks(&snapshot);
+        let lifecycle = checks
+            .iter()
+            .find(|c| c.name == "lifecycle inventory")
+            .unwrap();
+        let pane_arena_memory = checks
+            .iter()
+            .find(|c| c.name == "pane arena memory")
+            .unwrap();
+        assert_eq!(lifecycle.status, HealthDiagnosticStatus::Warning);
+        assert_eq!(pane_arena_memory.status, HealthDiagnosticStatus::Warning);
+        assert!(lifecycle.detail.contains("3 pane arenas"));
+    }
+
+    #[test]
+    fn health_diagnostics_watchdog_health_maps_severity() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.leak_risk_inventory = crate::crash::LeakRiskInventorySnapshot {
+            tracked_pane_entries: 1,
+            observed_pane_count: 1,
+            window_count: 1,
+            tab_count: 1,
+            workspace_count: 1,
+            pane_arena_count: 1,
+            pane_arena_tracked_bytes: 1024,
+            pane_arena_peak_tracked_bytes: 2048,
+            cursor_snapshot_bytes: 512,
+            cursor_snapshot_peak_bytes: 1024,
+            storage_lock_contention_events: 0,
+            storage_lock_wait_max_ms: 0.0,
+            storage_lock_hold_max_ms: 0.0,
+            watchdog: crate::crash::LeakRiskWatchdogSnapshot {
+                overall: Some(crate::watchdog::HealthStatus::Critical),
+                unhealthy_components: vec![crate::crash::LeakRiskWatchdogComponentSnapshot {
+                    component: crate::watchdog::Component::Persistence,
+                    status: crate::watchdog::HealthStatus::Critical,
+                    age_ms: Some(31_000),
+                    threshold_ms: 30_000,
+                }],
+                telemetry: None,
+            },
+        };
+
+        let checks = HealthSnapshotRenderer::diagnostic_checks(&snapshot);
+        let watchdog = checks.iter().find(|c| c.name == "watchdog health").unwrap();
+        assert_eq!(watchdog.status, HealthDiagnosticStatus::Error);
+        assert!(watchdog.detail.contains("critical"));
     }
 
     #[test]
@@ -4618,6 +4913,7 @@ mod tests {
             "current_backoff_ms",
             "in_crash_loop",
             "fleet_pressure_tier",
+            "leak_risk_inventory",
         ];
 
         for field in &expected {
@@ -4650,6 +4946,7 @@ mod tests {
         assert_eq!(deser.warnings, snapshot.warnings);
         assert_eq!(deser.db_writable, snapshot.db_writable);
         assert_eq!(deser.last_activity_by_pane, snapshot.last_activity_by_pane);
+        assert_eq!(deser.leak_risk_inventory, snapshot.leak_risk_inventory);
     }
 
     #[test]
@@ -4674,6 +4971,7 @@ mod tests {
         assert!(deser.pane_priority_overrides.is_empty());
         assert!(deser.scheduler.is_none());
         assert!(deser.backpressure_tier.is_none());
+        assert!(deser.leak_risk_inventory.is_empty());
     }
 
     #[test]

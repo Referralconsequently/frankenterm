@@ -1387,44 +1387,49 @@ mod tests {
         assert_eq!(pb.migration_id, "ntm-to-ft");
 
         // Preflight gates: G-01, G-02, G-03
-        let preflight: Vec<_> = pb
-            .gates
-            .iter()
-            .filter(|g| g.stage == CutoverStage::Preflight)
-            .collect();
-        assert_eq!(preflight.len(), 3);
+        assert_eq!(
+            pb.gates
+                .iter()
+                .filter(|g| g.stage == CutoverStage::Preflight)
+                .count(),
+            3
+        );
 
         // Shadow gates: G-04, G-05
-        let shadow: Vec<_> = pb
-            .gates
-            .iter()
-            .filter(|g| g.stage == CutoverStage::Shadow)
-            .collect();
-        assert_eq!(shadow.len(), 2);
+        assert_eq!(
+            pb.gates
+                .iter()
+                .filter(|g| g.stage == CutoverStage::Shadow)
+                .count(),
+            2
+        );
 
         // Canary gates: G-06, G-SLO
-        let canary: Vec<_> = pb
-            .gates
-            .iter()
-            .filter(|g| g.stage == CutoverStage::Canary)
-            .collect();
-        assert_eq!(canary.len(), 2);
+        assert_eq!(
+            pb.gates
+                .iter()
+                .filter(|g| g.stage == CutoverStage::Canary)
+                .count(),
+            2
+        );
 
         // Progressive gates: G-DRIFT, G-INCIDENT
-        let prog: Vec<_> = pb
-            .gates
-            .iter()
-            .filter(|g| g.stage == CutoverStage::Progressive)
-            .collect();
-        assert_eq!(prog.len(), 2);
+        assert_eq!(
+            pb.gates
+                .iter()
+                .filter(|g| g.stage == CutoverStage::Progressive)
+                .count(),
+            2
+        );
 
         // Default gates: G-FINAL-REVIEW, G-REHEARSAL-24H
-        let def: Vec<_> = pb
-            .gates
-            .iter()
-            .filter(|g| g.stage == CutoverStage::Default)
-            .collect();
-        assert_eq!(def.len(), 2);
+        assert_eq!(
+            pb.gates
+                .iter()
+                .filter(|g| g.stage == CutoverStage::Default)
+                .count(),
+            2
+        );
 
         // Rollback triggers
         assert_eq!(pb.rollback_triggers.len(), 5);

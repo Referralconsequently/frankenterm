@@ -142,7 +142,7 @@ proptest! {
     #[test]
     fn prop_dot_product_empty(_dummy in 0..1u8) {
         let r = dot_product_simd(&[], &[]);
-        prop_assert_eq!(r, 0.0);
+        prop_assert!(r.abs() < f32::EPSILON);
     }
 
     // 4. dot_product_simd: self-dot equals sum of squares
@@ -190,7 +190,7 @@ proptest! {
         let v = vec![0.0_f32; dim];
         let n = normalize_simd(&v);
         for val in &n {
-            prop_assert_eq!(*val, 0.0);
+            prop_assert!(val.abs() < f32::EPSILON);
         }
     }
 

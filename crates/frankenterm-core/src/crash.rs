@@ -35,6 +35,113 @@ const MAX_BACKTRACE_LEN: usize = 64 * 1024;
 /// Maximum crash bundle size in bytes (1 MiB) — a privacy/size budget.
 const MAX_BUNDLE_SIZE: usize = 1024 * 1024;
 
+/// Cheap lifecycle inventory for leak and retention triage.
+///
+/// The runtime updates this together with [`HealthSnapshot`] so later
+/// remediation and soak work can consume the same substrate.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LeakRiskInventorySnapshot {
+    /// Total panes still tracked in the runtime registry.
+    #[serde(default)]
+    pub tracked_pane_entries: usize,
+    /// Panes currently marked observed by policy.
+    #[serde(default)]
+    pub observed_pane_count: usize,
+    /// Distinct windows represented by tracked panes.
+    #[serde(default)]
+    pub window_count: usize,
+    /// Distinct tabs represented by tracked panes.
+    #[serde(default)]
+    pub tab_count: usize,
+    /// Distinct non-empty workspaces represented by tracked panes.
+    #[serde(default)]
+    pub workspace_count: usize,
+    /// Live pane arena reservations.
+    #[serde(default)]
+    pub pane_arena_count: usize,
+    /// Sum of currently tracked pane-arena bytes.
+    #[serde(default)]
+    pub pane_arena_tracked_bytes: u64,
+    /// Sum of pane-arena peak tracked bytes.
+    #[serde(default)]
+    pub pane_arena_peak_tracked_bytes: u64,
+    /// Last cursor snapshot memory sample in bytes.
+    #[serde(default)]
+    pub cursor_snapshot_bytes: u64,
+    /// Peak cursor snapshot memory sample in bytes.
+    #[serde(default)]
+    pub cursor_snapshot_peak_bytes: u64,
+    /// Storage lock contention events recorded by the runtime.
+    #[serde(default)]
+    pub storage_lock_contention_events: u64,
+    /// Maximum storage lock wait observed in milliseconds.
+    #[serde(default)]
+    pub storage_lock_wait_max_ms: f64,
+    /// Maximum storage lock hold observed in milliseconds.
+    #[serde(default)]
+    pub storage_lock_hold_max_ms: f64,
+    /// Watchdog snapshot for runtime heartbeat health.
+    #[serde(default)]
+    pub watchdog: LeakRiskWatchdogSnapshot,
+}
+
+impl LeakRiskInventorySnapshot {
+    /// Whether the snapshot contains any non-default inventory data.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tracked_pane_entries == 0
+            && self.observed_pane_count == 0
+            && self.window_count == 0
+            && self.tab_count == 0
+            && self.workspace_count == 0
+            && self.pane_arena_count == 0
+            && self.pane_arena_tracked_bytes == 0
+            && self.pane_arena_peak_tracked_bytes == 0
+            && self.cursor_snapshot_bytes == 0
+            && self.cursor_snapshot_peak_bytes == 0
+            && self.storage_lock_contention_events == 0
+            && self.storage_lock_wait_max_ms.abs() < f64::EPSILON
+            && self.storage_lock_hold_max_ms.abs() < f64::EPSILON
+            && self.watchdog.is_empty()
+    }
+}
+
+/// Watchdog detail embedded in [`LeakRiskInventorySnapshot`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeakRiskWatchdogSnapshot {
+    /// Overall runtime heartbeat health.
+    #[serde(default)]
+    pub overall: Option<crate::watchdog::HealthStatus>,
+    /// Components currently outside the healthy band.
+    #[serde(default)]
+    pub unhealthy_components: Vec<LeakRiskWatchdogComponentSnapshot>,
+    /// Raw heartbeat counters collected by the registry.
+    #[serde(default)]
+    pub telemetry: Option<crate::watchdog::WatchdogTelemetrySnapshot>,
+}
+
+impl LeakRiskWatchdogSnapshot {
+    /// Whether the watchdog snapshot carries any data.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.overall.is_none() && self.unhealthy_components.is_empty() && self.telemetry.is_none()
+    }
+}
+
+/// Leak-risk projection of a single unhealthy watchdog component.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeakRiskWatchdogComponentSnapshot {
+    /// Runtime component name.
+    pub component: crate::watchdog::Component,
+    /// Current watchdog status for that component.
+    pub status: crate::watchdog::HealthStatus,
+    /// Age of the most recent heartbeat in milliseconds.
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    /// Configured stale threshold in milliseconds.
+    pub threshold_ms: u64,
+}
+
 /// Runtime health snapshot for crash reporting.
 ///
 /// This is periodically updated by the observation runtime and included
@@ -103,6 +210,10 @@ pub struct HealthSnapshot {
     /// Values: Normal, Elevated, Critical, Emergency.
     #[serde(default)]
     pub fleet_pressure_tier: Option<String>,
+
+    /// Leak-risk lifecycle inventory for retention debugging.
+    #[serde(default)]
+    pub leak_risk_inventory: LeakRiskInventorySnapshot,
 }
 
 /// Health snapshot view of a runtime pane priority override.
@@ -1669,6 +1780,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: LeakRiskInventorySnapshot::default(),
         }
     }
 
@@ -1739,6 +1851,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: LeakRiskInventorySnapshot::default(),
         };
 
         HealthSnapshot::update_global(snapshot);
@@ -3345,6 +3458,37 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: Some("Normal".to_string()),
+            leak_risk_inventory: LeakRiskInventorySnapshot {
+                tracked_pane_entries: 10,
+                observed_pane_count: 8,
+                window_count: 3,
+                tab_count: 4,
+                workspace_count: 2,
+                pane_arena_count: 10,
+                pane_arena_tracked_bytes: 32 * 1024,
+                pane_arena_peak_tracked_bytes: 48 * 1024,
+                cursor_snapshot_bytes: 16 * 1024,
+                cursor_snapshot_peak_bytes: 24 * 1024,
+                storage_lock_contention_events: 3,
+                storage_lock_wait_max_ms: 12.5,
+                storage_lock_hold_max_ms: 4.0,
+                watchdog: LeakRiskWatchdogSnapshot {
+                    overall: Some(crate::watchdog::HealthStatus::Degraded),
+                    unhealthy_components: vec![LeakRiskWatchdogComponentSnapshot {
+                        component: crate::watchdog::Component::Capture,
+                        status: crate::watchdog::HealthStatus::Degraded,
+                        age_ms: Some(6_000),
+                        threshold_ms: 5_000,
+                    }],
+                    telemetry: Some(crate::watchdog::WatchdogTelemetrySnapshot {
+                        discovery_heartbeats: 10,
+                        capture_heartbeats: 100,
+                        persistence_heartbeats: 95,
+                        maintenance_heartbeats: 4,
+                        health_checks: 8,
+                    }),
+                },
+            },
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         let parsed: HealthSnapshot = serde_json::from_str(&json).unwrap();
@@ -3356,6 +3500,11 @@ mod tests {
         assert_eq!(parsed.restart_count, 2);
         assert_eq!(parsed.fleet_pressure_tier.as_deref(), Some("Normal"));
         assert_eq!(parsed.last_crash_at, Some(1_699_990_000));
+        assert_eq!(parsed.leak_risk_inventory.window_count, 3);
+        assert_eq!(
+            parsed.leak_risk_inventory.watchdog.overall,
+            Some(crate::watchdog::HealthStatus::Degraded)
+        );
     }
 
     #[test]
@@ -3384,6 +3533,7 @@ mod tests {
         assert_eq!(parsed.current_backoff_ms, 0);
         assert!(!parsed.in_crash_loop);
         assert!(parsed.fleet_pressure_tier.is_none());
+        assert!(parsed.leak_risk_inventory.is_empty());
     }
 
     #[test]
@@ -3409,6 +3559,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: Some("Critical".to_string()),
+            leak_risk_inventory: LeakRiskInventorySnapshot::default(),
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         let parsed: HealthSnapshot = serde_json::from_str(&json).unwrap();

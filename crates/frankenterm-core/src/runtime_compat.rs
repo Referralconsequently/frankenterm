@@ -4121,7 +4121,7 @@ mod tests {
         rt.block_on(async {
             let mut cmd = process::Command::new("sh");
             cmd.arg("-c");
-            cmd.arg(&script);
+            cmd.arg(script);
             cmd.env("FT_RUNTIME_COMPAT_MARKER", &marker_path);
             cmd.kill_on_drop(true);
 

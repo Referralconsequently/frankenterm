@@ -2470,15 +2470,20 @@ mod tests {
                 loop {
                     let mut temp = vec![0u8; 4096];
                     let read = match timeout(
-                        Duration::from_millis(1_000),
+                        Duration::from_secs(1),
                         unix_stream_read(&mut stream, &mut temp),
                     )
                     .await
                     {
                         Ok(Ok(read)) => read,
                         Ok(Err(err)) => panic!("read failed: {err}"),
-                        Err(_) if handshake_complete => break,
-                        Err(_) => panic!("server timed out before handshake completed"),
+                        Err(timeout_err) if handshake_complete => {
+                            let _ = timeout_err;
+                            break;
+                        }
+                        Err(timeout_err) => {
+                            panic!("server timed out before handshake completed: {timeout_err}");
+                        }
                     };
                     if read == 0 {
                         break;

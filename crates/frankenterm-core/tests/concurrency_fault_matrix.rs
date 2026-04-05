@@ -128,6 +128,8 @@ impl SharedWorkloadState {
     }
 }
 
+type MatrixWorkload = Box<dyn Fn(&mut LabRuntime, &Arc<SharedWorkloadState>) + Send + Sync>;
+
 // =============================================================================
 // Fault injection profiles
 // =============================================================================
@@ -1471,12 +1473,9 @@ where
 /// for CI archival. Marked with `#[ignore]` for CI-friendly slicing —
 /// run explicitly with `--ignored` for thorough verification.
 #[test]
-#[ignore] // CI slice: thorough — run with `cargo test -- --ignored cfm_full_telemetry_matrix`
+#[ignore = "CI slice; run explicitly with --ignored for the full telemetry matrix"]
 fn cfm_full_telemetry_matrix() {
-    let workloads: Vec<(
-        &str,
-        Box<dyn Fn(&mut LabRuntime, &Arc<SharedWorkloadState>) + Send + Sync>,
-    )> = vec![
+    let workloads: Vec<(&str, MatrixWorkload)> = vec![
         (
             "pool",
             Box::new(|rt, st| pool_acquire_release_workload(rt, st, 4)),

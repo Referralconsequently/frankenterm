@@ -465,7 +465,7 @@ proptest! {
         let report = GateReport::evaluate(&slos, &samples, &policy);
         for result in &report.results {
             if !result.satisfied {
-                prop_assert_eq!(result.budget_remaining, 0.0);
+                prop_assert!(result.budget_remaining.abs() < f64::EPSILON);
             }
         }
     }
@@ -485,7 +485,7 @@ proptest! {
 
         let report = GateReport::evaluate(&slos, &samples, &policy);
         for result in &report.results {
-            prop_assert_eq!(result.budget_remaining, 1.0);
+            prop_assert!((result.budget_remaining - 1.0).abs() < f64::EPSILON);
         }
     }
 }

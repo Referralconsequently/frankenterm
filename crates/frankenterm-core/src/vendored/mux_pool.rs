@@ -2710,7 +2710,9 @@ mod tests {
 
             match err {
                 MuxPoolError::Mux(mux_err) => assert!(mux_err.is_cancelled()),
-                other => panic!("expected mux cancellation error, got: {other}"),
+                other @ MuxPoolError::Pool(_) => {
+                    panic!("expected mux cancellation error, got: {other}");
+                }
             }
 
             let stats = pool.stats().await;
@@ -2802,7 +2804,7 @@ mod tests {
             );
 
             let err = pool
-                .get_lines_with_cx(&cx, 9, vec![0..5])
+                .get_lines_with_cx(&cx, 9, std::iter::once(0..5).collect())
                 .await
                 .expect_err("pre-cancelled get_lines_with_cx should fail");
             assert!(matches!(err, MuxPoolError::Pool(PoolError::Cancelled)));

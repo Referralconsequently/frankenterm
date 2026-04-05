@@ -1419,7 +1419,7 @@ mod tests {
                 // Use mock retriever with the expected page data
                 let mut retriever = MockColdRetriever::new();
                 if let ScrollbackLocationHint::Cold { page_index, .. } = &hint {
-                    retriever.insert(*page_index, (0..5).map(|i| line(i)).collect());
+                    retriever.insert(*page_index, (0..5).map(line).collect());
                 }
 
                 let result = sb.cold_line(&hint, &retriever);

@@ -82,6 +82,8 @@ fn arb_health_snapshot() -> impl Strategy<Value = HealthSnapshot> {
                     current_backoff_ms: 0,
                     in_crash_loop: false,
                     fleet_pressure_tier: None,
+                    leak_risk_inventory:
+                        frankenterm_core::crash::LeakRiskInventorySnapshot::default(),
                 }
             },
         )
@@ -1048,6 +1050,7 @@ proptest! {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: frankenterm_core::crash::LeakRiskInventorySnapshot::default(),
         };
         HealthSnapshot::update_global(snap.clone());
         let got = HealthSnapshot::get_global();

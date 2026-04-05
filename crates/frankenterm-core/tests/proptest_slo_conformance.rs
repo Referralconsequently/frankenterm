@@ -73,7 +73,7 @@ proptest! {
         let json = serde_json::to_string(&slo).unwrap();
         let back: SloDefinition = serde_json::from_str(&json).unwrap();
         prop_assert_eq!(back.id, "test");
-        prop_assert_eq!(back.target, 100.0);
+        prop_assert!((back.target - 100.0).abs() < f64::EPSILON);
         prop_assert_eq!(back.window_ms, 60_000);
     }
 
@@ -197,7 +197,7 @@ proptest! {
 proptest! {
     #[test]
     fn severity_total_order(a in arb_slo_severity(), b in arb_slo_severity()) {
-        prop_assert!(a <= b || a > b);
+        prop_assert!(a <= b || b <= a);
     }
 
     #[test]

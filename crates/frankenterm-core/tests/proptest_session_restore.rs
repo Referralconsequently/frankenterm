@@ -252,16 +252,30 @@ fn arb_restored_pane_state() -> impl Strategy<Value = RestoredPaneState> {
         prop::option::of("[a-z]{1,10}"),
         prop::option::of(arb_terminal_state()),
         prop::option::of(arb_agent_metadata()),
+        prop::option::of(0u64..100_000),
+        prop::option::of(0u64..2_000_000_000_000),
     )
-        .prop_map(|(pane_id, cwd, command, terminal_state, agent_metadata)| {
-            RestoredPaneState {
+        .prop_map(
+            |(
                 pane_id,
                 cwd,
                 command,
                 terminal_state,
                 agent_metadata,
-            }
-        })
+                scrollback_checkpoint_seq,
+                last_output_at,
+            )| {
+                RestoredPaneState {
+                    pane_id,
+                    cwd,
+                    command,
+                    terminal_state,
+                    agent_metadata,
+                    scrollback_checkpoint_seq,
+                    last_output_at,
+                }
+            },
+        )
 }
 
 fn arb_restore_summary() -> impl Strategy<Value = RestoreSummary> {

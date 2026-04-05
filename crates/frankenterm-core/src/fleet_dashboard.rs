@@ -934,9 +934,7 @@ mod tests {
     fn alert_context_serde_roundtrip() {
         let ctx = AlertContext {
             fleet_health: HealthStatus::Degraded,
-            layer_health: [("policy".to_string(), HealthStatus::Healthy)]
-                .into_iter()
-                .collect(),
+            layer_health: std::iter::once(("policy".to_string(), HealthStatus::Healthy)).collect(),
             redaction_ceiling: RedactionLabel::Internal,
             envelope_count: 5,
         };

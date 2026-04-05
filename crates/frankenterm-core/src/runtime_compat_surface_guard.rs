@@ -790,7 +790,7 @@ mod tests {
             "expected 1 ShimBypass regression"
         );
         assert!(
-            grouped.get("DispositionViolation").is_none(),
+            !grouped.contains_key("DispositionViolation"),
             "no DispositionViolation regressions expected"
         );
     }

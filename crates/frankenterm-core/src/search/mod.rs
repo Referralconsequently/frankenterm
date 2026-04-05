@@ -122,23 +122,6 @@ pub fn advertised_embedder_tiers(search_enabled: bool, reranker_enabled: bool) -
     tiers
 }
 
-#[cfg(test)]
-mod tests {
-    use super::advertised_embedder_tiers;
-
-    #[test]
-    fn advertised_embedder_tiers_without_semantic_search_only_reports_hash() {
-        let tiers = advertised_embedder_tiers(false, true);
-        assert_eq!(tiers, vec!["hash".to_string()]);
-    }
-
-    #[test]
-    fn advertised_embedder_tiers_never_reports_retired_model2vec_backend() {
-        let tiers = advertised_embedder_tiers(true, true);
-        assert!(!tiers.iter().any(|tier| tier == "model2vec"));
-    }
-}
-
 pub use facade::{FacadeConfig, FacadeResult, FacadeRouting, SearchFacade, ShadowComparison};
 pub use migration_controller::{
     HealthCheckResult, MigrationController, MigrationControllerConfig, MigrationPhase,
@@ -155,3 +138,20 @@ pub use schema_gate::{
     snapshot_facade_result_schema, snapshot_fused_result_schema,
     snapshot_orchestration_metrics_schema, snapshot_orchestration_result_schema,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::advertised_embedder_tiers;
+
+    #[test]
+    fn advertised_embedder_tiers_without_semantic_search_only_reports_hash() {
+        let tiers = advertised_embedder_tiers(false, true);
+        assert_eq!(tiers, vec!["hash".to_string()]);
+    }
+
+    #[test]
+    fn advertised_embedder_tiers_never_reports_retired_model2vec_backend() {
+        let tiers = advertised_embedder_tiers(true, true);
+        assert!(!tiers.iter().any(|tier| tier == "model2vec"));
+    }
+}

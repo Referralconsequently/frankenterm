@@ -89,7 +89,7 @@ accept_poll_interval_ms = 250
 fn t3_runtime_receives_loaded_tuning_from_config() {
     run_async_test(async {
         let config = load_config(
-            r#"
+            r"
 [tuning.runtime]
 output_coalesce_window_ms = 77
 resize_watchdog_warning_ms = 3333
@@ -99,7 +99,7 @@ warn_ratio = 0.55
 
 [tuning.snapshot]
 idle_window_secs = 42
-"#,
+",
         );
 
         let (_dir, db_path) = temp_db();
@@ -124,10 +124,10 @@ idle_window_secs = 42
 #[test]
 fn t4_search_indexer_uses_loaded_tuning_values() {
     let config = load_config(
-        r#"
+        r"
 [tuning.search]
 tantivy_writer_memory_bytes = 16777216
-"#,
+",
     );
 
     let indexer = LexicalIndexerConfig::from_tuning("/tmp/ft-lexical", &config.tuning);
@@ -138,7 +138,7 @@ tantivy_writer_memory_bytes = 16777216
 #[test]
 fn t5_policy_and_audit_surfaces_use_loaded_tuning() {
     let config = load_config(
-        r#"
+        r"
 [tuning.policy]
 rate_limit_window_secs = 1
 
@@ -146,7 +146,7 @@ rate_limit_window_secs = 1
 retention_days = 365
 max_raw_query_rows = 321
 approval_ttl_secs = 77
-"#,
+",
     );
 
     let mut engine = PolicyEngine::new(1, 100, false).with_tuning(&config.tuning);
@@ -173,14 +173,14 @@ approval_ttl_secs = 77
 #[test]
 fn t6_workflow_descriptor_validation_uses_loaded_limits() {
     let config = load_config(
-        r#"
+        r"
 [tuning.workflows]
 max_steps = 1
 max_wait_timeout_ms = 5
 max_sleep_ms = 5
 max_text_len = 4
 max_match_len = 4
-"#,
+",
     );
 
     let descriptor = WorkflowDescriptor {
@@ -216,7 +216,7 @@ max_match_len = 4
 #[test]
 fn t7_web_stream_limits_use_loaded_tuning_values() {
     let config = load_config(
-        r#"
+        r"
 [tuning.web]
 max_list_limit = 123
 default_list_limit = 45
@@ -226,7 +226,7 @@ stream_max_max_hz = 34
 stream_keepalive_secs = 56
 stream_scan_limit = 78
 stream_scan_max_pages = 9
-"#,
+",
     );
 
     let limits = web::resolve_runtime_limits(Some(&config.tuning.web));

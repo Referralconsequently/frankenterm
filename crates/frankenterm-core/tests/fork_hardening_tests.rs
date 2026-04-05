@@ -381,9 +381,9 @@ fn telemetry_histogram_quantiles_match_known_distribution() {
         histogram.record(f64::from(value));
     }
 
-    assert_eq!(histogram.p50(), Some(50.0));
-    assert_eq!(histogram.p95(), Some(95.0));
-    assert_eq!(histogram.p99(), Some(99.0));
+    assert!(matches!(histogram.p50(), Some(p50) if (p50 - 50.0).abs() < f64::EPSILON));
+    assert!(matches!(histogram.p95(), Some(p95) if (p95 - 95.0).abs() < f64::EPSILON));
+    assert!(matches!(histogram.p99(), Some(p99) if (p99 - 99.0).abs() < f64::EPSILON));
 
     let (min, max) = histogram.min_max().expect("histogram should have min/max");
     assert!((min - 1.0).abs() < f64::EPSILON);
@@ -433,7 +433,10 @@ fn telemetry_hourly_aggregate_matches_expected_values() {
     assert_eq!(aggregate.peak_rss_bytes, 300);
     assert_eq!(aggregate.mean_fd_count, 20);
     assert_eq!(aggregate.peak_fd_count, 30);
-    assert_eq!(aggregate.mean_cpu_percent, Some(15.0));
+    assert!(matches!(
+        aggregate.mean_cpu_percent,
+        Some(mean_cpu_percent) if (mean_cpu_percent - 15.0).abs() < f64::EPSILON
+    ));
 }
 
 #[cfg(target_os = "linux")]

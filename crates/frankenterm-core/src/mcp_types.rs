@@ -2570,8 +2570,7 @@ mod tests {
             let info = info.unwrap();
             prop_assert_eq!(info.returned_lines, tail);
             prop_assert_eq!(info.original_lines, lines.len());
-            let result_lines: Vec<&str> = result.lines().collect();
-            prop_assert_eq!(result_lines.len(), tail);
+            prop_assert_eq!(result.lines().count(), tail);
         }
     }
 }

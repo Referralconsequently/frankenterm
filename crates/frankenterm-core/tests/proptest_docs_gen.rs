@@ -367,8 +367,8 @@ fn parse_schema_min_max_constraints() {
         }
     });
     let doc = parse_schema(&schema);
-    assert_eq!(doc.properties[0].minimum, Some(0.0));
-    assert_eq!(doc.properties[0].maximum, Some(100.0));
+    assert!(matches!(doc.properties[0].minimum, Some(min) if min.abs() < f64::EPSILON));
+    assert!(matches!(doc.properties[0].maximum, Some(max) if (max - 100.0).abs() < f64::EPSILON));
 }
 
 // =========================================================================

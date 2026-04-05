@@ -289,7 +289,7 @@ proptest! {
             },
             complete: false,
         };
-        prop_assert_eq!(phase.gate_pass_rate(), 0.0);
+        prop_assert!(phase.gate_pass_rate().abs() < f64::EPSILON);
         prop_assert!(!phase.gates_pass());
     }
 }
@@ -555,14 +555,14 @@ fn standard_phases_are_ordered() {
 fn standard_docs_cover_all_topics() {
     let index = standard_documentation_index();
     assert!(index.all_topics_covered());
-    assert_eq!(index.coverage_rate(), 1.0);
+    assert!((index.coverage_rate() - 1.0).abs() < 1e-10);
 }
 
 #[test]
 fn standard_plan_is_ready() {
     let plan = DecommissionPlan::standard();
     assert_eq!(plan.active_dependency_count(), 0);
-    assert_eq!(plan.migration_rate(), 1.0);
+    assert!((plan.migration_rate() - 1.0).abs() < 1e-10);
     assert!(plan.documentation.all_topics_covered());
     assert!(plan.is_ready());
 }

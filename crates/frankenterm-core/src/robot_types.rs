@@ -1857,6 +1857,312 @@ pub struct QuickStartErrorCode {
 }
 
 // ============================================================================
+// Diagnostics (health / leak / backpressure)
+// ============================================================================
+
+/// Response data for `ft robot health`.
+///
+/// Aggregates all live health, leak-risk, and backpressure signals into a single
+/// machine-readable snapshot that operators and agents can use for day-2
+/// diagnostics without attaching a profiler or parsing raw logs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthDiagnosticsData {
+    /// Overall health level: "green", "yellow", "red", "black".
+    pub health_level: String,
+    /// Human-readable one-line summary of the current state.
+    pub summary: String,
+    /// Timestamp when this snapshot was taken (epoch ms).
+    pub snapshot_at: u64,
+
+    // -- Pane / runtime state --
+    /// Number of panes currently being observed.
+    pub observed_panes: usize,
+    /// Current capture queue depth.
+    pub capture_queue_depth: usize,
+    /// Current write queue depth.
+    pub write_queue_depth: usize,
+    /// Average ingest lag in milliseconds.
+    pub ingest_lag_avg_ms: f64,
+    /// Maximum ingest lag in milliseconds.
+    pub ingest_lag_max_ms: u64,
+    /// Whether the database is writable.
+    pub db_writable: bool,
+
+    // -- Backpressure --
+    /// Current backpressure tier: "Green", "Yellow", "Red", "Black".
+    #[serde(default)]
+    pub backpressure_tier: Option<String>,
+    /// Fleet scrollback pressure tier: "Normal", "Elevated", "Critical", "Emergency".
+    #[serde(default)]
+    pub fleet_pressure_tier: Option<String>,
+
+    // -- Crash / restart resilience --
+    /// Total watcher restarts since process start.
+    pub restart_count: u32,
+    /// Number of consecutive crashes without a stable run.
+    pub consecutive_crashes: u32,
+    /// Whether the watcher is currently in a detected crash loop.
+    pub in_crash_loop: bool,
+    /// Current backoff delay in milliseconds (0 if healthy).
+    pub current_backoff_ms: u64,
+
+    // -- Leak-risk inventory --
+    /// Live leak-risk inventory snapshot.
+    pub leak_risk: HealthLeakRiskData,
+
+    // -- Warnings --
+    /// Active warnings from the health subsystem.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+
+    // -- Guidance --
+    /// Machine-readable action hints for the current state.
+    #[serde(default)]
+    pub guidance: Vec<HealthGuidance>,
+}
+
+/// Leak-risk inventory projected for the health diagnostics surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthLeakRiskData {
+    /// Total panes tracked in the runtime registry.
+    pub tracked_pane_entries: usize,
+    /// Live pane arena reservations.
+    pub pane_arena_count: usize,
+    /// Sum of currently tracked pane-arena bytes.
+    pub pane_arena_tracked_bytes: u64,
+    /// Peak pane-arena bytes observed.
+    pub pane_arena_peak_bytes: u64,
+    /// Storage lock contention events.
+    pub storage_lock_contention_events: u64,
+    /// Maximum storage lock wait observed (ms).
+    pub storage_lock_wait_max_ms: f64,
+    /// Maximum storage lock hold observed (ms).
+    pub storage_lock_hold_max_ms: f64,
+    /// Whether the watchdog reports any unhealthy components.
+    pub watchdog_unhealthy: bool,
+    /// Names of unhealthy watchdog components, if any.
+    #[serde(default)]
+    pub unhealthy_components: Vec<String>,
+}
+
+/// Actionable guidance entry for health diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthGuidance {
+    /// Severity: "info", "warning", "critical".
+    pub severity: String,
+    /// Machine-readable guidance code.
+    pub code: String,
+    /// Human-readable recommendation.
+    pub message: String,
+}
+
+impl HealthDiagnosticsData {
+    /// Build a diagnostics snapshot from the global health state.
+    ///
+    /// Returns `None` if no health snapshot is available (e.g. daemon not running).
+    #[must_use]
+    pub fn from_health_snapshot(snap: &crate::crash::HealthSnapshot) -> Self {
+        let leak_risk = HealthLeakRiskData {
+            tracked_pane_entries: snap.leak_risk_inventory.tracked_pane_entries,
+            pane_arena_count: snap.leak_risk_inventory.pane_arena_count,
+            pane_arena_tracked_bytes: snap.leak_risk_inventory.pane_arena_tracked_bytes,
+            pane_arena_peak_bytes: snap.leak_risk_inventory.pane_arena_peak_tracked_bytes,
+            storage_lock_contention_events: snap
+                .leak_risk_inventory
+                .storage_lock_contention_events,
+            storage_lock_wait_max_ms: snap.leak_risk_inventory.storage_lock_wait_max_ms,
+            storage_lock_hold_max_ms: snap.leak_risk_inventory.storage_lock_hold_max_ms,
+            watchdog_unhealthy: !snap.leak_risk_inventory.watchdog.unhealthy_components.is_empty(),
+            unhealthy_components: snap
+                .leak_risk_inventory
+                .watchdog
+                .unhealthy_components
+                .iter()
+                .map(|c| format!("{:?}", c.component))
+                .collect(),
+        };
+
+        let health_level = Self::compute_health_level(snap);
+        let summary = Self::compute_summary(snap, &health_level);
+        let guidance = Self::compute_guidance(snap, &leak_risk);
+
+        Self {
+            health_level,
+            summary,
+            snapshot_at: snap.timestamp,
+            observed_panes: snap.observed_panes,
+            capture_queue_depth: snap.capture_queue_depth,
+            write_queue_depth: snap.write_queue_depth,
+            ingest_lag_avg_ms: snap.ingest_lag_avg_ms,
+            ingest_lag_max_ms: snap.ingest_lag_max_ms,
+            db_writable: snap.db_writable,
+            backpressure_tier: snap.backpressure_tier.clone(),
+            fleet_pressure_tier: snap.fleet_pressure_tier.clone(),
+            restart_count: snap.restart_count,
+            consecutive_crashes: snap.consecutive_crashes,
+            in_crash_loop: snap.in_crash_loop,
+            current_backoff_ms: snap.current_backoff_ms,
+            leak_risk,
+            warnings: snap.warnings.clone(),
+            guidance,
+        }
+    }
+
+    fn compute_health_level(snap: &crate::crash::HealthSnapshot) -> String {
+        // Black: crash loop or DB not writable
+        if snap.in_crash_loop || !snap.db_writable {
+            return "black".to_string();
+        }
+        // Red: backpressure Red/Black, fleet Critical/Emergency, or consecutive crashes >= 3
+        if matches!(snap.backpressure_tier.as_deref(), Some("Red" | "Black"))
+            || matches!(
+                snap.fleet_pressure_tier.as_deref(),
+                Some("Critical" | "Emergency")
+            )
+            || snap.consecutive_crashes >= 3
+        {
+            return "red".to_string();
+        }
+        // Yellow: backpressure Yellow, fleet Elevated, any warnings, or high ingest lag
+        if matches!(snap.backpressure_tier.as_deref(), Some("Yellow"))
+            || matches!(snap.fleet_pressure_tier.as_deref(), Some("Elevated"))
+            || !snap.warnings.is_empty()
+            || snap.ingest_lag_max_ms > 1000
+        {
+            return "yellow".to_string();
+        }
+        "green".to_string()
+    }
+
+    fn compute_summary(snap: &crate::crash::HealthSnapshot, level: &str) -> String {
+        match level {
+            "black" => {
+                if snap.in_crash_loop {
+                    format!(
+                        "Crash loop detected ({} consecutive crashes, {}ms backoff)",
+                        snap.consecutive_crashes, snap.current_backoff_ms
+                    )
+                } else {
+                    "Database is not writable — capture pipeline stalled".to_string()
+                }
+            }
+            "red" => {
+                let mut parts = Vec::new();
+                if let Some(ref tier) = snap.backpressure_tier {
+                    if tier == "Red" || tier == "Black" {
+                        parts.push(format!("backpressure {tier}"));
+                    }
+                }
+                if let Some(ref tier) = snap.fleet_pressure_tier {
+                    if tier == "Critical" || tier == "Emergency" {
+                        parts.push(format!("fleet pressure {tier}"));
+                    }
+                }
+                if snap.consecutive_crashes >= 3 {
+                    parts.push(format!("{} consecutive crashes", snap.consecutive_crashes));
+                }
+                format!("Degraded: {}", parts.join(", "))
+            }
+            "yellow" => {
+                format!(
+                    "Elevated: {} panes observed, {} warnings",
+                    snap.observed_panes,
+                    snap.warnings.len()
+                )
+            }
+            _ => {
+                format!(
+                    "Healthy: {} panes observed, ingest lag {:.1}ms avg",
+                    snap.observed_panes, snap.ingest_lag_avg_ms
+                )
+            }
+        }
+    }
+
+    fn compute_guidance(
+        snap: &crate::crash::HealthSnapshot,
+        leak: &HealthLeakRiskData,
+    ) -> Vec<HealthGuidance> {
+        let mut g = Vec::new();
+
+        if snap.in_crash_loop {
+            g.push(HealthGuidance {
+                severity: "critical".to_string(),
+                code: "crash_loop".to_string(),
+                message: "Watcher is in a crash loop. Check logs and consider `ft doctor` for root cause.".to_string(),
+            });
+        }
+
+        if !snap.db_writable {
+            g.push(HealthGuidance {
+                severity: "critical".to_string(),
+                code: "db_not_writable".to_string(),
+                message: "Database is not writable. Check disk space and file permissions.".to_string(),
+            });
+        }
+
+        if matches!(snap.backpressure_tier.as_deref(), Some("Red" | "Black")) {
+            g.push(HealthGuidance {
+                severity: "critical".to_string(),
+                code: "backpressure_high".to_string(),
+                message: "Queue backpressure is critically high. Consider reducing active panes or increasing poll interval.".to_string(),
+            });
+        }
+
+        if matches!(snap.fleet_pressure_tier.as_deref(), Some("Critical" | "Emergency")) {
+            g.push(HealthGuidance {
+                severity: "critical".to_string(),
+                code: "fleet_pressure_high".to_string(),
+                message: "Fleet memory pressure is critically high. Consider evicting warm scrollback or reducing pane count.".to_string(),
+            });
+        }
+
+        if leak.storage_lock_contention_events > 100 {
+            g.push(HealthGuidance {
+                severity: "warning".to_string(),
+                code: "lock_contention".to_string(),
+                message: format!(
+                    "Storage lock contention detected ({} events, max wait {:.1}ms). Investigate concurrent access patterns.",
+                    leak.storage_lock_contention_events, leak.storage_lock_wait_max_ms
+                ),
+            });
+        }
+
+        if leak.watchdog_unhealthy {
+            g.push(HealthGuidance {
+                severity: "warning".to_string(),
+                code: "watchdog_unhealthy".to_string(),
+                message: format!(
+                    "Watchdog reports unhealthy components: {}",
+                    leak.unhealthy_components.join(", ")
+                ),
+            });
+        }
+
+        if snap.ingest_lag_max_ms > 5000 {
+            g.push(HealthGuidance {
+                severity: "warning".to_string(),
+                code: "ingest_lag_high".to_string(),
+                message: format!(
+                    "Maximum ingest lag is {}ms. Delta extraction may be falling behind.",
+                    snap.ingest_lag_max_ms
+                ),
+            });
+        }
+
+        if g.is_empty() {
+            g.push(HealthGuidance {
+                severity: "info".to_string(),
+                code: "nominal".to_string(),
+                message: "All systems nominal. No action required.".to_string(),
+            });
+        }
+
+        g
+    }
+}
+
+// ============================================================================
 // Convenience parsing
 // ============================================================================
 
@@ -5007,5 +5313,270 @@ mod tests {
         let back: RobotResponse<WorkflowStatusDetailData> = serde_json::from_str(&json).unwrap();
         assert!(back.ok);
         assert_eq!(back.data.unwrap().status, "completed");
+    }
+
+    // -- HealthDiagnosticsData -----------------------------------------------
+
+    fn make_test_health_snapshot() -> crate::crash::HealthSnapshot {
+        crate::crash::HealthSnapshot {
+            timestamp: 1700000000000,
+            observed_panes: 42,
+            capture_queue_depth: 3,
+            write_queue_depth: 1,
+            last_seq_by_pane: vec![(0, 100), (1, 200)],
+            warnings: vec![],
+            ingest_lag_avg_ms: 12.5,
+            ingest_lag_max_ms: 50,
+            db_writable: true,
+            db_last_write_at: Some(1700000000000),
+            pane_priority_overrides: vec![],
+            scheduler: None,
+            backpressure_tier: Some("Green".to_string()),
+            last_activity_by_pane: vec![],
+            restart_count: 0,
+            last_crash_at: None,
+            consecutive_crashes: 0,
+            current_backoff_ms: 0,
+            in_crash_loop: false,
+            fleet_pressure_tier: Some("Normal".to_string()),
+            leak_risk_inventory: Default::default(),
+        }
+    }
+
+    #[test]
+    fn health_diagnostics_green_state() {
+        let snap = make_test_health_snapshot();
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "green");
+        assert!(data.summary.contains("Healthy"));
+        assert_eq!(data.observed_panes, 42);
+        assert_eq!(data.capture_queue_depth, 3);
+        assert!(data.db_writable);
+        assert!(!data.in_crash_loop);
+        assert_eq!(data.guidance.len(), 1);
+        assert_eq!(data.guidance[0].code, "nominal");
+    }
+
+    #[test]
+    fn health_diagnostics_crash_loop_is_black() {
+        let mut snap = make_test_health_snapshot();
+        snap.in_crash_loop = true;
+        snap.consecutive_crashes = 5;
+        snap.current_backoff_ms = 30000;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "black");
+        assert!(data.summary.contains("Crash loop"));
+        let crash_guide = data.guidance.iter().find(|g| g.code == "crash_loop");
+        assert!(crash_guide.is_some());
+        assert_eq!(crash_guide.unwrap().severity, "critical");
+    }
+
+    #[test]
+    fn health_diagnostics_db_not_writable_is_black() {
+        let mut snap = make_test_health_snapshot();
+        snap.db_writable = false;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "black");
+        assert!(data.summary.contains("Database is not writable"));
+        let db_guide = data.guidance.iter().find(|g| g.code == "db_not_writable");
+        assert!(db_guide.is_some());
+    }
+
+    #[test]
+    fn health_diagnostics_backpressure_red_is_red() {
+        let mut snap = make_test_health_snapshot();
+        snap.backpressure_tier = Some("Red".to_string());
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "red");
+        assert!(data.summary.contains("backpressure Red"));
+        let bp_guide = data
+            .guidance
+            .iter()
+            .find(|g| g.code == "backpressure_high");
+        assert!(bp_guide.is_some());
+    }
+
+    #[test]
+    fn health_diagnostics_backpressure_black_is_red() {
+        let mut snap = make_test_health_snapshot();
+        snap.backpressure_tier = Some("Black".to_string());
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "red");
+    }
+
+    #[test]
+    fn health_diagnostics_fleet_critical_is_red() {
+        let mut snap = make_test_health_snapshot();
+        snap.fleet_pressure_tier = Some("Critical".to_string());
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "red");
+        assert!(data.summary.contains("fleet pressure Critical"));
+    }
+
+    #[test]
+    fn health_diagnostics_fleet_emergency_is_red() {
+        let mut snap = make_test_health_snapshot();
+        snap.fleet_pressure_tier = Some("Emergency".to_string());
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "red");
+    }
+
+    #[test]
+    fn health_diagnostics_consecutive_crashes_is_red() {
+        let mut snap = make_test_health_snapshot();
+        snap.consecutive_crashes = 3;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "red");
+        assert!(data.summary.contains("3 consecutive crashes"));
+    }
+
+    #[test]
+    fn health_diagnostics_warnings_is_yellow() {
+        let mut snap = make_test_health_snapshot();
+        snap.warnings = vec!["something weird".to_string()];
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "yellow");
+        assert!(data.summary.contains("1 warnings"));
+    }
+
+    #[test]
+    fn health_diagnostics_backpressure_yellow_is_yellow() {
+        let mut snap = make_test_health_snapshot();
+        snap.backpressure_tier = Some("Yellow".to_string());
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "yellow");
+    }
+
+    #[test]
+    fn health_diagnostics_fleet_elevated_is_yellow() {
+        let mut snap = make_test_health_snapshot();
+        snap.fleet_pressure_tier = Some("Elevated".to_string());
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "yellow");
+    }
+
+    #[test]
+    fn health_diagnostics_high_ingest_lag_is_yellow() {
+        let mut snap = make_test_health_snapshot();
+        snap.ingest_lag_max_ms = 1500;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "yellow");
+    }
+
+    #[test]
+    fn health_diagnostics_very_high_ingest_lag_guidance() {
+        let mut snap = make_test_health_snapshot();
+        snap.ingest_lag_max_ms = 6000;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        let lag_guide = data.guidance.iter().find(|g| g.code == "ingest_lag_high");
+        assert!(lag_guide.is_some());
+        assert!(lag_guide.unwrap().message.contains("6000ms"));
+    }
+
+    #[test]
+    fn health_diagnostics_lock_contention_guidance() {
+        let mut snap = make_test_health_snapshot();
+        snap.leak_risk_inventory.storage_lock_contention_events = 200;
+        snap.leak_risk_inventory.storage_lock_wait_max_ms = 50.0;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        let lock_guide = data.guidance.iter().find(|g| g.code == "lock_contention");
+        assert!(lock_guide.is_some());
+        assert!(lock_guide.unwrap().message.contains("200 events"));
+    }
+
+    #[test]
+    fn health_diagnostics_serde_roundtrip() {
+        let snap = make_test_health_snapshot();
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        let json = serde_json::to_string(&data).unwrap();
+        let back: HealthDiagnosticsData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.health_level, data.health_level);
+        assert_eq!(back.observed_panes, data.observed_panes);
+        assert_eq!(back.leak_risk.tracked_pane_entries, data.leak_risk.tracked_pane_entries);
+        assert_eq!(back.guidance.len(), data.guidance.len());
+    }
+
+    #[test]
+    fn health_diagnostics_envelope_roundtrip() {
+        let snap = make_test_health_snapshot();
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        let resp = RobotResponse::success(data, 5);
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: RobotResponse<HealthDiagnosticsData> = serde_json::from_str(&json).unwrap();
+        assert!(back.ok);
+        let inner = back.data.unwrap();
+        assert_eq!(inner.health_level, "green");
+        assert_eq!(inner.observed_panes, 42);
+    }
+
+    #[test]
+    fn health_diagnostics_leak_risk_fields() {
+        let mut snap = make_test_health_snapshot();
+        snap.leak_risk_inventory.tracked_pane_entries = 10;
+        snap.leak_risk_inventory.pane_arena_count = 8;
+        snap.leak_risk_inventory.pane_arena_tracked_bytes = 1024 * 1024;
+        snap.leak_risk_inventory.pane_arena_peak_tracked_bytes = 2 * 1024 * 1024;
+        snap.leak_risk_inventory.storage_lock_contention_events = 5;
+        snap.leak_risk_inventory.storage_lock_wait_max_ms = 10.5;
+        snap.leak_risk_inventory.storage_lock_hold_max_ms = 3.2;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.leak_risk.tracked_pane_entries, 10);
+        assert_eq!(data.leak_risk.pane_arena_count, 8);
+        assert_eq!(data.leak_risk.pane_arena_tracked_bytes, 1024 * 1024);
+        assert_eq!(data.leak_risk.pane_arena_peak_bytes, 2 * 1024 * 1024);
+        assert_eq!(data.leak_risk.storage_lock_contention_events, 5);
+        assert!(!data.leak_risk.watchdog_unhealthy);
+        assert!(data.leak_risk.unhealthy_components.is_empty());
+    }
+
+    #[test]
+    fn health_diagnostics_multiple_red_signals() {
+        let mut snap = make_test_health_snapshot();
+        snap.backpressure_tier = Some("Red".to_string());
+        snap.fleet_pressure_tier = Some("Emergency".to_string());
+        snap.consecutive_crashes = 4;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.health_level, "red");
+        // Summary should contain multiple degradation signals
+        assert!(data.summary.contains("backpressure Red"));
+        assert!(data.summary.contains("fleet pressure Emergency"));
+        assert!(data.summary.contains("4 consecutive crashes"));
+        // Should have guidance for both backpressure and fleet pressure
+        assert!(data
+            .guidance
+            .iter()
+            .any(|g| g.code == "backpressure_high"));
+        assert!(data
+            .guidance
+            .iter()
+            .any(|g| g.code == "fleet_pressure_high"));
+    }
+
+    #[test]
+    fn health_diagnostics_black_takes_priority_over_red() {
+        let mut snap = make_test_health_snapshot();
+        snap.in_crash_loop = true;
+        snap.backpressure_tier = Some("Red".to_string());
+        snap.consecutive_crashes = 5;
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        // Black trumps red
+        assert_eq!(data.health_level, "black");
+    }
+
+    #[test]
+    fn health_diagnostics_timestamp_preserved() {
+        let snap = make_test_health_snapshot();
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.snapshot_at, 1700000000000);
+    }
+
+    #[test]
+    fn health_diagnostics_backpressure_and_fleet_preserved() {
+        let mut snap = make_test_health_snapshot();
+        snap.backpressure_tier = Some("Yellow".to_string());
+        snap.fleet_pressure_tier = Some("Elevated".to_string());
+        let data = HealthDiagnosticsData::from_health_snapshot(&snap);
+        assert_eq!(data.backpressure_tier.as_deref(), Some("Yellow"));
+        assert_eq!(data.fleet_pressure_tier.as_deref(), Some("Elevated"));
     }
 }

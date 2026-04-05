@@ -542,7 +542,7 @@ fn metric_with_pane_id_and_workflow() {
         assert_eq!(r.workflow_id.as_deref(), Some("wf-456"));
         assert_eq!(r.account_id.as_deref(), Some("acc-123"));
         assert_eq!(r.metadata.as_deref(), Some(r#"{"model":"opus"}"#));
-        assert_eq!(r.amount, Some(0.15));
+        assert!(matches!(r.amount, Some(amount) if (amount - 0.15).abs() < f64::EPSILON));
         assert!(r.created_at > 0, "created_at should be auto-set");
 
         storage.shutdown().await.expect("shutdown");

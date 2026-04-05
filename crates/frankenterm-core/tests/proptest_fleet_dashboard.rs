@@ -112,8 +112,7 @@ proptest! {
     fn serde_roundtrip_alert_context(_dummy in 0..1u32) {
         let ctx = AlertContext {
             fleet_health: HealthStatus::Degraded,
-            layer_health: [("policy".to_string(), HealthStatus::Healthy)]
-                .into_iter()
+            layer_health: std::iter::once(("policy".to_string(), HealthStatus::Healthy))
                 .collect(),
             redaction_ceiling: RedactionLabel::Internal,
             envelope_count: 5,
@@ -132,7 +131,7 @@ proptest! {
 proptest! {
     #[test]
     fn severity_total_order(a in arb_fleet_alert_severity(), b in arb_fleet_alert_severity()) {
-        prop_assert!(a <= b || a > b);
+        prop_assert!(a <= b || b <= a);
     }
 
     #[test]

@@ -148,7 +148,7 @@ proptest! {
     fn risk_level_total_order(a in arb_risk_level(), b in arb_risk_level()) {
         // PartialOrd + Ord means we always get Some for cmp
         let _ = a.cmp(&b);
-        prop_assert!(a <= b || a > b);
+        prop_assert!(a <= b || b <= a);
     }
 
     #[test]

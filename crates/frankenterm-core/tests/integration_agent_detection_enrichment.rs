@@ -317,8 +317,7 @@ fn agent_removal_shrinks_autoconfig_plan() {
 
     // Both agents running
     let inv = correlator.inventory();
-    let slugs1: Vec<String> = inv.running.values().map(|r| r.slug.clone()).collect();
-    assert_eq!(slugs1.len(), 2);
+    assert_eq!(inv.running.values().count(), 2);
 
     // Remove one agent
     correlator.remove_pane(1);
@@ -486,7 +485,7 @@ fn full_inventory_with_installed_and_running_serde() {
     assert_eq!(back.running.len(), 2);
 
     // Cross-reference: running slug matches installed slug
-    for (_, running_entry) in &back.running {
+    for running_entry in back.running.values() {
         let installed_entry = back.installed.iter().find(|i| i.slug == running_entry.slug);
         assert!(
             installed_entry.is_some(),

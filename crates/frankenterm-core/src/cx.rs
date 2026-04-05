@@ -964,7 +964,7 @@ mod tests {
 
         let result = runtime.block_on(async {
             spawn_with_timeout(&handle, &cx, Duration::from_secs(5), |_cx| async {
-                std::future::pending::<()>().await
+                std::future::pending::<()>().await;
             })
             .await
         });

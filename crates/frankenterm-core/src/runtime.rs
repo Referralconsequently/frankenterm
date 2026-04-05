@@ -33,7 +33,10 @@ use crate::config::{
     CaptureBudgetConfig, HotReloadableConfig, PaneFilterConfig, PanePriorityConfig, PatternsConfig,
     SnapshotConfig, SnapshotSchedulingMode,
 };
-use crate::crash::{HealthSnapshot, ShutdownSummary};
+use crate::crash::{
+    HealthSnapshot, LeakRiskInventorySnapshot, LeakRiskWatchdogComponentSnapshot,
+    LeakRiskWatchdogSnapshot, ShutdownSummary,
+};
 use crate::error::Result;
 use crate::events::{Event, EventBus, UserVarPayload, event_identity_key};
 use crate::fleet_memory_controller::{FleetMemoryConfig, PaneScrollbackInfo};
@@ -1692,11 +1695,19 @@ impl ObservationRuntime {
                 }
 
                 if now.duration_since(last_health_snapshot) >= health_interval {
-                    let health_panes = {
+                    let (health_panes, leak_risk_inventory) = {
                         let reg = registry.read().await;
                         let cursors = cursors.read().await;
                         let mut tracker = pane_activity_tracker.write().await;
-                        build_health_pane_snapshot(&reg, &cursors, &mut tracker, epoch_ms_u64())
+                        let health_panes = build_health_pane_snapshot(
+                            &reg,
+                            &cursors,
+                            &mut tracker,
+                            epoch_ms_u64(),
+                        );
+                        let leak_risk_inventory =
+                            build_leak_risk_inventory(&reg, &metrics, &heartbeats);
+                        (health_panes, leak_risk_inventory)
                     };
                     let observed_panes = health_panes.observed_panes;
                     let last_activity_by_pane = health_panes.last_activity_by_pane;
@@ -1957,6 +1968,7 @@ impl ObservationRuntime {
                         current_backoff_ms: 0,
                         in_crash_loop: false,
                         fleet_pressure_tier: Some(format!("{:?}", fleet_eval.compound_tier)),
+                        leak_risk_inventory,
                     };
 
                     HealthSnapshot::update_global(snapshot);
@@ -3404,6 +3416,72 @@ fn build_health_pane_snapshot(
     }
 }
 
+fn build_leak_risk_inventory(
+    registry: &PaneRegistry,
+    metrics: &RuntimeMetrics,
+    heartbeats: &HeartbeatRegistry,
+) -> LeakRiskInventorySnapshot {
+    let mut window_ids = HashSet::new();
+    let mut tab_ids = HashSet::new();
+    let mut workspaces = HashSet::new();
+    let mut observed_pane_count = 0usize;
+
+    for (_, entry) in registry.entries() {
+        window_ids.insert(entry.info.window_id);
+        tab_ids.insert(entry.info.tab_id);
+        if let Some(workspace) = entry.info.workspace.as_deref()
+            && !workspace.trim().is_empty()
+        {
+            workspaces.insert(workspace.to_string());
+        }
+        if entry.should_observe() {
+            observed_pane_count += 1;
+        }
+    }
+
+    let pane_arenas = registry.pane_arena_stats_snapshot();
+    let pane_arena_tracked_bytes = pane_arenas.iter().fold(0u64, |total, snapshot| {
+        total.saturating_add(u64::try_from(snapshot.stats.tracked_bytes).unwrap_or(u64::MAX))
+    });
+    let pane_arena_peak_tracked_bytes = pane_arenas.iter().fold(0u64, |total, snapshot| {
+        total.saturating_add(u64::try_from(snapshot.stats.peak_tracked_bytes).unwrap_or(u64::MAX))
+    });
+
+    let lock_memory = metrics.lock_memory_snapshot();
+    let watchdog_report = heartbeats.check_health(&crate::watchdog::WatchdogConfig::default());
+    let unhealthy_components = watchdog_report
+        .unhealthy_components()
+        .into_iter()
+        .map(|component| LeakRiskWatchdogComponentSnapshot {
+            component: component.component,
+            status: component.status,
+            age_ms: component.age_ms,
+            threshold_ms: component.threshold_ms,
+        })
+        .collect();
+
+    LeakRiskInventorySnapshot {
+        tracked_pane_entries: registry.len(),
+        observed_pane_count,
+        window_count: window_ids.len(),
+        tab_count: tab_ids.len(),
+        workspace_count: workspaces.len(),
+        pane_arena_count: pane_arenas.len(),
+        pane_arena_tracked_bytes,
+        pane_arena_peak_tracked_bytes,
+        cursor_snapshot_bytes: lock_memory.cursor_snapshot_bytes_last,
+        cursor_snapshot_peak_bytes: lock_memory.cursor_snapshot_bytes_max,
+        storage_lock_contention_events: lock_memory.storage_lock_contention_events,
+        storage_lock_wait_max_ms: lock_memory.max_storage_lock_wait_ms,
+        storage_lock_hold_max_ms: lock_memory.max_storage_lock_hold_ms,
+        watchdog: LeakRiskWatchdogSnapshot {
+            overall: Some(watchdog_report.overall),
+            unhealthy_components,
+            telemetry: Some(heartbeats.telemetry().snapshot()),
+        },
+    }
+}
+
 fn build_fleet_pressure_signals(
     backpressure_manager: &BackpressureManager,
     queue_depths: &QueueDepths,
@@ -3778,11 +3856,15 @@ impl RuntimeHandle {
     ///
     /// Call this periodically (e.g., every 30s) to keep crash reports useful.
     pub async fn update_health_snapshot(&self) {
-        let health_panes = {
+        let (health_panes, leak_risk_inventory) = {
             let reg = self.registry.read().await;
             let cursors = self.cursors.read().await;
             let mut tracker = self.pane_activity_tracker.write().await;
-            build_health_pane_snapshot(&reg, &cursors, &mut tracker, epoch_ms_u64())
+            let health_panes =
+                build_health_pane_snapshot(&reg, &cursors, &mut tracker, epoch_ms_u64());
+            let leak_risk_inventory =
+                build_leak_risk_inventory(&reg, &self.metrics, &self.heartbeats);
+            (health_panes, leak_risk_inventory)
         };
         let observed_panes = health_panes.observed_panes;
         let last_activity_by_pane = health_panes.last_activity_by_pane;
@@ -3908,6 +3990,7 @@ impl RuntimeHandle {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory,
         };
 
         HealthSnapshot::update_global(snapshot);
@@ -4764,6 +4847,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: LeakRiskInventorySnapshot::default(),
         };
 
         // Verify metrics are correctly reflected in snapshot
@@ -4771,6 +4855,63 @@ mod tests {
         assert_eq!(snapshot.ingest_lag_max_ms, 50);
         assert!(snapshot.db_writable);
         assert!(snapshot.db_last_write_at.is_some());
+    }
+
+    #[test]
+    fn leak_risk_inventory_counts_registry_and_watchdog_state() {
+        let mut registry = PaneRegistry::new();
+        let mut pane1 = make_pane(1, "bash");
+        pane1.window_id = 10;
+        pane1.tab_id = 20;
+        pane1.workspace = Some("alpha".to_string());
+
+        let mut pane2 = make_pane(2, "vim");
+        pane2.window_id = 10;
+        pane2.tab_id = 21;
+        pane2.workspace = Some("beta".to_string());
+
+        registry.discovery_tick(vec![pane1, pane2]);
+
+        let metrics = RuntimeMetrics::default();
+        metrics.record_storage_lock_wait(Duration::from_millis(2));
+        metrics.record_storage_lock_hold(Duration::from_millis(3));
+        metrics.record_cursor_snapshot_memory(4096);
+
+        let heartbeats = HeartbeatRegistry::new();
+        heartbeats.record_discovery();
+        heartbeats.record_capture();
+        heartbeats.record_persistence();
+        heartbeats.record_maintenance();
+
+        let inventory = build_leak_risk_inventory(&registry, &metrics, &heartbeats);
+
+        assert_eq!(inventory.tracked_pane_entries, 2);
+        assert_eq!(inventory.observed_pane_count, 2);
+        assert_eq!(inventory.window_count, 1);
+        assert_eq!(inventory.tab_count, 2);
+        assert_eq!(inventory.workspace_count, 2);
+        assert_eq!(inventory.pane_arena_count, 2);
+        assert!(inventory.pane_arena_tracked_bytes > 0);
+        assert!(inventory.pane_arena_peak_tracked_bytes >= inventory.pane_arena_tracked_bytes);
+        assert_eq!(inventory.cursor_snapshot_bytes, 4096);
+        assert_eq!(inventory.cursor_snapshot_peak_bytes, 4096);
+        assert_eq!(inventory.storage_lock_contention_events, 1);
+        assert!(inventory.storage_lock_wait_max_ms >= 2.0);
+        assert!(inventory.storage_lock_hold_max_ms >= 3.0);
+        assert_eq!(
+            inventory.watchdog.overall,
+            Some(crate::watchdog::HealthStatus::Healthy)
+        );
+        assert!(inventory.watchdog.unhealthy_components.is_empty());
+
+        let telemetry = inventory
+            .watchdog
+            .telemetry
+            .expect("watchdog telemetry should be present");
+        assert_eq!(telemetry.discovery_heartbeats, 1);
+        assert_eq!(telemetry.capture_heartbeats, 1);
+        assert_eq!(telemetry.persistence_heartbeats, 1);
+        assert_eq!(telemetry.maintenance_heartbeats, 1);
     }
 
     // =========================================================================
@@ -5358,6 +5499,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: LeakRiskInventorySnapshot::default(),
         };
 
         assert_eq!(snapshot.capture_queue_depth, 500);
@@ -5404,6 +5546,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: LeakRiskInventorySnapshot::default(),
         };
 
         let sched = snapshot.scheduler.as_ref().unwrap();
@@ -5450,6 +5593,7 @@ mod tests {
             current_backoff_ms: 0,
             in_crash_loop: false,
             fleet_pressure_tier: None,
+            leak_risk_inventory: LeakRiskInventorySnapshot::default(),
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();

@@ -185,7 +185,7 @@ proptest! {
 
 #[test]
 fn api_surface_all_has_expected_variants() {
-    assert_eq!(ApiSurface::ALL.len(), 34);
+    assert_eq!(ApiSurface::ALL.len(), 35);
 }
 
 #[test]

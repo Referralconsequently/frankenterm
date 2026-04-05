@@ -632,7 +632,7 @@ proptest! {
         a in arb_health_status(),
         b in arb_health_status(),
     ) {
-        prop_assert!(a <= b || a > b, "ordering should be total");
+        prop_assert!(a <= b || b <= a, "ordering should be total");
     }
 }
 

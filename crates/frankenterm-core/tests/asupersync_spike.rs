@@ -287,8 +287,12 @@ fn spike_select_and_race_semantics() {
         let (tx, mut rx) = mpsc::channel::<&'static str>(1);
         tx.send(&cx, "ready").await.expect("seed ready message");
 
-        let selected =
-            Select::new(rx.recv(&cx), sleep_from_current(Duration::from_millis(1))).await;
+        let selected = Select::new(
+            rx.recv(&cx),
+            Box::pin(sleep_from_current(Duration::from_millis(1))),
+        )
+        .await
+        .expect("select should succeed");
         assert!(
             matches!(selected, Either::Left(Ok("ready"))),
             "ready channel receive should beat a pending timer"
@@ -314,8 +318,12 @@ fn spike_select_and_race_semantics() {
         .state
         .create_task(region, Budget::INFINITE, async move {
             let cx = Cx::for_testing();
-            let selected =
-                Select::new(rx.recv(&cx), sleep_from_current(Duration::from_secs(1))).await;
+            let selected = Select::new(
+                rx.recv(&cx),
+                Box::pin(sleep_from_current(Duration::from_secs(1))),
+            )
+            .await
+            .expect("select should not error");
             let outcome = match selected {
                 Either::Left(Ok(_)) => 0,
                 Either::Left(Err(_)) => 1,

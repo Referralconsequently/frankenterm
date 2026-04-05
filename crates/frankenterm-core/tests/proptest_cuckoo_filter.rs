@@ -439,7 +439,7 @@ proptest! {
     #[test]
     fn empty_load_factor_zero(config in arb_config()) {
         let filter = CuckooFilter::with_config(config);
-        prop_assert_eq!(filter.load_factor(), 0.0);
+        prop_assert!(filter.load_factor().abs() < f64::EPSILON);
     }
 }
 

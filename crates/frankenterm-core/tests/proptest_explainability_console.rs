@@ -165,7 +165,7 @@ proptest! {
 proptest! {
     #[test]
     fn severity_total_order(a in arb_trace_severity(), b in arb_trace_severity()) {
-        prop_assert!(a <= b || a > b);
+        prop_assert!(a <= b || b <= a);
     }
 
     #[test]

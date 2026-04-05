@@ -1045,7 +1045,7 @@ fn compensation_outcome_target_states() {
 fn concurrent_commit_determinism() {
     // Run 10 parallel commit phases on identical contracts — all must produce
     // identical reports.
-    let handles: Vec<_> = (0..10)
+    let results: Vec<_> = (0..10)
         .map(|_| {
             std::thread::spawn(move || {
                 let contract = build_contract(5, MissionTxState::Prepared);
@@ -1060,10 +1060,6 @@ fn concurrent_commit_determinism() {
                 .unwrap()
             })
         })
-        .collect();
-
-    let results: Vec<_> = handles
-        .into_iter()
         .map(|handle| handle.join().expect("commit thread should not panic"))
         .collect();
 
@@ -1103,7 +1099,7 @@ fn concurrent_compensation_determinism() {
     )
     .unwrap();
 
-    let handles: Vec<_> = (0..10)
+    let results: Vec<_> = (0..10)
         .map(|_| {
             let cr = commit_report.clone();
             std::thread::spawn(move || {
@@ -1112,10 +1108,6 @@ fn concurrent_compensation_determinism() {
                 execute_compensation_phase(&comp_contract, &cr, &comp_inputs, 20_000).unwrap()
             })
         })
-        .collect();
-
-    let results: Vec<_> = handles
-        .into_iter()
         .map(|handle| handle.join().expect("compensation thread should not panic"))
         .collect();
 
@@ -1138,16 +1130,12 @@ fn concurrent_idempotency_checks_consistent() {
     let contract = build_contract(5, MissionTxState::Prepared);
     let record = build_execution_record(&contract, MissionTxState::Committed, Some("h1"), None);
 
-    let handles: Vec<_> = (0..20)
+    let results: Vec<_> = (0..20)
         .map(|_| {
             let c = contract.clone();
             let r = record.clone();
             std::thread::spawn(move || validate_tx_idempotency(&c, TxPhase::Commit, Some(&r)))
         })
-        .collect();
-
-    let results: Vec<_> = handles
-        .into_iter()
         .map(|handle| handle.join().expect("idempotency thread should not panic"))
         .collect();
 
@@ -1179,16 +1167,12 @@ fn concurrent_resume_reconstruction_determinism() {
     )
     .unwrap();
 
-    let handles: Vec<_> = (0..10)
+    let results: Vec<_> = (0..10)
         .map(|_| {
             let c = contract.clone();
             let cr = commit_report.clone();
             std::thread::spawn(move || reconstruct_tx_resume_state(&c, Some(&cr), None, 15_000))
         })
-        .collect();
-
-    let results: Vec<_> = handles
-        .into_iter()
         .map(|handle| {
             handle
                 .join()
@@ -1218,15 +1202,11 @@ fn concurrent_tx_key_computation_determinism() {
     // Compute tx idempotency keys from 50 parallel tasks.
     let contract = build_contract(10, MissionTxState::Prepared);
 
-    let handles: Vec<_> = (0..50)
+    let results: Vec<_> = (0..50)
         .map(|_| {
             let c = contract.clone();
             std::thread::spawn(move || TxExecutionRecord::compute_tx_key(&c))
         })
-        .collect();
-
-    let results: Vec<_> = handles
-        .into_iter()
         .map(|handle| handle.join().expect("tx key thread should not panic"))
         .collect();
 
@@ -1240,7 +1220,7 @@ fn concurrent_tx_key_computation_determinism() {
 fn concurrent_mixed_tx_non_interference() {
     // Run commits on 10 different tx contracts in parallel — each should
     // produce results independent of the others.
-    let handles: Vec<_> = (1..=10)
+    let results: Vec<_> = (1..=10)
         .map(|n| {
             std::thread::spawn(move || {
                 let contract = build_contract(n, MissionTxState::Prepared);
@@ -1256,10 +1236,6 @@ fn concurrent_mixed_tx_non_interference() {
                 (n, report)
             })
         })
-        .collect();
-
-    let results: Vec<_> = handles
-        .into_iter()
         .map(|handle| {
             handle
                 .join()

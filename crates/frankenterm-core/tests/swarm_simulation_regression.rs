@@ -968,7 +968,10 @@ fn sim_queue_pressure_accuracy() {
 
     // Empty queue
     let p0 = compute_queue_pressure(&queue);
-    assert_eq!(p0.ready_ratio, 0.0, "empty queue has 0 ready ratio");
+    assert!(
+        p0.ready_ratio.abs() < f64::EPSILON,
+        "empty queue has 0 ready ratio"
+    );
     assert_eq!(p0.pending_items, 0);
 
     // 10 items, none assigned
@@ -1071,9 +1074,8 @@ fn regression_completed_items_never_ready() {
     queue.complete(&s("done"), &s("agent-0"), None).unwrap();
 
     let ready = queue.ready_items();
-    let ready_ids: Vec<&str> = ready.iter().map(|r| r.id.as_str()).collect();
     assert!(
-        !ready_ids.contains(&"done"),
+        !ready.iter().map(|r| r.id.as_str()).any(|id| id == "done"),
         "completed item must never appear in ready_items()"
     );
 

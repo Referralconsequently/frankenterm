@@ -1128,7 +1128,7 @@ mod tests {
                 assert_eq!(failures.len(), 1);
                 assert_eq!(failures[0].0, ResourceId::Pane(2));
             }
-            _ => panic!("expected partial failure"),
+            GroupLockResult::AllAcquired => panic!("expected partial failure"),
         }
         // Pane 1 and 3 should NOT be locked by "a" (rollback)
         assert!(o.is_locked(&ResourceId::Pane(1)).is_none());

@@ -3173,7 +3173,7 @@ proptest! {
     ) {
         let policy = TransportPolicy::with_defaults();
         let cost = policy.estimate_cost(payload, TransportMode::Local);
-        prop_assert_eq!(cost, 0.0);
+        prop_assert!(cost.abs() < f64::EPSILON);
     }
 
     /// Estimate cost for Bypass is non-negative.
@@ -3216,7 +3216,7 @@ proptest! {
         let snap = policy.snapshot();
         prop_assert_eq!(snap.total_decisions, 0);
         prop_assert_eq!(snap.total_bytes_transferred, 0);
-        prop_assert_eq!(snap.ewma_cost_us, 0.0);
+        prop_assert!(snap.ewma_cost_us.abs() < f64::EPSILON);
     }
 
     /// TransportMode serde roundtrip.

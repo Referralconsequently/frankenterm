@@ -118,6 +118,10 @@ pub enum ApiSurface {
     /// replay-regression — regression test suite.
     ReplayRegression,
 
+    // Diagnostics
+    /// health — live health, leak, and backpressure diagnostics.
+    Health,
+
     // Meta
     /// quickstart — machine-readable quick-start guide.
     QuickStart,
@@ -161,6 +165,7 @@ impl ApiSurface {
         Self::ReplayInspect,
         Self::ReplayDiff,
         Self::ReplayRegression,
+        Self::Health,
         Self::QuickStart,
         Self::Why,
         Self::Approve,
@@ -201,6 +206,7 @@ impl ApiSurface {
             Self::ReplayInspect => "replay-inspect",
             Self::ReplayDiff => "replay-diff",
             Self::ReplayRegression => "replay-regression",
+            Self::Health => "health",
             Self::QuickStart => "quickstart",
             Self::Why => "why",
             Self::Approve => "approve",
@@ -259,6 +265,7 @@ impl ApiSurface {
             Self::MissionState | Self::MissionDecisions => "mission",
             Self::TxPlan | Self::TxRun | Self::TxRollback | Self::TxShow => "tx",
             Self::ReplayInspect | Self::ReplayDiff | Self::ReplayRegression => "replay",
+            Self::Health => "diagnostics",
             Self::QuickStart | Self::Why | Self::Approve => "meta",
         }
     }
@@ -1262,7 +1269,7 @@ mod tests {
 
     #[test]
     fn surface_count() {
-        assert_eq!(ApiSurface::ALL.len(), 34);
+        assert_eq!(ApiSurface::ALL.len(), 35);
     }
 
     // ---- ContractCheck ----
@@ -1394,13 +1401,12 @@ mod tests {
         let matrix = standard_contract_matrix();
         for surface in ApiSurface::ALL {
             if surface.is_mutation() {
-                let idem_checks: Vec<_> = matrix
+                let has_idempotency_check = matrix
                     .checks_for_surface(*surface)
                     .into_iter()
-                    .filter(|c| c.category == CheckCategory::Idempotency)
-                    .collect();
+                    .any(|check| check.category == CheckCategory::Idempotency);
                 assert!(
-                    !idem_checks.is_empty(),
+                    has_idempotency_check,
                     "Mutation surface {} has no idempotency check",
                     surface.command_name()
                 );
@@ -1413,13 +1419,12 @@ mod tests {
         let matrix = standard_contract_matrix();
         for surface in ApiSurface::ALL {
             if surface.has_ntm_compat() {
-                let ntm_checks: Vec<_> = matrix
+                let has_ntm_compat_check = matrix
                     .checks_for_surface(*surface)
                     .into_iter()
-                    .filter(|c| c.category == CheckCategory::NtmCompatibility)
-                    .collect();
+                    .any(|check| check.category == CheckCategory::NtmCompatibility);
                 assert!(
-                    !ntm_checks.is_empty(),
+                    has_ntm_compat_check,
                     "NTM-compat surface {} has no compat check",
                     surface.command_name()
                 );

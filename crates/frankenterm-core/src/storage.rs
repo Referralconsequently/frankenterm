@@ -23299,6 +23299,7 @@ mod backpressure_integration_tests {
                 current_backoff_ms: 0,
                 in_crash_loop: false,
                 fleet_pressure_tier: None,
+                leak_risk_inventory: crate::crash::LeakRiskInventorySnapshot::default(),
             };
 
             assert!(!snapshot.warnings.is_empty());

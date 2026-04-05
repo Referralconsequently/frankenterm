@@ -224,7 +224,7 @@ proptest! {
 
     #[test]
     fn report_scenario_passed_iff_all_assertions_pass(scenario in arb_integration_scenario()) {
-        let report = SuiteReport::from_scenarios(&[scenario.clone()]);
+        let report = SuiteReport::from_scenarios(std::slice::from_ref(&scenario));
         let expected_pass = scenario.assertions.iter().all(|a| a.passed);
         prop_assert_eq!(report.results[0].passed, expected_pass);
     }

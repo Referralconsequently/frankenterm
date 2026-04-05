@@ -689,13 +689,13 @@ fn v25_mapping_contract_id_format_consistent() {
     let contracts = collect_contracts();
 
     for contract in &contracts {
-        let parts: Vec<&str> = contract.contract_id.split('-').collect();
         assert_eq!(
-            parts.len(),
+            contract.contract_id.split('-').count(),
             3,
             "contract ID {} must have 3 parts (ABC-XXX-NNN)",
             contract.contract_id
         );
+        let parts: Vec<&str> = contract.contract_id.split('-').collect();
         assert_eq!(parts[0], "ABC", "first part must be 'ABC'");
         assert!(
             parts[1].len() >= 2 && parts[1].len() <= 4,

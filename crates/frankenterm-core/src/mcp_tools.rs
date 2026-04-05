@@ -5714,7 +5714,7 @@ exit 17",
             .collect();
 
         assert!(
-            evidence.get("actor_id").is_none(),
+            !evidence.contains_key("actor_id"),
             "actor_id should be absent when None"
         );
         assert_eq!(evidence.get("event_id").map(String::as_str), Some("456"));

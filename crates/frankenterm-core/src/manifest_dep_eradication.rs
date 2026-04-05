@@ -1029,7 +1029,7 @@ mod tests {
     fn standard_plan_progress_starts_at_zero() {
         let plan = EradicationPlan::standard();
         assert_eq!(plan.completed_steps(), 0);
-        assert_eq!(plan.progress_pct(), 0.0);
+        assert!(plan.progress_pct().abs() < f64::EPSILON);
     }
 
     // -------------------------------------------------------------------------

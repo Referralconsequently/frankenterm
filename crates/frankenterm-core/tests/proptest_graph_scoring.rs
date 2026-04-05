@@ -208,7 +208,7 @@ proptest! {
     fn betweenness_single(_dummy in 0..1u8) {
         let g = AdjGraph::new(1);
         let result = betweenness_centrality(&g);
-        prop_assert_eq!(result.scores[&0], 0.0);
+        prop_assert!(result.scores[&0].abs() < f64::EPSILON);
     }
 
     // 15. Betweenness on cycle: all nodes equal
@@ -237,7 +237,7 @@ proptest! {
     #[test]
     fn betweenness_chain_source_zero(g in arb_chain(8)) {
         let result = betweenness_centrality(&g);
-        prop_assert_eq!(result.scores[&0], 0.0);
+        prop_assert!(result.scores[&0].abs() < f64::EPSILON);
     }
 
     // 18. Betweenness chain: last node is 0 (no paths through terminal node)
@@ -245,7 +245,7 @@ proptest! {
     fn betweenness_chain_terminal_zero(g in arb_chain(8)) {
         let n = g.node_count();
         let result = betweenness_centrality(&g);
-        prop_assert_eq!(result.scores[&(n - 1)], 0.0);
+        prop_assert!(result.scores[&(n - 1)].abs() < f64::EPSILON);
     }
 
     // 19. Betweenness chain: middle nodes have higher scores than endpoints

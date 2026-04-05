@@ -506,8 +506,7 @@ proptest! {
         let json = serde_json::to_string(&val).unwrap();
         let rt: PaneContextStatus = serde_json::from_str(&json).unwrap();
         // f64 comparison via JSON roundtrip
-        let check = val.utilization == rt.utilization
-            || (val.utilization - rt.utilization).abs() < 1e-10;
+        let check = (val.utilization - rt.utilization).abs() < 1e-10;
         prop_assert!(check, "utilization mismatch: {} vs {}", val.utilization, rt.utilization);
     }
 }
@@ -1191,18 +1190,18 @@ fn ntm_api_surface_all_unique() {
 
 #[test]
 fn ntm_api_surface_mutation_classification() {
-    let mutations: Vec<_> = NtmApiSurface::ALL
+    let mutations = NtmApiSurface::ALL
         .iter()
         .filter(|s| s.is_mutation())
-        .collect();
-    let queries: Vec<_> = NtmApiSurface::ALL
+        .count();
+    let queries = NtmApiSurface::ALL
         .iter()
         .filter(|s| !s.is_mutation())
-        .collect();
+        .count();
     // Mutations: save, delete, rollback, rotate, claim, release, complete, assign, scale, rebalance, apply = 11
-    assert_eq!(mutations.len(), 11);
+    assert_eq!(mutations, 11);
     // Queries: list, show, status, history, list, ready, status, agents, list, show, validate = 11
-    assert_eq!(queries.len(), 11);
+    assert_eq!(queries, 11);
 }
 
 #[test]

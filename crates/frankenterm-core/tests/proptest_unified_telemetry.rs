@@ -179,7 +179,7 @@ proptest! {
 proptest! {
     #[test]
     fn redaction_label_total_order(a in arb_redaction_label(), b in arb_redaction_label()) {
-        prop_assert!(a <= b || a > b);
+        prop_assert!(a <= b || b <= a);
     }
 
     #[test]

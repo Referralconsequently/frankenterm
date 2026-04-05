@@ -592,7 +592,7 @@ proptest! {
     /// Tier ordering is total.
     #[test]
     fn tier_ordering_total(a in arb_tier(), b in arb_tier()) {
-        prop_assert!(a <= b || a > b, "tier ordering should be total");
+        prop_assert!(a <= b || b <= a, "tier ordering should be total");
     }
 }
 

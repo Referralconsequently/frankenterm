@@ -1289,7 +1289,7 @@ mod tests {
         let mut manifest = test_manifest("pkg", b"x");
         let (root_hash, token) = make_transparency_token(&manifest, 7);
         manifest.transparency_token = Some(token);
-        let result = check_transparency(&manifest, &[root_hash.clone()], 1000).unwrap();
+        let result = check_transparency(&manifest, std::slice::from_ref(&root_hash), 1000).unwrap();
         assert!(result.verified);
         assert_eq!(result.package_id, "pkg");
         assert_eq!(result.log_index, Some(7));

@@ -168,7 +168,7 @@ fn d03_fanin_multiple_producers() {
                     .create_task(region, Budget::INFINITE, async move {
                         let cx = asupersync::cx::Cx::for_testing();
                         let mut rx = rx;
-                        while let Ok(_) = rx.recv(&cx).await {
+                        while rx.recv(&cx).await.is_ok() {
                             cnt.fetch_add(1, Ordering::SeqCst);
                         }
                     })
@@ -374,7 +374,7 @@ fn d08_dpor_mpsc_delivery_exploration() {
                 .create_task(region, Budget::INFINITE, async move {
                     let cx = asupersync::cx::Cx::for_testing();
                     let mut rx = rx;
-                    while let Ok(_) = rx.recv(&cx).await {
+                    while rx.recv(&cx).await.is_ok() {
                         cnt.fetch_add(1, Ordering::SeqCst);
                     }
                 })
@@ -466,7 +466,7 @@ fn d10_chaos_light_mpsc_delivery() {
                 .create_task(region, Budget::INFINITE, async move {
                     let cx = asupersync::cx::Cx::for_testing();
                     let mut rx = rx;
-                    while let Ok(_) = rx.recv(&cx).await {
+                    while rx.recv(&cx).await.is_ok() {
                         cnt.fetch_add(1, Ordering::SeqCst);
                     }
                 })

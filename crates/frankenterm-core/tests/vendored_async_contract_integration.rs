@@ -51,8 +51,11 @@ fn contract_ids_follow_naming_convention() {
             "Contract ID '{}' must start with 'ABC-'",
             contract.contract_id
         );
-        let parts: Vec<&str> = contract.contract_id.split('-').collect();
-        assert_eq!(parts.len(), 3, "Contract ID format: ABC-CAT-NNN");
+        assert_eq!(
+            contract.contract_id.split('-').count(),
+            3,
+            "Contract ID format: ABC-CAT-NNN"
+        );
     }
 }
 
@@ -308,9 +311,8 @@ fn compatibility_mapping_contract_ids_reference_valid_contracts() {
 fn misaligned_mappings_have_reasons() {
     // spawn_detached, process::Command, and signal should be misaligned
     let mappings = standard_compatibility_mappings();
-    let misaligned: Vec<_> = mappings.iter().filter(|m| !m.disposition_aligned).collect();
     assert!(
-        misaligned.len() >= 3,
+        mappings.iter().filter(|m| !m.disposition_aligned).count() >= 3,
         "at least 3 misaligned mappings expected"
     );
 }

@@ -369,19 +369,19 @@ mod tests {
 
     #[test]
     fn rejects_grep_containing_wezterm_cli() {
-        let line = r#"  2000   10 grep wezterm cli list"#;
+        let line = r"  2000   10 grep wezterm cli list";
         assert!(parse_ps_line_if_reapable(line).is_none());
     }
 
     #[test]
     fn rejects_shell_wrapper() {
-        let line = r#"  2001   10 zsh -c wezterm cli list"#;
+        let line = r"  2001   10 zsh -c wezterm cli list";
         assert!(parse_ps_line_if_reapable(line).is_none());
     }
 
     #[test]
     fn rejects_bash_wrapper() {
-        let line = r#"  2002   10 bash -c wezterm cli list"#;
+        let line = r"  2002   10 bash -c wezterm cli list";
         assert!(parse_ps_line_if_reapable(line).is_none());
     }
 

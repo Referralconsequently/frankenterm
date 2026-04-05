@@ -42,7 +42,7 @@ proptest! {
     #[test]
     fn empty_count_zero(compression in arb_compression()) {
         let td = TDigest::with_compression(compression);
-        prop_assert_eq!(td.count(), 0.0);
+        prop_assert!(td.count().abs() < f64::EPSILON);
         prop_assert!(td.is_empty());
     }
 
@@ -198,7 +198,7 @@ proptest! {
             td.insert(v);
         }
         let max = td.max().unwrap();
-        prop_assert_eq!(td.cdf(max), 1.0);
+        prop_assert!((td.cdf(max) - 1.0).abs() < f64::EPSILON);
     }
 
     /// CDF is bounded [0, 1].
@@ -357,7 +357,7 @@ proptest! {
         }
         td.clear();
         prop_assert!(td.is_empty());
-        prop_assert_eq!(td.count(), 0.0);
+        prop_assert!(td.count().abs() < f64::EPSILON);
         prop_assert_eq!(td.centroid_count(), 0);
         prop_assert_eq!(td.min(), None);
         prop_assert_eq!(td.max(), None);

@@ -1548,7 +1548,7 @@ mod tests {
     #[test]
     fn unsafe_find_exec_rm() {
         let exec = cwd_executor("/home/user/project");
-        let cmds = vec![make_cmd(0, r#"find src -type f -exec rm -f {} \;"#)];
+        let cmds = vec![make_cmd(0, r"find src -type f -exec rm -f {} \;")];
         let verdict = exec.analyze(&cmds);
         assert!(verdict.is_unsafe());
         if let SafetyVerdict::Unsafe(v) = &verdict {

@@ -150,7 +150,7 @@ proptest! {
             max_compaction_history: 10,
         };
         let tracker = ContextBudgetTracker::new(1, config);
-        prop_assert_eq!(tracker.utilization(), 0.0);
+        prop_assert!((tracker.utilization() - 0.0).abs() < f64::EPSILON);
     }
 }
 
@@ -369,5 +369,5 @@ fn default_pressure_is_green() {
 fn new_tracker_is_green() {
     let tracker = ContextBudgetTracker::new(1, ContextBudgetConfig::default());
     assert_eq!(tracker.pressure_tier(), ContextPressureTier::Green);
-    assert_eq!(tracker.utilization(), 0.0);
+    assert!((tracker.utilization() - 0.0).abs() < f64::EPSILON);
 }

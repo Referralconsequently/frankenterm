@@ -68,12 +68,12 @@ fn loom_rwlock_preserves_reader_writer_invariant() {
         let max_readers = Arc::new(AtomicUsize::new(0));
 
         let lock_reader_a = Arc::clone(&value);
-        let readers_a = Arc::clone(&active_readers);
+        let active_readers_a = Arc::clone(&active_readers);
         let writers_a = Arc::clone(&active_writers);
         let max_a = Arc::clone(&max_readers);
         let reader_a = thread::spawn(move || {
             let guard = lock_reader_a.read().unwrap();
-            let prior = readers_a.fetch_add(1, Ordering::SeqCst);
+            let prior = active_readers_a.fetch_add(1, Ordering::SeqCst);
             update_max(&max_a, prior + 1);
             assert_eq!(
                 writers_a.load(Ordering::SeqCst),
@@ -82,16 +82,16 @@ fn loom_rwlock_preserves_reader_writer_invariant() {
             );
             assert_eq!(*guard, 0);
             thread::yield_now();
-            readers_a.fetch_sub(1, Ordering::SeqCst);
+            active_readers_a.fetch_sub(1, Ordering::SeqCst);
         });
 
         let lock_reader_b = Arc::clone(&value);
-        let readers_b = Arc::clone(&active_readers);
+        let active_readers_b = Arc::clone(&active_readers);
         let writers_b = Arc::clone(&active_writers);
         let max_b = Arc::clone(&max_readers);
         let reader_b = thread::spawn(move || {
             let guard = lock_reader_b.read().unwrap();
-            let prior = readers_b.fetch_add(1, Ordering::SeqCst);
+            let prior = active_readers_b.fetch_add(1, Ordering::SeqCst);
             update_max(&max_b, prior + 1);
             assert_eq!(
                 writers_b.load(Ordering::SeqCst),
@@ -100,7 +100,7 @@ fn loom_rwlock_preserves_reader_writer_invariant() {
             );
             assert_eq!(*guard, 0);
             thread::yield_now();
-            readers_b.fetch_sub(1, Ordering::SeqCst);
+            active_readers_b.fetch_sub(1, Ordering::SeqCst);
         });
 
         let lock_writer = Arc::clone(&value);

@@ -4399,13 +4399,13 @@ window_size = 256
 
     #[test]
     fn gc_toml_parses() {
-        let toml = r#"
+        let toml = r"
 [gc]
 enabled = false
 interval_seconds = 120
 vacuum_threshold = 0.35
 log_report = false
-"#;
+";
         let config = Config::from_toml(toml).expect("Failed to parse");
         assert!(!config.gc.enabled);
         assert_eq!(config.gc.interval_seconds, 120);
@@ -4663,11 +4663,11 @@ disabled_rules = ["codex.usage_warning"]
         let config_path = temp.path().join("ft.toml");
         std::fs::write(
             &config_path,
-            r#"
+            r"
 [search]
 enabled = true
 quality_weight = 1.5
-"#,
+",
         )
         .expect("write ft.toml");
 

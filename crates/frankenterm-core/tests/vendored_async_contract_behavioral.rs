@@ -1199,7 +1199,7 @@ fn b23e_explicit_cx_public_list_panes_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -1207,7 +1207,9 @@ fn b23e_explicit_cx_public_list_panes_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -1315,7 +1317,7 @@ fn b23f_explicit_cx_public_render_batch_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -1323,7 +1325,9 @@ fn b23f_explicit_cx_public_render_batch_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -1377,12 +1381,16 @@ fn b23f_explicit_cx_public_render_batch_cancellation_contract() {
             .recv_timeout(Duration::from_secs(2))
             .expect("server should complete handshake");
 
-        let err = client
-            .get_pane_render_changes_batch_with_cx(&cancelled_cx, &[11, 22], 2, Duration::from_millis(250))
-            .await
-            .expect_err(
-                "get_pane_render_changes_batch_with_cx should fail fast for a pre-cancelled context",
-            );
+        let err = Box::pin(client.get_pane_render_changes_batch_with_cx(
+            &cancelled_cx,
+            &[11, 22],
+            2,
+            Duration::from_millis(250),
+        ))
+        .await
+        .expect_err(
+            "get_pane_render_changes_batch_with_cx should fail fast for a pre-cancelled context",
+        );
         assert_cancelled_mux_io(&err);
 
         drop(client);
@@ -1434,7 +1442,7 @@ fn b23g_explicit_cx_public_get_lines_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -1442,7 +1450,9 @@ fn b23g_explicit_cx_public_get_lines_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -1550,7 +1560,7 @@ fn b23h_explicit_cx_public_write_to_pane_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -1558,7 +1568,9 @@ fn b23h_explicit_cx_public_write_to_pane_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -1666,7 +1678,7 @@ fn b23i_explicit_cx_public_single_render_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -1674,7 +1686,9 @@ fn b23i_explicit_cx_public_single_render_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -1784,7 +1798,7 @@ fn b23j_explicit_cx_public_send_paste_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -1792,7 +1806,9 @@ fn b23j_explicit_cx_public_send_paste_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -1982,12 +1998,16 @@ fn b23k_explicit_cx_public_render_batch_timeout_contract() {
             .await
             .expect("connect_with_cx");
 
-        let err = client
-            .get_pane_render_changes_batch_with_cx(&cx, &[10, 20], 2, Duration::from_millis(25))
-            .await
-            .expect_err(
-                "get_pane_render_changes_batch_with_cx should time out when the peer stalls mid-batch",
-            );
+        let err = Box::pin(client.get_pane_render_changes_batch_with_cx(
+            &cx,
+            &[10, 20],
+            2,
+            Duration::from_millis(25),
+        ))
+        .await
+        .expect_err(
+            "get_pane_render_changes_batch_with_cx should time out when the peer stalls mid-batch",
+        );
         match err {
             DirectMuxError::BatchTimeout { timeout_ms } => assert_eq!(timeout_ms, 25),
             other => panic!("expected BatchTimeout, got: {other}"),
@@ -2506,7 +2526,7 @@ fn b23n_explicit_cx_public_get_lines_read_timeout_contract() {
             .await
             .expect("connect_with_cx");
         let err = client
-            .get_lines_with_cx(&cx, 88, vec![0isize..1isize])
+            .get_lines_with_cx(&cx, 88, std::iter::once(0isize..1isize).collect())
             .await
             .expect_err("get_lines_with_cx should time out when the peer stalls");
         assert!(
@@ -2656,7 +2676,7 @@ fn b23q_explicit_cx_public_mux_pool_list_panes_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -2664,7 +2684,9 @@ fn b23q_explicit_cx_public_mux_pool_list_panes_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -2781,7 +2803,7 @@ fn b23r_explicit_cx_public_mux_pool_render_batch_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -2789,7 +2811,9 @@ fn b23r_explicit_cx_public_mux_pool_render_batch_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -2857,9 +2881,11 @@ fn b23r_explicit_cx_public_mux_pool_render_batch_cancellation_contract() {
             "behavioral warmup response should use the empty mock payload"
         );
 
-        let err = pool
-            .get_pane_render_changes_batch_with_cx(&cancelled_cx, vec![11, 22])
-            .await
+        let err = Box::pin(pool.get_pane_render_changes_batch_with_cx(
+            &cancelled_cx,
+            vec![11, 22],
+        ))
+        .await
             .expect_err(
                 "get_pane_render_changes_batch_with_cx should fail fast for a pre-cancelled context",
             );
@@ -2911,7 +2937,7 @@ fn b23s_explicit_cx_public_mux_pool_list_panes_read_timeout_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -2919,7 +2945,9 @@ fn b23s_explicit_cx_public_mux_pool_list_panes_read_timeout_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -3043,7 +3071,7 @@ fn b23t_explicit_cx_public_mux_pool_single_render_read_timeout_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -3051,7 +3079,9 @@ fn b23t_explicit_cx_public_mux_pool_single_render_read_timeout_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -3177,7 +3207,7 @@ fn b23u_explicit_cx_public_mux_pool_health_check_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -3185,7 +3215,9 @@ fn b23u_explicit_cx_public_mux_pool_health_check_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -3296,7 +3328,7 @@ fn b23v_explicit_cx_public_mux_pool_health_check_read_timeout_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -3304,7 +3336,9 @@ fn b23v_explicit_cx_public_mux_pool_health_check_read_timeout_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -3423,7 +3457,7 @@ fn b23w_explicit_cx_public_mux_pool_get_lines_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -3431,7 +3465,9 @@ fn b23w_explicit_cx_public_mux_pool_get_lines_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -3545,7 +3581,7 @@ fn b23x_explicit_cx_public_mux_pool_write_to_pane_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -3553,7 +3589,9 @@ fn b23x_explicit_cx_public_mux_pool_write_to_pane_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
@@ -3666,7 +3704,7 @@ fn b23y_explicit_cx_public_mux_pool_send_paste_cancellation_contract() {
             loop {
                 let mut temp = vec![0u8; 4096];
                 let read = match runtime_compat::timeout(
-                    Duration::from_millis(1_000),
+                    Duration::from_secs(1),
                     runtime_compat::io::read(&mut stream, &mut temp),
                 )
                 .await
@@ -3674,7 +3712,9 @@ fn b23y_explicit_cx_public_mux_pool_send_paste_cancellation_contract() {
                     Ok(Ok(read)) => read,
                     Ok(Err(err)) => panic!("read failed: {err}"),
                     Err(_) if handshake_complete => break,
-                    Err(_) => panic!("server timed out before handshake completed"),
+                    Err(timeout_err) => {
+                        panic!("server timed out before handshake completed: {timeout_err}")
+                    }
                 };
                 if read == 0 {
                     break;
