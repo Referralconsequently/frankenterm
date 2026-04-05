@@ -1,6 +1,6 @@
 //! Implements zwp_text_input_v3 for handling IME
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use smithay_client_toolkit::globals::GlobalData;
@@ -105,6 +105,34 @@ impl TextInputState {
             .unwrap()
             .keyboard_to_seat
             .insert(keyboard_id, seat_id);
+    }
+
+    pub(super) fn forget_keyboard(&self, keyboard: &WlKeyboard) {
+        let keyboard_id = keyboard.id();
+        let mut inner = self.inner.lock().unwrap();
+        inner.keyboard_to_seat.remove(&keyboard_id);
+        inner
+            .surface_to_keyboard
+            .retain(|_, mapped_keyboard| mapped_keyboard != &keyboard_id);
+    }
+
+    pub(super) fn forget_seat(&self, seat: &WlSeat) {
+        let seat_id = seat.id();
+        let mut inner = self.inner.lock().unwrap();
+
+        inner
+            .keyboard_to_seat
+            .retain(|_, mapped_seat| mapped_seat != &seat_id);
+        let live_keyboards: HashSet<_> = inner.keyboard_to_seat.keys().cloned().collect();
+        inner
+            .surface_to_keyboard
+            .retain(|_, keyboard_id| live_keyboards.contains(keyboard_id));
+
+        if let Some(input) = inner.input_by_seat.remove(&seat_id) {
+            input.disable();
+            input.commit();
+            inner.pending_state.remove(&input.id());
+        }
     }
 
     /// Workaround for <https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/4776>

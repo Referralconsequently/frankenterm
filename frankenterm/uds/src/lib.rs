@@ -1,3 +1,5 @@
+#[cfg(feature = "async-asupersync")]
+use std::io::{IoSlice, IoSliceMut};
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
@@ -8,6 +10,14 @@ use std::os::windows::io::{
     AsRawSocket, AsSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket,
 };
 use std::path::Path;
+#[cfg(feature = "async-asupersync")]
+use std::pin::Pin;
+#[cfg(feature = "async-asupersync")]
+use std::sync::Mutex;
+#[cfg(feature = "async-asupersync")]
+use std::task::{Context, Poll};
+#[cfg(feature = "async-asupersync")]
+use std::time::Duration;
 #[cfg(windows)]
 use uds_windows::UnixStream as StreamImpl;
 
@@ -18,6 +28,14 @@ use uds_windows::UnixStream as StreamImpl;
 #[cfg(feature = "async-asupersync")]
 #[allow(dead_code)]
 struct _AsupersyncDep(asupersync::io::IoNotAvailable);
+#[cfg(feature = "async-asupersync")]
+use asupersync::io::{AsyncRead, AsyncReadVectored, AsyncWrite, ReadBuf};
+#[cfg(feature = "async-asupersync")]
+use asupersync::runtime::{Interest, IoRegistration};
+#[cfg(feature = "async-asupersync")]
+use asupersync::Cx;
+#[cfg(feature = "async-asupersync")]
+use futures::io::{AsyncRead as FuturesAsyncRead, AsyncWrite as FuturesAsyncWrite};
 
 #[cfg(unix)]
 use std::os::unix::net::UnixListener as ListenerImpl;
@@ -35,71 +53,117 @@ use uds_windows::SocketAddr;
 /// the uds_windows crate doesn't have an impl.
 /// Here we define it for all platforms in the interest of
 /// minimizing platform differences.
-#[derive(Debug)]
-pub struct UnixStream(StreamImpl);
+pub struct UnixStream {
+    inner: StreamImpl,
+    #[cfg(feature = "async-asupersync")]
+    registration: Mutex<Option<IoRegistration>>,
+}
+
+#[cfg(feature = "async-asupersync")]
+const FALLBACK_IO_BACKOFF: Duration = Duration::from_millis(1);
+
+impl std::fmt::Debug for UnixStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("UnixStream").field(&self.inner).finish()
+    }
+}
+
+#[cfg(feature = "async-asupersync")]
+fn fallback_rewake(cx: &Context<'_>) {
+    if let Some(timer) = Cx::current().and_then(|current| current.timer_driver()) {
+        let deadline = timer.now() + FALLBACK_IO_BACKOFF;
+        let _ = timer.register(deadline, cx.waker().clone());
+    } else {
+        cx.waker().wake_by_ref();
+    }
+}
+
+impl UnixStream {
+    fn from_inner(inner: StreamImpl) -> Self {
+        Self {
+            inner,
+            #[cfg(feature = "async-asupersync")]
+            registration: Mutex::new(None),
+        }
+    }
+
+    #[cfg(feature = "async-asupersync")]
+    pub async fn wait_for_readable(&self) -> std::io::Result<()> {
+        let mut armed = false;
+        std::future::poll_fn(|cx| {
+            if armed {
+                return Poll::Ready(Ok(()));
+            }
+            self.register_interest_for_read(cx)?;
+            armed = true;
+            Poll::Pending
+        })
+        .await
+    }
+}
 
 #[cfg(unix)]
 impl AsFd for UnixStream {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
+        self.inner.as_fd()
     }
 }
 #[cfg(unix)]
 impl IntoRawFd for UnixStream {
     fn into_raw_fd(self) -> RawFd {
-        self.0.into_raw_fd()
+        self.inner.into_raw_fd()
     }
 }
 #[cfg(unix)]
 impl FromRawFd for UnixStream {
     unsafe fn from_raw_fd(fd: RawFd) -> UnixStream {
-        UnixStream(StreamImpl::from_raw_fd(fd))
+        Self::from_inner(StreamImpl::from_raw_fd(fd))
     }
 }
 #[cfg(unix)]
 impl AsRawFd for UnixStream {
     fn as_raw_fd(&self) -> RawFd {
-        self.0.as_raw_fd()
+        self.inner.as_raw_fd()
     }
 }
 
 #[cfg(windows)]
 impl IntoRawSocket for UnixStream {
     fn into_raw_socket(self) -> RawSocket {
-        self.0.into_raw_socket()
+        self.inner.into_raw_socket()
     }
 }
 #[cfg(windows)]
 impl AsRawSocket for UnixStream {
     fn as_raw_socket(&self) -> RawSocket {
-        self.0.as_raw_socket()
+        self.inner.as_raw_socket()
     }
 }
 #[cfg(windows)]
 impl AsSocket for UnixStream {
     fn as_socket(&self) -> BorrowedSocket {
-        self.0.as_socket()
+        self.inner.as_socket()
     }
 }
 #[cfg(windows)]
 impl FromRawSocket for UnixStream {
     unsafe fn from_raw_socket(socket: RawSocket) -> UnixStream {
-        UnixStream(StreamImpl::from_raw_socket(socket))
+        Self::from_inner(StreamImpl::from_raw_socket(socket))
     }
 }
 
 impl Read for UnixStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-        self.0.read(buf)
+        self.inner.read(buf)
     }
 }
 
 impl Write for UnixStream {
     fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
-        self.0.write(buf)
+        self.inner.write(buf)
     }
     fn flush(&mut self) -> Result<(), std::io::Error> {
-        self.0.flush()
+        self.inner.flush()
     }
 }
 
@@ -108,20 +172,306 @@ unsafe impl async_io::IoSafe for UnixStream {}
 
 impl UnixStream {
     pub fn connect<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-        Ok(Self(StreamImpl::connect(path)?))
+        Ok(Self::from_inner(StreamImpl::connect(path)?))
+    }
+
+    #[cfg(feature = "async-asupersync")]
+    fn lock_registration(
+        &self,
+    ) -> std::io::Result<std::sync::MutexGuard<'_, Option<IoRegistration>>> {
+        self.registration
+            .lock()
+            .map_err(|_| std::io::Error::other("async registration lock poisoned"))
+    }
+
+    #[cfg(feature = "async-asupersync")]
+    fn register_interest_for_read(&self, cx: &Context<'_>) -> std::io::Result<()> {
+        self.register_interest(cx, Interest::READABLE)
+    }
+
+    #[cfg(feature = "async-asupersync")]
+    fn register_interest_for_write(&self, cx: &Context<'_>) -> std::io::Result<()> {
+        self.register_interest(cx, Interest::WRITABLE)
+    }
+
+    #[cfg(feature = "async-asupersync")]
+    fn register_interest(&self, cx: &Context<'_>, interest: Interest) -> std::io::Result<()> {
+        self.inner.set_nonblocking(true)?;
+
+        let mut registration = self.lock_registration()?;
+        if let Some(existing) = registration.as_mut() {
+            match existing.rearm(interest, cx.waker()) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {
+                    *registration = None;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotConnected => {
+                    *registration = None;
+                    drop(registration);
+                    fallback_rewake(cx);
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let Some(current) = Cx::current() else {
+            drop(registration);
+            fallback_rewake(cx);
+            return Ok(());
+        };
+        match current.register_io(self, interest) {
+            Ok(new_registration) => {
+                let _ = new_registration.update_waker(cx.waker().clone());
+                *registration = Some(new_registration);
+                Ok(())
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::NotConnected
+                ) =>
+            {
+                drop(registration);
+                fallback_rewake(cx);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+
+#[cfg(feature = "async-asupersync")]
+impl AsyncRead for UnixStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.read(buf.unfilled()) {
+            Ok(read) => {
+                buf.advance(read);
+                Poll::Ready(Ok(()))
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_read(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+}
+
+#[cfg(feature = "async-asupersync")]
+impl AsyncReadVectored for UnixStream {
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &mut [IoSliceMut<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.read_vectored(bufs) {
+            Ok(read) => Poll::Ready(Ok(read)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_read(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+}
+
+#[cfg(feature = "async-asupersync")]
+impl AsyncWrite for UnixStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.write(buf) {
+            Ok(written) => Poll::Ready(Ok(written)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_write(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.write_vectored(bufs) {
+            Ok(written) => Poll::Ready(Ok(written)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_write(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.flush() {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_write(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        match this.inner.shutdown(std::net::Shutdown::Write) {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotConnected => Poll::Ready(Ok(())),
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+}
+
+#[cfg(feature = "async-asupersync")]
+impl FuturesAsyncRead for UnixStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.read(buf) {
+            Ok(read) => Poll::Ready(Ok(read)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_read(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
+    fn poll_read_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &mut [IoSliceMut<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.read_vectored(bufs) {
+            Ok(read) => Poll::Ready(Ok(read)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_read(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+}
+
+#[cfg(feature = "async-asupersync")]
+impl FuturesAsyncWrite for UnixStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.write(buf) {
+            Ok(written) => Poll::Ready(Ok(written)),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_write(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if let Err(err) = this.inner.set_nonblocking(true) {
+            return Poll::Ready(Err(err));
+        }
+        match this.inner.flush() {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Err(register_err) = this.register_interest_for_write(cx) {
+                    return Poll::Ready(Err(register_err));
+                }
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        match this.inner.shutdown(std::net::Shutdown::Write) {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotConnected => Poll::Ready(Ok(())),
+            Err(err) => Poll::Ready(Err(err)),
+        }
     }
 }
 
 impl std::ops::Deref for UnixStream {
     type Target = StreamImpl;
     fn deref(&self) -> &StreamImpl {
-        &self.0
+        &self.inner
     }
 }
 
 impl std::ops::DerefMut for UnixStream {
     fn deref_mut(&mut self) -> &mut StreamImpl {
-        &mut self.0
+        &mut self.inner
     }
 }
 
@@ -134,11 +484,11 @@ impl UnixListener {
 
     pub fn accept(&self) -> std::io::Result<(UnixStream, SocketAddr)> {
         let (stream, addr) = self.0.accept()?;
-        Ok((UnixStream(stream), addr))
+        Ok((UnixStream::from_inner(stream), addr))
     }
 
     pub fn incoming(&self) -> impl Iterator<Item = std::io::Result<UnixStream>> + '_ {
-        self.0.incoming().map(|r| r.map(UnixStream))
+        self.0.incoming().map(|r| r.map(UnixStream::from_inner))
     }
 }
 
@@ -170,6 +520,53 @@ mod tests {
 
     fn cleanup(path: &Path) {
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(feature = "async-asupersync")]
+    fn asupersync_block_on<F: std::future::Future>(future: F) -> F::Output {
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("failed to build frankenterm-uds asupersync runtime")
+            .block_on(future)
+    }
+
+    #[cfg(feature = "async-asupersync")]
+    #[test]
+    fn asupersync_async_roundtrip_handles_initial_would_block() {
+        use asupersync::io::{AsyncReadExt, AsyncWriteExt};
+
+        let path = temp_socket_path("asupersync_roundtrip");
+        cleanup(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let client = std::thread::spawn({
+            let path = path.clone();
+            move || -> std::io::Result<Vec<u8>> {
+                let mut stream = UnixStream::connect(&path)?;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                asupersync_block_on(async move {
+                    AsyncWriteExt::write_all(&mut stream, b"ping").await?;
+                    AsyncWriteExt::flush(&mut stream).await?;
+                    let mut buf = [0u8; 4];
+                    AsyncReadExt::read_exact(&mut stream, &mut buf).await?;
+                    Ok(buf.to_vec())
+                })
+            }
+        });
+
+        let (mut server, _) = listener.accept().unwrap();
+        let received = asupersync_block_on(async {
+            let mut buf = [0u8; 4];
+            AsyncReadExt::read_exact(&mut server, &mut buf).await?;
+            AsyncWriteExt::write_all(&mut server, b"pong").await?;
+            AsyncWriteExt::flush(&mut server).await?;
+            Ok::<Vec<u8>, std::io::Error>(buf.to_vec())
+        })
+        .unwrap();
+
+        assert_eq!(received, b"ping");
+        assert_eq!(client.join().unwrap().unwrap(), b"pong");
+        cleanup(&path);
     }
 
     // ── UnixListener ───────────────────────────────────────────
@@ -1675,7 +2072,7 @@ mod tests {
         drop(listener);
         // try_clone is available via Deref to StreamImpl
         let cloned_inner = server.try_clone().unwrap();
-        let mut wrapped = UnixStream(cloned_inner);
+        let mut wrapped = UnixStream::from_inner(cloned_inner);
         let mut buf = Vec::new();
         wrapped.read_to_end(&mut buf).unwrap();
         assert_eq!(buf, b"cloned");

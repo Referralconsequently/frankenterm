@@ -18,7 +18,7 @@ use openssl::x509::X509;
 use portable_pty::Child;
 use smol::channel::{bounded, unbounded, Receiver, Sender};
 use smol::prelude::*;
-use smol::{block_on, Async};
+use smol::Async;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::marker::Unpin;
@@ -375,7 +375,7 @@ fn client_thread(
     local_domain_id: Option<DomainId>,
     rx: &mut Receiver<ReaderMessage>,
 ) -> anyhow::Result<()> {
-    block_on(client_thread_async(reconnectable, local_domain_id, rx))
+    promise::spawn::block_on(client_thread_async(reconnectable, local_domain_id, rx))
 }
 
 async fn client_thread_async(
@@ -554,6 +554,24 @@ pub fn unix_connect_with_retry(
 #[async_trait(?Send)]
 pub trait AsyncReadAndWrite: Unpin + AsyncRead + AsyncWrite + std::fmt::Debug + Send {
     async fn wait_for_readable(&self) -> anyhow::Result<()>;
+}
+
+#[async_trait(?Send)]
+impl AsyncReadAndWrite for UnixStream {
+    async fn wait_for_readable(&self) -> anyhow::Result<()> {
+        UnixStream::wait_for_readable(self)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+#[async_trait(?Send)]
+impl AsyncReadAndWrite for AsyncSslStream {
+    async fn wait_for_readable(&self) -> anyhow::Result<()> {
+        AsyncSslStream::wait_for_readable(self)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[async_trait(?Send)]
@@ -757,7 +775,7 @@ impl Reconnectable {
         ui.output_str(&format!("Running: {}\n", cmd));
         log::debug!("going to run {}", cmd);
 
-        let exec = smol::block_on(sess.exec(&cmd, None))?;
+        let exec = wezterm_ssh::runtime::block_on(sess.exec(&cmd, None))?;
 
         let mut stderr = exec.stderr;
         std::thread::spawn(move || {
@@ -864,7 +882,7 @@ impl Reconnectable {
         ui.output_str("Connected!\n");
         stream.set_read_timeout(Some(unix_dom.read_timeout))?;
         stream.set_write_timeout(Some(unix_dom.write_timeout))?;
-        let stream: Box<dyn AsyncReadAndWrite> = Box::new(Async::new(stream)?);
+        let stream: Box<dyn AsyncReadAndWrite> = Box::new(stream);
         self.stream.replace(stream);
         Ok(())
     }
@@ -939,7 +957,7 @@ impl Reconnectable {
                     let cmd = Self::build_tls_creds_command(&tls_client.remote_wezterm_path);
 
                     ui.output_str(&format!("Running: {}\n", cmd));
-                    let mut exec = smol::block_on(sess.exec(&cmd, None))
+                    let mut exec = wezterm_ssh::runtime::block_on(sess.exec(&cmd, None))
                         .with_context(|| format!("executing `{}` on remote host", cmd))?;
 
                     log::debug!("waiting for command to finish");
@@ -1067,7 +1085,7 @@ impl Reconnectable {
         stream.set_write_timeout(Some(tls_client.write_timeout))?;
         stream.set_read_timeout(Some(tls_client.read_timeout))?;
 
-        let stream = Box::new(Async::new(AsyncSslStream::new(
+        let stream = Box::new(AsyncSslStream::new(
             connector
                 .connect(
                     tls_client
@@ -1082,7 +1100,7 @@ impl Reconnectable {
                         remote_address, remote_host_name,
                     )
                 })?,
-        ))?);
+        ));
         ui.output_str("TLS Connected!\n");
         Ok(stream)
     }
@@ -1204,7 +1222,7 @@ impl Client {
         match self
             .get_codec_version(GetCodecVersion {})
             .or(async {
-                smol::Timer::after(Duration::from_secs(60)).await;
+                promise::spawn::sleep(Duration::from_secs(60)).await;
                 Err(Timeout).context("Timeout")
             })
             .await

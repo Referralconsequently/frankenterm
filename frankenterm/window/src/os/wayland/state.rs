@@ -73,6 +73,7 @@ pub(super) struct WaylandState {
     pub(super) shm: Shm,
     pub(super) mem_pool: RefCell<SlotPool>,
     pub(super) kde_blur_manager: Option<OrgKdeKwinBlurManager>,
+    pub(super) seat_bindings: SeatBindings<ObjectId>,
 }
 
 impl WaylandState {
@@ -117,8 +118,112 @@ impl WaylandState {
             shm,
             mem_pool: RefCell::new(mem_pool),
             kde_blur_manager: blur_manager,
+            seat_bindings: SeatBindings::default(),
         };
         Ok(wayland_state)
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct SeatBindings<T: Clone + Eq> {
+    keyboard: Option<T>,
+    pointer: Option<T>,
+    data_device: Option<T>,
+    primary_selection: Option<T>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RemovedSeatCleanup {
+    pub(super) keyboard: bool,
+    pub(super) pointer: bool,
+    pub(super) data_device: bool,
+    pub(super) primary_selection: bool,
+}
+
+impl<T: Clone + Eq> SeatBindings<T> {
+    pub(super) fn note_keyboard(&mut self, seat: T) {
+        self.keyboard = Some(seat);
+    }
+
+    pub(super) fn note_pointer(&mut self, seat: T) {
+        self.pointer = Some(seat);
+    }
+
+    pub(super) fn note_data_device(&mut self, seat: T) {
+        self.data_device = Some(seat);
+    }
+
+    pub(super) fn note_primary_selection(&mut self, seat: T) {
+        self.primary_selection = Some(seat);
+    }
+
+    pub(super) fn clear_keyboard_if_matches(&mut self, seat: &T) -> bool {
+        clear_slot_if_matches(&mut self.keyboard, seat)
+    }
+
+    pub(super) fn clear_pointer_if_matches(&mut self, seat: &T) -> bool {
+        clear_slot_if_matches(&mut self.pointer, seat)
+    }
+
+    pub(super) fn clear_removed_seat(&mut self, seat: &T) -> RemovedSeatCleanup {
+        RemovedSeatCleanup {
+            keyboard: clear_slot_if_matches(&mut self.keyboard, seat),
+            pointer: clear_slot_if_matches(&mut self.pointer, seat),
+            data_device: clear_slot_if_matches(&mut self.data_device, seat),
+            primary_selection: clear_slot_if_matches(&mut self.primary_selection, seat),
+        }
+    }
+}
+
+fn clear_slot_if_matches<T: Eq>(slot: &mut Option<T>, seat: &T) -> bool {
+    if slot.as_ref() == Some(seat) {
+        *slot = None;
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RemovedSeatCleanup, SeatBindings};
+
+    #[test]
+    fn removed_seat_cleanup_only_clears_matching_bindings() {
+        let mut bindings = SeatBindings::default();
+        bindings.note_keyboard(1_u32);
+        bindings.note_pointer(1_u32);
+        bindings.note_data_device(2_u32);
+        bindings.note_primary_selection(1_u32);
+
+        let cleanup = bindings.clear_removed_seat(&1_u32);
+
+        assert_eq!(
+            cleanup,
+            RemovedSeatCleanup {
+                keyboard: true,
+                pointer: true,
+                data_device: false,
+                primary_selection: true,
+            }
+        );
+
+        assert!(!bindings.clear_keyboard_if_matches(&1_u32));
+        assert!(!bindings.clear_pointer_if_matches(&1_u32));
+        assert_eq!(bindings.clear_removed_seat(&2_u32).data_device, true);
+    }
+
+    #[test]
+    fn clearing_a_non_matching_capability_is_a_noop() {
+        let mut bindings = SeatBindings::default();
+        bindings.note_keyboard(7_u32);
+        bindings.note_pointer(9_u32);
+
+        assert!(!bindings.clear_keyboard_if_matches(&8_u32));
+        assert!(!bindings.clear_pointer_if_matches(&8_u32));
+
+        let cleanup = bindings.clear_removed_seat(&10_u32);
+        assert_eq!(cleanup, RemovedSeatCleanup::default());
     }
 }
 

@@ -6,18 +6,27 @@ use async_ossl::AsyncSslStream;
 use codec::{DecodedPdu, Pdu};
 use futures::FutureExt;
 use mux::{Mux, MuxNotification};
-use smol::Async;
 use smol::prelude::*;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use wezterm_uds::UnixStream;
 
-#[cfg(unix)]
-pub trait AsRawDesc: std::os::unix::io::AsRawFd + std::os::fd::AsFd {}
-#[cfg(windows)]
-pub trait AsRawDesc: std::os::windows::io::AsRawSocket + std::os::windows::io::AsSocket {}
+pub trait DispatchStream: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug {
+    fn wait_for_readable(&self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>>;
+}
 
-impl AsRawDesc for UnixStream {}
-impl AsRawDesc for AsyncSslStream {}
+impl DispatchStream for UnixStream {
+    fn wait_for_readable(&self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
+        Box::pin(UnixStream::wait_for_readable(self))
+    }
+}
+
+impl DispatchStream for AsyncSslStream {
+    fn wait_for_readable(&self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send + '_>> {
+        Box::pin(AsyncSslStream::wait_for_readable(self))
+    }
+}
 
 #[derive(Debug)]
 enum Item {
@@ -46,23 +55,15 @@ impl Drop for MuxSubscriptionGuard {
 pub async fn process<T>(stream: T) -> anyhow::Result<()>
 where
     T: 'static,
-    T: std::io::Read,
-    T: std::io::Write,
-    T: AsRawDesc,
-    T: std::fmt::Debug,
-    T: async_io::IoSafe,
+    T: DispatchStream,
 {
-    let stream = smol::Async::new(stream)?;
     process_async(stream).await
 }
 
-pub async fn process_async<T>(mut stream: Async<T>) -> anyhow::Result<()>
+pub async fn process_async<T>(mut stream: T) -> anyhow::Result<()>
 where
     T: 'static,
-    T: std::io::Read,
-    T: std::io::Write,
-    T: std::fmt::Debug,
-    T: async_io::IoSafe,
+    T: DispatchStream,
 {
     log::trace!("process_async called");
 
@@ -85,8 +86,12 @@ where
         let _subscription_guard = MuxSubscriptionGuard::new(mux, sub_id);
 
         loop {
-            let rx_msg = item_rx.recv();
-            let wait_for_read = stream.readable().map(|_| Ok(Item::Readable));
+            let rx_msg = item_rx
+                .recv()
+                .map(|result| result.map_err(|err| anyhow::anyhow!("{err:?}")));
+            let wait_for_read = stream
+                .wait_for_readable()
+                .map(|result| result.map(|()| Item::Readable).map_err(anyhow::Error::from));
 
             match smol::future::or(rx_msg, wait_for_read).await {
                 Ok(Item::Readable) => {

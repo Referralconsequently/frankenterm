@@ -43,6 +43,7 @@ impl Dispatch<WlKeyboard, KeyboardData> for WaylandState {
             }
             WlKeyboardEvent::Leave { serial, .. } => {
                 *state.last_serial.borrow_mut() = *serial;
+                state.keyboard_window_id.take();
                 if let Some(text_input) = &state.text_input {
                     if let Some(input) = text_input.get_text_input_for_keyboard(keyboard) {
                         input.disable();
@@ -98,7 +99,7 @@ impl Dispatch<WlKeyboard, KeyboardData> for WaylandState {
                 }
             }
             _ => {
-                unimplemented!()
+                log::trace!("Ignoring unhandled wl_keyboard event: {:?}", event);
             }
         }
 
@@ -109,8 +110,13 @@ impl Dispatch<WlKeyboard, KeyboardData> for WaylandState {
             return;
         };
         let mut inner = win.as_ref().borrow_mut();
-        let mapper = state.keyboard_mapper.borrow_mut();
-        let mapper = mapper.as_mut().expect("no keymap");
+        let Some(mapper) = state.keyboard_mapper.borrow_mut().as_mut() else {
+            log::warn!(
+                "Received keyboard event before keymap initialization: {:?}",
+                event
+            );
+            return;
+        };
         inner.keyboard_event(mapper, event);
     }
 }

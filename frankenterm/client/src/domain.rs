@@ -425,7 +425,7 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
                         // To avoid that, here on the client, we wait a second
                         // and then report the now-current name of the window, rather
                         // than propagating the title encoded in the MuxNotification.
-                        smol::Timer::after(std::time::Duration::from_secs(1)).await;
+                        promise::spawn::sleep(std::time::Duration::from_secs(1)).await;
                         if let Some(mux) = Mux::try_get() {
                             let title = mux
                                 .get_window(window_id)
