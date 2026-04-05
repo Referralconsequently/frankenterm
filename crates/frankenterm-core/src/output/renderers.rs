@@ -1942,6 +1942,14 @@ impl HealthSnapshotRenderer {
             queue_total, lag_label, db_label
         ));
 
+        if let Some(tier) = &snapshot.backpressure_tier {
+            output.push_str(&format!("  Backpressure: {tier}\n"));
+        }
+
+        if let Some(tier) = &snapshot.fleet_pressure_tier {
+            output.push_str(&format!("  Fleet memory: {tier}\n"));
+        }
+
         if !snapshot.pane_priority_overrides.is_empty() {
             let shown: Vec<String> = snapshot
                 .pane_priority_overrides
@@ -2049,6 +2057,22 @@ impl HealthSnapshotRenderer {
                 name: "database health",
                 status: HealthDiagnosticStatus::Error,
                 detail: "database is NOT writable".to_string(),
+            });
+        }
+
+        if let Some(tier) = &snapshot.backpressure_tier {
+            checks.push(HealthDiagnostic {
+                name: "backpressure tier",
+                status: Self::backpressure_diagnostic_status(tier),
+                detail: tier.clone(),
+            });
+        }
+
+        if let Some(tier) = &snapshot.fleet_pressure_tier {
+            checks.push(HealthDiagnostic {
+                name: "fleet memory pressure",
+                status: Self::fleet_pressure_diagnostic_status(tier),
+                detail: tier.clone(),
             });
         }
 
@@ -2448,6 +2472,24 @@ impl HealthSnapshotRenderer {
             format!(" ({})", style.green("idle"))
         } else {
             String::new()
+        }
+    }
+
+    fn backpressure_diagnostic_status(tier: &str) -> HealthDiagnosticStatus {
+        match tier.trim().to_ascii_uppercase().as_str() {
+            "GREEN" => HealthDiagnosticStatus::Ok,
+            "YELLOW" => HealthDiagnosticStatus::Warning,
+            "RED" | "BLACK" => HealthDiagnosticStatus::Error,
+            _ => HealthDiagnosticStatus::Info,
+        }
+    }
+
+    fn fleet_pressure_diagnostic_status(tier: &str) -> HealthDiagnosticStatus {
+        match tier.trim().to_ascii_uppercase().as_str() {
+            "NORMAL" => HealthDiagnosticStatus::Ok,
+            "ELEVATED" => HealthDiagnosticStatus::Warning,
+            "CRITICAL" | "EMERGENCY" => HealthDiagnosticStatus::Error,
+            _ => HealthDiagnosticStatus::Info,
         }
     }
 
@@ -4448,6 +4490,18 @@ mod tests {
     }
 
     #[test]
+    fn health_compact_shows_pressure_tiers() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.backpressure_tier = Some("YELLOW".to_string());
+        snapshot.fleet_pressure_tier = Some("CRITICAL".to_string());
+        let ctx = RenderContext::new(OutputFormat::Plain);
+        let output = HealthSnapshotRenderer::render_compact(&snapshot, &ctx);
+
+        assert!(output.contains("Backpressure: YELLOW"));
+        assert!(output.contains("Fleet memory: CRITICAL"));
+    }
+
+    #[test]
     fn health_compact_shows_leak_risk_summary() {
         let mut snapshot = sample_health_snapshot();
         snapshot.leak_risk_inventory = crate::crash::LeakRiskInventorySnapshot {
@@ -4534,6 +4588,22 @@ mod tests {
 
         let db = checks.iter().find(|c| c.name == "database health").unwrap();
         assert_eq!(db.status, HealthDiagnosticStatus::Error);
+    }
+
+    #[test]
+    fn health_diagnostics_pressure_tiers_map_expected_severity() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.backpressure_tier = Some("RED".to_string());
+        snapshot.fleet_pressure_tier = Some("ELEVATED".to_string());
+        let checks = HealthSnapshotRenderer::diagnostic_checks(&snapshot);
+
+        let backpressure = checks.iter().find(|c| c.name == "backpressure tier").unwrap();
+        let fleet = checks
+            .iter()
+            .find(|c| c.name == "fleet memory pressure")
+            .unwrap();
+        assert_eq!(backpressure.status, HealthDiagnosticStatus::Error);
+        assert_eq!(fleet.status, HealthDiagnosticStatus::Warning);
     }
 
     #[test]

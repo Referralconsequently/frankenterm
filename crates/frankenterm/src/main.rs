@@ -10539,6 +10539,49 @@ fn health_diagnostics_to_json(
         .collect()
 }
 
+fn attach_runtime_health_payload(
+    payload: &mut serde_json::Value,
+    snapshot: &frankenterm_core::crash::HealthSnapshot,
+) {
+    payload["health"] = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
+
+    let diagnostics = frankenterm_core::output::HealthSnapshotRenderer::diagnostic_checks(snapshot);
+    payload["diagnostics"] = serde_json::json!(health_diagnostics_to_json(&diagnostics));
+
+    let report = frankenterm_core::runtime_health::report_from_health_snapshot(snapshot);
+    let runtime_health = frankenterm_core::runtime_health::HealthCheckData::from(&report);
+    payload["runtime_health"] =
+        serde_json::to_value(runtime_health).unwrap_or(serde_json::Value::Null);
+}
+
+async fn load_runtime_health_snapshot(
+    layout: &frankenterm_core::config::WorkspaceLayout,
+) -> Option<frankenterm_core::crash::HealthSnapshot> {
+    #[cfg(unix)]
+    {
+        let client = frankenterm_core::ipc::IpcClient::new(&layout.ipc_socket_path);
+        if let Ok(response) = client.status().await {
+            if response.ok {
+                if let Some(data) = response.data {
+                    if let Some(health) = data.get("health") {
+                        if let Ok(snapshot) = serde_json::from_value::<
+                            frankenterm_core::crash::HealthSnapshot,
+                        >(health.clone())
+                        {
+                            return Some(snapshot);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = layout;
+
+    frankenterm_core::crash::HealthSnapshot::get_global()
+}
+
 fn attach_resize_dashboard_from_status_payload(
     payload: &mut serde_json::Value,
     status_payload: &serde_json::Value,
@@ -21618,15 +21661,14 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                         if let Some(ref data) = response.data {
                                             if let Some(health) = data.get("health") {
                                                 payload["health"] = health.clone();
-                                                // Add stuck pane diagnostics
                                                 if let Ok(snapshot) = serde_json::from_value::<
                                                     frankenterm_core::crash::HealthSnapshot,
                                                 >(
                                                     health.clone()
                                                 ) {
-                                                    let diags = frankenterm_core::output::HealthSnapshotRenderer::diagnostic_checks(&snapshot);
-                                                    payload["diagnostics"] = serde_json::json!(
-                                                        health_diagnostics_to_json(&diags)
+                                                    attach_runtime_health_payload(
+                                                        &mut payload,
+                                                        &snapshot,
                                                     );
                                                 }
                                             }
@@ -21674,14 +21716,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                 if let Some(snapshot) =
                                     frankenterm_core::crash::HealthSnapshot::get_global()
                                 {
-                                    payload["health"] = serde_json::to_value(&snapshot)
-                                        .unwrap_or(serde_json::Value::Null);
-                                    let diags =
-                                        frankenterm_core::output::HealthSnapshotRenderer::diagnostic_checks(
-                                            &snapshot,
-                                        );
-                                    payload["diagnostics"] =
-                                        serde_json::json!(health_diagnostics_to_json(&diags));
+                                    attach_runtime_health_payload(&mut payload, &snapshot);
                                 }
                             }
 
@@ -24554,12 +24589,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                                 frankenterm_core::crash::HealthSnapshot,
                             >(health_value.clone())
                             {
-                                let checks =
-                                    frankenterm_core::output::HealthSnapshotRenderer::diagnostic_checks(
-                                        &snapshot,
-                                    );
-                                payload["diagnostics"] =
-                                    serde_json::json!(health_diagnostics_to_json(&checks));
+                                attach_runtime_health_payload(&mut payload, &snapshot);
                             }
                         }
                         for key in [
@@ -24585,14 +24615,7 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
                 }
                 if payload.get("health").is_none() {
                     if let Some(snapshot) = frankenterm_core::crash::HealthSnapshot::get_global() {
-                        payload["health"] =
-                            serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
-                        let checks =
-                            frankenterm_core::output::HealthSnapshotRenderer::diagnostic_checks(
-                                &snapshot,
-                            );
-                        payload["diagnostics"] =
-                            serde_json::json!(health_diagnostics_to_json(&checks));
+                        attach_runtime_health_payload(&mut payload, &snapshot);
                     }
                 }
                 if payload.get("resize_control_plane").is_none() {
@@ -27971,31 +27994,18 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
             let checks = run_diagnostics(&permission_warnings, &config, &layout);
             let mut all_checks: Vec<DiagnosticCheck> = checks;
 
-            // Runtime health snapshot (only available when daemon is running in-process)
-            let mut runtime_checks: Vec<DiagnosticCheck> = Vec::new();
-            if let Some(snapshot) = frankenterm_core::crash::HealthSnapshot::get_global() {
-                use frankenterm_core::output::{HealthDiagnosticStatus, HealthSnapshotRenderer};
-
-                let health_checks = HealthSnapshotRenderer::diagnostic_checks(&snapshot);
-                for hc in &health_checks {
-                    let diag = match hc.status {
-                        HealthDiagnosticStatus::Ok | HealthDiagnosticStatus::Info => {
-                            DiagnosticCheck::ok_with_detail(hc.name, &hc.detail)
-                        }
-                        HealthDiagnosticStatus::Warning => DiagnosticCheck::warning(
-                            hc.name,
-                            &hc.detail,
-                            "Check ft status for details",
-                        ),
-                        HealthDiagnosticStatus::Error => DiagnosticCheck::error(
-                            hc.name,
-                            &hc.detail,
-                            "Investigate immediately: database may be unresponsive",
-                        ),
-                    };
-                    runtime_checks.push(diag);
-                }
-            }
+            let runtime_report = load_runtime_health_snapshot(&layout)
+                .await
+                .map(|snapshot| frankenterm_core::runtime_health::report_from_health_snapshot(&snapshot));
+            let runtime_checks: Vec<DiagnosticCheck> = runtime_report
+                .as_ref()
+                .map_or_else(Vec::new, |report| {
+                    report
+                        .checks
+                        .iter()
+                        .map(diagnostic_check_from_runtime_health)
+                        .collect()
+                });
 
             // Recent crash bundles
             let crash_check = if let Some(bundle) =
@@ -28081,6 +28091,13 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
 
                 if !circuit_checks.is_empty() {
                     result["circuits"] = serde_json::json!(circuit_checks);
+                }
+
+                if let Some(report) = runtime_report.as_ref() {
+                    let runtime_health =
+                        frankenterm_core::runtime_health::HealthCheckData::from(report);
+                    result["runtime_health"] =
+                        serde_json::to_value(runtime_health).unwrap_or(serde_json::Value::Null);
                 }
 
                 println!(

@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
+use crate::crash::HealthSnapshot;
+use crate::output::{HealthDiagnostic, HealthDiagnosticStatus, HealthSnapshotRenderer};
 use crate::runtime_telemetry::{
     FailureClass, HealthTier, RuntimePhase, RuntimeTelemetryLog, UnifiedTelemetryRecord,
 };
@@ -1003,6 +1005,210 @@ pub fn checks_from_policy_dashboard(
     checks
 }
 
+fn health_snapshot_check_id(name: &str, seen: &mut HashMap<String, usize>) -> String {
+    let mut base = String::with_capacity(name.len());
+    let mut last_was_separator = true;
+
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            base.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            base.push('_');
+            last_was_separator = true;
+        }
+    }
+
+    let normalized = base.trim_matches('_');
+    let key = if normalized.is_empty() {
+        "runtime_health".to_string()
+    } else {
+        normalized.to_string()
+    };
+
+    let seen_count = seen.entry(key.clone()).or_insert(0);
+    *seen_count += 1;
+    if *seen_count == 1 {
+        key
+    } else {
+        format!("{key}_{}", *seen_count)
+    }
+}
+
+fn health_snapshot_display_name(name: &str) -> String {
+    let mut words = Vec::new();
+    for word in name.split_whitespace() {
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            let mut titled = String::new();
+            titled.push(first.to_ascii_uppercase());
+            titled.extend(chars.map(|ch| ch.to_ascii_lowercase()));
+            words.push(titled);
+        }
+    }
+
+    if words.is_empty() {
+        "Runtime Health".to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
+fn parse_health_snapshot_tier(label: &str) -> Option<HealthTier> {
+    match label.trim().to_ascii_uppercase().as_str() {
+        "GREEN" | "NORMAL" => Some(HealthTier::Green),
+        "YELLOW" | "ELEVATED" => Some(HealthTier::Yellow),
+        "RED" | "CRITICAL" => Some(HealthTier::Red),
+        "BLACK" | "EMERGENCY" => Some(HealthTier::Black),
+        _ => None,
+    }
+}
+
+fn health_snapshot_check_from_diagnostic(
+    diagnostic: &HealthDiagnostic,
+    check_id: String,
+) -> RuntimeHealthCheck {
+    let (status, mut tier, mut failure_class) = match diagnostic.status {
+        HealthDiagnosticStatus::Ok | HealthDiagnosticStatus::Info => {
+            (CheckStatus::Pass, HealthTier::Green, None)
+        }
+        HealthDiagnosticStatus::Warning => (CheckStatus::Warn, HealthTier::Yellow, None),
+        HealthDiagnosticStatus::Error => (CheckStatus::Fail, HealthTier::Red, None),
+    };
+
+    if let Some(parsed_tier) = parse_health_snapshot_tier(&diagnostic.detail) {
+        tier = parsed_tier;
+    }
+
+    if diagnostic.name == "crash loop" && status == CheckStatus::Fail {
+        tier = HealthTier::Black;
+        failure_class = Some(FailureClass::Panic);
+    } else if diagnostic.name == "database health" && status == CheckStatus::Fail {
+        failure_class = Some(FailureClass::Degraded);
+    } else if (diagnostic.name == "backpressure tier"
+        || diagnostic.name == "fleet memory pressure")
+        && status == CheckStatus::Fail
+    {
+        failure_class = Some(FailureClass::Overload);
+    } else if diagnostic.name == "watchdog health" && status == CheckStatus::Fail {
+        failure_class = Some(if diagnostic.detail.to_ascii_lowercase().contains("hung") {
+            FailureClass::Deadlock
+        } else {
+            FailureClass::Degraded
+        });
+    }
+
+    let mut check = RuntimeHealthCheck {
+        check_id,
+        display_name: health_snapshot_display_name(diagnostic.name),
+        status,
+        tier,
+        summary: diagnostic.detail.clone(),
+        evidence: vec![diagnostic.detail.clone()],
+        remediation: Vec::new(),
+        failure_class,
+        duration_us: 0,
+    };
+
+    if matches!(status, CheckStatus::Warn | CheckStatus::Fail) {
+        let hint = match diagnostic.name {
+            "backpressure tier" => Some(
+                RemediationHint::with_command(
+                    "Inspect queue pressure and throttling state",
+                    "ft status --health",
+                )
+                .effort(RemediationEffort::Medium),
+            ),
+            "fleet memory pressure" => Some(
+                RemediationHint::with_command(
+                    "Inspect fleet memory pressure and eviction state",
+                    "ft status --health",
+                )
+                .effort(RemediationEffort::Medium),
+            ),
+            "database health" => Some(
+                RemediationHint::with_command(
+                    "Inspect watcher health and database write availability",
+                    "ft doctor --json",
+                )
+                .effort(RemediationEffort::High),
+            ),
+            "watchdog health" => Some(
+                RemediationHint::with_command(
+                    "Inspect runtime watchdog health details",
+                    "ft status --health",
+                )
+                .effort(RemediationEffort::Medium),
+            ),
+            "pane activity" => Some(
+                RemediationHint::with_command(
+                    "Inspect stuck panes and operator state",
+                    "ft robot state",
+                )
+                .effort(RemediationEffort::Low),
+            ),
+            "crash loop" => Some(
+                RemediationHint::with_command(
+                    "Inspect crash history and fix the restart loop before continuing",
+                    "ft doctor --json",
+                )
+                .effort(RemediationEffort::High),
+            ),
+            "lifecycle inventory" | "pane arena memory" | "runtime warning" => Some(
+                RemediationHint::with_command(
+                    "Inspect the live runtime health snapshot for supporting evidence",
+                    "ft status --health",
+                )
+                .effort(RemediationEffort::Medium),
+            ),
+            _ if status == CheckStatus::Warn => Some(
+                RemediationHint::with_command(
+                    "Review the live runtime health snapshot",
+                    "ft status --health",
+                )
+                .effort(RemediationEffort::Low),
+            ),
+            _ if status == CheckStatus::Fail => Some(
+                RemediationHint::with_command(
+                    "Run doctor and inspect the failing runtime health check",
+                    "ft doctor --json",
+                )
+                .effort(RemediationEffort::Medium),
+            ),
+            _ => None,
+        };
+
+        if let Some(hint) = hint {
+            check.remediation.push(hint);
+        }
+    }
+
+    check
+}
+
+/// Generate runtime health checks from a live [`HealthSnapshot`].
+#[must_use]
+pub fn checks_from_health_snapshot(snapshot: &HealthSnapshot) -> Vec<RuntimeHealthCheck> {
+    let mut seen = HashMap::new();
+    HealthSnapshotRenderer::diagnostic_checks(snapshot)
+        .iter()
+        .map(|diagnostic| {
+            let check_id = health_snapshot_check_id(diagnostic.name, &mut seen);
+            health_snapshot_check_from_diagnostic(diagnostic, check_id)
+        })
+        .collect()
+}
+
+/// Build a canonical runtime doctor report from a live [`HealthSnapshot`].
+#[must_use]
+pub fn report_from_health_snapshot(snapshot: &HealthSnapshot) -> RuntimeDoctorReport {
+    let mut registry = HealthCheckRegistry::new().with_phase(RuntimePhase::Running);
+    for check in checks_from_health_snapshot(snapshot) {
+        registry.register(check);
+    }
+    registry.build_report()
+}
+
 // =============================================================================
 // Robot types for health/doctor surfaces
 // =============================================================================
@@ -1159,6 +1365,32 @@ mod tests {
     use crate::runtime_telemetry::{
         RuntimeTelemetryEventBuilder, RuntimeTelemetryKind, RuntimeTelemetryLogConfig,
     };
+
+    fn sample_health_snapshot() -> crate::crash::HealthSnapshot {
+        crate::crash::HealthSnapshot {
+            timestamp: 1_700_000_000_000,
+            observed_panes: 2,
+            capture_queue_depth: 0,
+            write_queue_depth: 0,
+            last_seq_by_pane: vec![],
+            warnings: vec![],
+            ingest_lag_avg_ms: 5.0,
+            ingest_lag_max_ms: 10,
+            db_writable: true,
+            db_last_write_at: Some(1_700_000_000_000),
+            pane_priority_overrides: vec![],
+            scheduler: None,
+            backpressure_tier: None,
+            last_activity_by_pane: vec![(1, 1_700_000_000_000), (2, 1_700_000_000_000)],
+            restart_count: 0,
+            last_crash_at: None,
+            consecutive_crashes: 0,
+            current_backoff_ms: 0,
+            in_crash_loop: false,
+            fleet_pressure_tier: None,
+            leak_risk_inventory: crate::crash::LeakRiskInventorySnapshot::default(),
+        }
+    }
 
     // ── CheckStatus ──
 
@@ -1658,6 +1890,50 @@ mod tests {
         let rt: HealthCheckData = serde_json::from_str(&json).unwrap();
         assert_eq!(rt.overall_tier, "green");
         assert!(rt.healthy);
+    }
+
+    #[test]
+    fn report_from_health_snapshot_maps_pressure_checks_and_remediation() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.backpressure_tier = Some("BLACK".to_string());
+        snapshot.fleet_pressure_tier = Some("ELEVATED".to_string());
+
+        let report = report_from_health_snapshot(&snapshot);
+        let backpressure = report
+            .checks
+            .iter()
+            .find(|check| check.check_id == "backpressure_tier")
+            .unwrap();
+        let fleet = report
+            .checks
+            .iter()
+            .find(|check| check.check_id == "fleet_memory_pressure")
+            .unwrap();
+
+        assert_eq!(backpressure.status, CheckStatus::Fail);
+        assert_eq!(backpressure.tier, HealthTier::Black);
+        assert_eq!(backpressure.failure_class, Some(FailureClass::Overload));
+        assert_eq!(
+            backpressure.remediation[0].command.as_deref(),
+            Some("ft status --health")
+        );
+        assert_eq!(fleet.status, CheckStatus::Warn);
+        assert_eq!(fleet.tier, HealthTier::Yellow);
+    }
+
+    #[test]
+    fn checks_from_health_snapshot_deduplicates_runtime_warning_ids() {
+        let mut snapshot = sample_health_snapshot();
+        snapshot.warnings = vec!["first warning".to_string(), "second warning".to_string()];
+
+        let checks = checks_from_health_snapshot(&snapshot);
+        let warning_ids: Vec<_> = checks
+            .iter()
+            .filter(|check| check.display_name == "Runtime Warning")
+            .map(|check| check.check_id.as_str())
+            .collect();
+
+        assert_eq!(warning_ids, vec!["runtime_warning", "runtime_warning_2"]);
     }
 
     #[test]
