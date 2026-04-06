@@ -2,9 +2,7 @@ use crate::activity::Activity;
 use crate::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use crate::pane::{Pane, PaneId};
 use crate::tab::{SplitRequest, Tab, TabId};
-use crate::tmux_commands::{
-    ListAllPanes, ListAllWindows, ListCommands, NewWindow, SplitPane, TmuxCommand,
-};
+use crate::tmux_commands::{ListAllPanes, ListAllWindows, ListCommands, SplitPane, TmuxCommand};
 use crate::tmux_pty::TmuxChildState;
 use crate::window::WindowId;
 use crate::{Mux, MuxWindowBuilder};
@@ -345,13 +343,6 @@ impl TmuxDomainState {
         };
     }
 
-    /// create a tmux window
-    pub fn create_tmux_window(&self) {
-        let mut cmd_queue = self.cmd_queue.as_ref().lock();
-        cmd_queue.push_back(Box::new(NewWindow));
-        TmuxDomainState::schedule_send_next_command(self.domain_id);
-    }
-
     /// split the tmux pane
     pub fn split_tmux_pane(
         &self,
@@ -404,6 +395,13 @@ impl TmuxDomain {
         Self { inner }
     }
 
+    fn spawn_unsupported(surface: &str) -> anyhow::Error {
+        anyhow::anyhow!(
+            "{surface} is unsupported for TmuxDomain because tmux control-mode windows and panes \
+             materialize asynchronously from tmux events rather than returning an immediate local handle"
+        )
+    }
+
     fn send_next_command(&self) {
         self.inner.send_next_command();
     }
@@ -418,11 +416,7 @@ impl Domain for TmuxDomain {
         _command_dir: Option<String>,
         _window: WindowId,
     ) -> anyhow::Result<Arc<Tab>> {
-        self.inner.create_tmux_window();
-        // This is intention, we would not return a Tab, since we don't have now!
-        // We use create_tmux_window to create back end tmux window, then the
-        // Tmux WindowAdd event will triage us to do the rest things.
-        anyhow::bail!("Intention: we use tmux command to do so");
+        Err(Self::spawn_unsupported("spawn"))
     }
 
     async fn split_pane(
@@ -455,7 +449,7 @@ impl Domain for TmuxDomain {
         _command: Option<CommandBuilder>,
         _command_dir: Option<String>,
     ) -> anyhow::Result<Arc<dyn Pane>> {
-        anyhow::bail!("Spawn_pane not yet implemented for TmuxDomain");
+        Err(Self::spawn_unsupported("spawn_pane"))
     }
 
     fn domain_id(&self) -> DomainId {
@@ -508,7 +502,8 @@ mod tests {
     use crate::pane::{CachePolicy, ForEachPaneLogicalLine, LogicalLine, Pane, WithPaneLines};
     use crate::renderable::{RenderableDimensions, StableCursorPosition};
     use frankenterm_term::color::ColorPalette;
-    use parking_lot::MappedMutexGuard;
+    use parking_lot::{MappedMutexGuard, MutexGuard};
+    use promise::spawn::block_on;
     use rangeset::RangeSet;
     use std::ops::Range;
     use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
@@ -553,6 +548,7 @@ mod tests {
         pane_id: PaneId,
         domain_id: DomainId,
         keys: Mutex<Vec<char>>,
+        writes: Mutex<Vec<u8>>,
     }
 
     impl RecordingPane {
@@ -561,11 +557,16 @@ mod tests {
                 pane_id,
                 domain_id,
                 keys: Mutex::new(Vec::new()),
+                writes: Mutex::new(Vec::new()),
             })
         }
 
         fn recorded_keys(&self) -> Vec<char> {
             self.keys.lock().clone()
+        }
+
+        fn recorded_writes(&self) -> Vec<u8> {
+            self.writes.lock().clone()
         }
     }
 
@@ -645,7 +646,10 @@ mod tests {
         }
 
         fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
-            unimplemented!("recording pane writer is not used in tmux detach tests")
+            MutexGuard::map(self.writes.lock(), |writes| {
+                let writer: &mut dyn std::io::Write = writes;
+                writer
+            })
         }
 
         fn resize(&self, _size: TerminalSize) -> anyhow::Result<()> {
@@ -730,6 +734,41 @@ mod tests {
         let err = err.to_string();
         assert!(err.contains("launcher pane"), "{}", err);
         assert!(err.contains("TmuxDomain"), "{}", err);
+    }
+
+    #[test]
+    fn tmux_domain_spawn_is_explicitly_unsupported_without_queueing_side_effects() {
+        let tmux_domain = TmuxDomain::new(77);
+        let err = match block_on(tmux_domain.spawn(TerminalSize::default(), None, None, 0)) {
+            Ok(_) => panic!("tmux spawn should be unsupported"),
+            Err(err) => err,
+        };
+        let err = err.to_string();
+        assert!(err.contains("unsupported"), "{}", err);
+        assert!(err.contains("TmuxDomain"), "{}", err);
+        assert!(tmux_domain.inner.cmd_queue.lock().is_empty());
+    }
+
+    #[test]
+    fn tmux_domain_spawn_pane_is_explicitly_unsupported_without_queueing_side_effects() {
+        let tmux_domain = TmuxDomain::new(77);
+        let err = match block_on(tmux_domain.spawn_pane(TerminalSize::default(), None, None)) {
+            Ok(_) => panic!("tmux spawn_pane should be unsupported"),
+            Err(err) => err,
+        };
+        let err = err.to_string();
+        assert!(err.contains("unsupported"), "{}", err);
+        assert!(err.contains("TmuxDomain"), "{}", err);
+        assert!(tmux_domain.inner.cmd_queue.lock().is_empty());
+    }
+
+    #[test]
+    fn tmux_recording_pane_writer_captures_bytes() {
+        let pane = RecordingPane::new(88, 0);
+        pane.writer()
+            .write_all(b"detach\n")
+            .expect("write recording pane bytes");
+        assert_eq!(pane.recorded_writes(), b"detach\n".to_vec());
     }
 
     #[test]

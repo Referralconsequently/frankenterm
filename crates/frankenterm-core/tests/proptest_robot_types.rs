@@ -2805,4 +2805,209 @@ proptest! {
         let back: QuickStartErrorCode = serde_json::from_str(&json).unwrap();
         prop_assert_eq!(&back.code, &code);
     }
+
+    // -- HealthDiagnosticsData -----------------------------------------------
+
+    #[test]
+    fn rt136_health_guidance_serde(
+        severity in prop::sample::select(vec!["info", "warning", "critical"]),
+        code in "[a-z_]{4,20}",
+        message in "[a-zA-Z0-9 .]{5,50}",
+    ) {
+        let data = HealthGuidance {
+            severity: severity.to_string(),
+            code: code.clone(),
+            message: message.clone(),
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: HealthGuidance = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(&back.severity, severity);
+        prop_assert_eq!(&back.code, &code);
+        prop_assert_eq!(&back.message, &message);
+    }
+
+    #[test]
+    fn rt137_health_leak_risk_data_serde(
+        tracked in 0usize..500,
+        arena_count in 0usize..500,
+        arena_bytes in 0u64..1_000_000,
+        peak_bytes in 0u64..2_000_000,
+        contention in 0u64..1000,
+        wait_ms in 0.0f64..100.0,
+        hold_ms in 0.0f64..100.0,
+        watchdog_unhealthy in proptest::bool::ANY,
+    ) {
+        let data = HealthLeakRiskData {
+            tracked_pane_entries: tracked,
+            pane_arena_count: arena_count,
+            pane_arena_tracked_bytes: arena_bytes,
+            pane_arena_peak_bytes: peak_bytes,
+            storage_lock_contention_events: contention,
+            storage_lock_wait_max_ms: wait_ms,
+            storage_lock_hold_max_ms: hold_ms,
+            watchdog_unhealthy,
+            unhealthy_components: if watchdog_unhealthy { vec!["TestComponent".to_string()] } else { vec![] },
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: HealthLeakRiskData = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(back.tracked_pane_entries, tracked);
+        prop_assert_eq!(back.pane_arena_count, arena_count);
+        prop_assert_eq!(back.pane_arena_tracked_bytes, arena_bytes);
+        prop_assert_eq!(back.pane_arena_peak_bytes, peak_bytes);
+        prop_assert_eq!(back.storage_lock_contention_events, contention);
+        prop_assert_eq!(back.watchdog_unhealthy, watchdog_unhealthy);
+    }
+
+    #[test]
+    fn rt138_health_diagnostics_data_serde(
+        health_level in prop::sample::select(vec!["green", "yellow", "red", "black"]),
+        observed_panes in 0usize..200,
+        capture_q in 0usize..1000,
+        write_q in 0usize..500,
+        lag_avg in 0.0f64..500.0,
+        lag_max in 0u64..10000,
+        db_writable in proptest::bool::ANY,
+        restart_count in 0u32..100,
+        consecutive_crashes in 0u32..10,
+        in_crash_loop in proptest::bool::ANY,
+        backoff_ms in 0u64..60000,
+    ) {
+        let data = HealthDiagnosticsData {
+            health_level: health_level.to_string(),
+            summary: "Test summary".to_string(),
+            snapshot_at: 1700000000000,
+            observed_panes,
+            capture_queue_depth: capture_q,
+            write_queue_depth: write_q,
+            ingest_lag_avg_ms: lag_avg,
+            ingest_lag_max_ms: lag_max,
+            db_writable,
+            backpressure_tier: Some("Green".to_string()),
+            fleet_pressure_tier: Some("Normal".to_string()),
+            restart_count,
+            consecutive_crashes,
+            in_crash_loop,
+            current_backoff_ms: backoff_ms,
+            leak_risk: HealthLeakRiskData {
+                tracked_pane_entries: observed_panes,
+                pane_arena_count: observed_panes,
+                pane_arena_tracked_bytes: 0,
+                pane_arena_peak_bytes: 0,
+                storage_lock_contention_events: 0,
+                storage_lock_wait_max_ms: 0.0,
+                storage_lock_hold_max_ms: 0.0,
+                watchdog_unhealthy: false,
+                unhealthy_components: vec![],
+            },
+            warnings: vec![],
+            guidance: vec![HealthGuidance {
+                severity: "info".to_string(),
+                code: "nominal".to_string(),
+                message: "All systems nominal.".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: HealthDiagnosticsData = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(&back.health_level, health_level);
+        prop_assert_eq!(back.observed_panes, observed_panes);
+        prop_assert_eq!(back.capture_queue_depth, capture_q);
+        prop_assert_eq!(back.write_queue_depth, write_q);
+        prop_assert_eq!(back.ingest_lag_max_ms, lag_max);
+        prop_assert_eq!(back.db_writable, db_writable);
+        prop_assert_eq!(back.restart_count, restart_count);
+        prop_assert_eq!(back.consecutive_crashes, consecutive_crashes);
+        prop_assert_eq!(back.in_crash_loop, in_crash_loop);
+        prop_assert_eq!(back.current_backoff_ms, backoff_ms);
+    }
+
+    #[test]
+    fn rt139_health_diagnostics_envelope_serde(
+        observed in 0usize..200,
+        elapsed in 0u64..10000,
+    ) {
+        let data = HealthDiagnosticsData {
+            health_level: "green".to_string(),
+            summary: "Healthy".to_string(),
+            snapshot_at: 1700000000000,
+            observed_panes: observed,
+            capture_queue_depth: 0,
+            write_queue_depth: 0,
+            ingest_lag_avg_ms: 0.0,
+            ingest_lag_max_ms: 0,
+            db_writable: true,
+            backpressure_tier: None,
+            fleet_pressure_tier: None,
+            restart_count: 0,
+            consecutive_crashes: 0,
+            in_crash_loop: false,
+            current_backoff_ms: 0,
+            leak_risk: HealthLeakRiskData {
+                tracked_pane_entries: 0,
+                pane_arena_count: 0,
+                pane_arena_tracked_bytes: 0,
+                pane_arena_peak_bytes: 0,
+                storage_lock_contention_events: 0,
+                storage_lock_wait_max_ms: 0.0,
+                storage_lock_hold_max_ms: 0.0,
+                watchdog_unhealthy: false,
+                unhealthy_components: vec![],
+            },
+            warnings: vec![],
+            guidance: vec![],
+        };
+        let resp = RobotResponse::success(data, elapsed);
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: RobotResponse<HealthDiagnosticsData> = serde_json::from_str(&json).unwrap();
+        prop_assert!(back.ok);
+        let inner = back.data.unwrap();
+        prop_assert_eq!(inner.observed_panes, observed);
+        prop_assert_eq!(back.elapsed_ms, elapsed);
+    }
+
+    #[test]
+    fn rt140_health_diagnostics_with_warnings(
+        warn_count in 0usize..5,
+        guidance_count in 0usize..4,
+    ) {
+        let warnings: Vec<String> = (0..warn_count).map(|i| format!("warning-{i}")).collect();
+        let guidance: Vec<HealthGuidance> = (0..guidance_count).map(|i| HealthGuidance {
+            severity: "warning".to_string(),
+            code: format!("code_{i}"),
+            message: format!("message {i}"),
+        }).collect();
+        let data = HealthDiagnosticsData {
+            health_level: "yellow".to_string(),
+            summary: "Elevated".to_string(),
+            snapshot_at: 1700000000000,
+            observed_panes: 10,
+            capture_queue_depth: 0,
+            write_queue_depth: 0,
+            ingest_lag_avg_ms: 0.0,
+            ingest_lag_max_ms: 0,
+            db_writable: true,
+            backpressure_tier: None,
+            fleet_pressure_tier: None,
+            restart_count: 0,
+            consecutive_crashes: 0,
+            in_crash_loop: false,
+            current_backoff_ms: 0,
+            leak_risk: HealthLeakRiskData {
+                tracked_pane_entries: 0,
+                pane_arena_count: 0,
+                pane_arena_tracked_bytes: 0,
+                pane_arena_peak_bytes: 0,
+                storage_lock_contention_events: 0,
+                storage_lock_wait_max_ms: 0.0,
+                storage_lock_hold_max_ms: 0.0,
+                watchdog_unhealthy: false,
+                unhealthy_components: vec![],
+            },
+            warnings,
+            guidance,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: HealthDiagnosticsData = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(back.warnings.len(), warn_count);
+        prop_assert_eq!(back.guidance.len(), guidance_count);
+    }
 }

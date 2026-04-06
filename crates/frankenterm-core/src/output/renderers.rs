@@ -4597,7 +4597,10 @@ mod tests {
         snapshot.fleet_pressure_tier = Some("ELEVATED".to_string());
         let checks = HealthSnapshotRenderer::diagnostic_checks(&snapshot);
 
-        let backpressure = checks.iter().find(|c| c.name == "backpressure tier").unwrap();
+        let backpressure = checks
+            .iter()
+            .find(|c| c.name == "backpressure tier")
+            .unwrap();
         let fleet = checks
             .iter()
             .find(|c| c.name == "fleet memory pressure")

@@ -1085,8 +1085,7 @@ fn health_snapshot_check_from_diagnostic(
         failure_class = Some(FailureClass::Panic);
     } else if diagnostic.name == "database health" && status == CheckStatus::Fail {
         failure_class = Some(FailureClass::Degraded);
-    } else if (diagnostic.name == "backpressure tier"
-        || diagnostic.name == "fleet memory pressure")
+    } else if (diagnostic.name == "backpressure tier" || diagnostic.name == "fleet memory pressure")
         && status == CheckStatus::Fail
     {
         failure_class = Some(FailureClass::Overload);

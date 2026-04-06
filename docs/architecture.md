@@ -163,6 +163,36 @@ This schema is the contract behind status/search/events/workflow/audit CLI and r
   and `crates/frankenterm-mux-server-impl`, which means native mux/server
   evolution is a validation/productization problem more than a bootstrap-one.
 
+### Mux domain capability semantics (current)
+
+The vendored mux domains do not intentionally pretend that every backend has
+the same detach or spawn contract:
+
+- `LocalDomain` owns local PTYs inside the current mux session, so detach is
+  explicitly unsupported.
+- `TmuxDomain` supports detach by sending the detach key to its launcher pane
+  and reports `Detached` once the control-mode session exits, but synchronous
+  `Domain::spawn` / `Domain::spawn_pane` are intentionally unsupported because
+  tmux windows and panes materialize asynchronously from tmux control-mode
+  events rather than immediately yielding a local handle.
+- `RemoteSshDomain` represents direct child SSH sessions of the current mux, so
+  detach is explicitly unsupported instead of silently pretending the session
+  can be preserved elsewhere.
+- `TermWizTerminalDomain` is an inline UI surface, so detach is likewise
+  unsupported.
+
+### Remote SSH file semantics (current)
+
+- `frankenterm/ssh` routes libssh-backed file metadata mutation through
+  path-based SFTP calls instead of pretending handle-local mutation works the
+  same way as `ssh2`.
+- When libssh-backed opened-file metadata changes cannot faithfully preserve the
+  current access time contract, the code returns an explicit unsupported error
+  rather than faking success.
+- SSH config `Match Exec` evaluation is policy-gated in
+  `frankenterm/ssh/src/config.rs` via `MatchExecPolicy`, so shell-outs during
+  config resolution can be permitted, denied, and diagnosed explicitly.
+
 ## Deterministic state (OSC 133)
 
 - ft relies on OSC 133 prompt markers to infer prompt-active vs command-running.

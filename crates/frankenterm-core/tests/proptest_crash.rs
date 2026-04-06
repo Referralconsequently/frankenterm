@@ -1210,4 +1210,88 @@ proptest! {
         prop_assert_eq!(back.segments_persisted, segments);
         prop_assert_eq!(back.clean, clean);
     }
+
+    // ── CR-53: HealthDiagnosticsData::from_health_snapshot classification ──
+
+    #[test]
+    fn cr53_health_diagnostics_level_classification(
+        in_crash_loop in proptest::bool::ANY,
+        db_writable in proptest::bool::ANY,
+        backpressure_idx in 0usize..5,
+        fleet_idx in 0usize..5,
+        consecutive_crashes in 0u32..10,
+        ingest_lag_max in 0u64..10000,
+        warn_count in 0usize..5,
+        contention_events in 0u64..500,
+    ) {
+        let bp_tiers = [None, Some("Green"), Some("Yellow"), Some("Red"), Some("Black")];
+        let fp_tiers = [None, Some("Normal"), Some("Elevated"), Some("Critical"), Some("Emergency")];
+
+        let snap = HealthSnapshot {
+            timestamp: 1700000000000,
+            observed_panes: 10,
+            capture_queue_depth: 5,
+            write_queue_depth: 2,
+            last_seq_by_pane: vec![],
+            warnings: (0..warn_count).map(|i| format!("warn-{i}")).collect(),
+            ingest_lag_avg_ms: 10.0,
+            ingest_lag_max_ms: ingest_lag_max,
+            db_writable,
+            db_last_write_at: Some(1700000000000),
+            pane_priority_overrides: vec![],
+            scheduler: None,
+            backpressure_tier: bp_tiers[backpressure_idx].map(String::from),
+            last_activity_by_pane: vec![],
+            restart_count: 0,
+            last_crash_at: None,
+            consecutive_crashes,
+            current_backoff_ms: if in_crash_loop { 30000 } else { 0 },
+            in_crash_loop,
+            fleet_pressure_tier: fp_tiers[fleet_idx].map(String::from),
+            leak_risk_inventory: {
+                let mut inv = LeakRiskInventorySnapshot::default();
+                inv.storage_lock_contention_events = contention_events;
+                inv
+            },
+        };
+
+        let diag = frankenterm_core::robot_types::HealthDiagnosticsData::from_health_snapshot(&snap);
+
+        // Verify level correctness
+        if in_crash_loop || !db_writable {
+            let check = diag.health_level == "black";
+            prop_assert!(check, "Expected black for crash_loop={} db_writable={}",
+                in_crash_loop, db_writable);
+        } else if matches!(bp_tiers[backpressure_idx], Some("Red" | "Black"))
+            || matches!(fp_tiers[fleet_idx], Some("Critical" | "Emergency"))
+            || consecutive_crashes >= 3
+        {
+            prop_assert_eq!(&diag.health_level, "red");
+        } else if matches!(bp_tiers[backpressure_idx], Some("Yellow"))
+            || matches!(fp_tiers[fleet_idx], Some("Elevated"))
+            || warn_count > 0
+            || ingest_lag_max > 1000
+        {
+            prop_assert_eq!(&diag.health_level, "yellow");
+        } else {
+            prop_assert_eq!(&diag.health_level, "green");
+        }
+
+        // Verify data preservation
+        prop_assert_eq!(diag.observed_panes, 10);
+        prop_assert_eq!(diag.db_writable, db_writable);
+        prop_assert_eq!(diag.in_crash_loop, in_crash_loop);
+        prop_assert_eq!(diag.consecutive_crashes, consecutive_crashes);
+        prop_assert_eq!(diag.warnings.len(), warn_count);
+
+        // Verify guidance is present
+        prop_assert!(!diag.guidance.is_empty(), "guidance must always have at least one entry");
+
+        // Verify serde roundtrip
+        let json = serde_json::to_string(&diag).unwrap();
+        let back: frankenterm_core::robot_types::HealthDiagnosticsData =
+            serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(&back.health_level, &diag.health_level);
+        prop_assert_eq!(back.observed_panes, diag.observed_panes);
+    }
 }

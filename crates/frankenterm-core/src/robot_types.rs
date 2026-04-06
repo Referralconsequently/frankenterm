@@ -1967,12 +1967,14 @@ impl HealthDiagnosticsData {
             pane_arena_count: snap.leak_risk_inventory.pane_arena_count,
             pane_arena_tracked_bytes: snap.leak_risk_inventory.pane_arena_tracked_bytes,
             pane_arena_peak_bytes: snap.leak_risk_inventory.pane_arena_peak_tracked_bytes,
-            storage_lock_contention_events: snap
-                .leak_risk_inventory
-                .storage_lock_contention_events,
+            storage_lock_contention_events: snap.leak_risk_inventory.storage_lock_contention_events,
             storage_lock_wait_max_ms: snap.leak_risk_inventory.storage_lock_wait_max_ms,
             storage_lock_hold_max_ms: snap.leak_risk_inventory.storage_lock_hold_max_ms,
-            watchdog_unhealthy: !snap.leak_risk_inventory.watchdog.unhealthy_components.is_empty(),
+            watchdog_unhealthy: !snap
+                .leak_risk_inventory
+                .watchdog
+                .unhealthy_components
+                .is_empty(),
             unhealthy_components: snap
                 .leak_risk_inventory
                 .watchdog
@@ -2097,7 +2099,8 @@ impl HealthDiagnosticsData {
             g.push(HealthGuidance {
                 severity: "critical".to_string(),
                 code: "db_not_writable".to_string(),
-                message: "Database is not writable. Check disk space and file permissions.".to_string(),
+                message: "Database is not writable. Check disk space and file permissions."
+                    .to_string(),
             });
         }
 
@@ -2109,7 +2112,10 @@ impl HealthDiagnosticsData {
             });
         }
 
-        if matches!(snap.fleet_pressure_tier.as_deref(), Some("Critical" | "Emergency")) {
+        if matches!(
+            snap.fleet_pressure_tier.as_deref(),
+            Some("Critical" | "Emergency")
+        ) {
             g.push(HealthGuidance {
                 severity: "critical".to_string(),
                 code: "fleet_pressure_high".to_string(),
@@ -5389,10 +5395,7 @@ mod tests {
         let data = HealthDiagnosticsData::from_health_snapshot(&snap);
         assert_eq!(data.health_level, "red");
         assert!(data.summary.contains("backpressure Red"));
-        let bp_guide = data
-            .guidance
-            .iter()
-            .find(|g| g.code == "backpressure_high");
+        let bp_guide = data.guidance.iter().find(|g| g.code == "backpressure_high");
         assert!(bp_guide.is_some());
     }
 
@@ -5492,7 +5495,10 @@ mod tests {
         let back: HealthDiagnosticsData = serde_json::from_str(&json).unwrap();
         assert_eq!(back.health_level, data.health_level);
         assert_eq!(back.observed_panes, data.observed_panes);
-        assert_eq!(back.leak_risk.tracked_pane_entries, data.leak_risk.tracked_pane_entries);
+        assert_eq!(
+            back.leak_risk.tracked_pane_entries,
+            data.leak_risk.tracked_pane_entries
+        );
         assert_eq!(back.guidance.len(), data.guidance.len());
     }
 
@@ -5542,14 +5548,12 @@ mod tests {
         assert!(data.summary.contains("fleet pressure Emergency"));
         assert!(data.summary.contains("4 consecutive crashes"));
         // Should have guidance for both backpressure and fleet pressure
-        assert!(data
-            .guidance
-            .iter()
-            .any(|g| g.code == "backpressure_high"));
-        assert!(data
-            .guidance
-            .iter()
-            .any(|g| g.code == "fleet_pressure_high"));
+        assert!(data.guidance.iter().any(|g| g.code == "backpressure_high"));
+        assert!(
+            data.guidance
+                .iter()
+                .any(|g| g.code == "fleet_pressure_high")
+        );
     }
 
     #[test]

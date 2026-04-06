@@ -1126,23 +1126,6 @@ impl TmuxCommand for SendKeys {
 }
 
 #[derive(Debug)]
-pub(crate) struct NewWindow;
-impl TmuxCommand for NewWindow {
-    fn get_command(&self, _domain_id: DomainId) -> String {
-        "new-window\n".to_owned()
-    }
-
-    fn process_result(&self, domain_id: DomainId, result: &Guarded) -> anyhow::Result<()> {
-        if result.error {
-            let error = format!("new-window in domain={domain_id} failed: {result:#?}");
-            log::error!("{error}");
-            anyhow::bail!("{error}");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
 pub(crate) struct ListCommands;
 impl TmuxCommand for ListCommands {
     fn get_command(&self, _domain_id: DomainId) -> String {
@@ -1490,12 +1473,6 @@ mod tests {
         assert!(output.contains("capture-pane"));
         assert!(output.contains("-t %12"));
         assert!(output.contains("-S -1000"));
-    }
-
-    #[test]
-    fn new_window_get_command() {
-        let cmd = NewWindow;
-        assert_eq!(cmd.get_command(0), "new-window\n");
     }
 
     #[test]

@@ -27994,12 +27994,11 @@ async fn run(robot_mode: bool) -> anyhow::Result<()> {
             let checks = run_diagnostics(&permission_warnings, &config, &layout);
             let mut all_checks: Vec<DiagnosticCheck> = checks;
 
-            let runtime_report = load_runtime_health_snapshot(&layout)
-                .await
-                .map(|snapshot| frankenterm_core::runtime_health::report_from_health_snapshot(&snapshot));
-            let runtime_checks: Vec<DiagnosticCheck> = runtime_report
-                .as_ref()
-                .map_or_else(Vec::new, |report| {
+            let runtime_report = load_runtime_health_snapshot(&layout).await.map(|snapshot| {
+                frankenterm_core::runtime_health::report_from_health_snapshot(&snapshot)
+            });
+            let runtime_checks: Vec<DiagnosticCheck> =
+                runtime_report.as_ref().map_or_else(Vec::new, |report| {
                     report
                         .checks
                         .iter()

@@ -240,6 +240,13 @@ Operationally important points:
 - Lua callbacks/conditional logic from `wezterm.lua` are not 1:1 TOML mappings.
 - Use extension and workflow surfaces for advanced automation patterns.
 
+### E. Current mux and SSH behavior contracts
+
+- `LocalDomain`, `RemoteSshDomain`, and `TermWizTerminalDomain` are intentionally non-detachable. FrankenTerm reports them as not detachable and returns explicit errors instead of pretending those panes can survive a detach operation.
+- `TmuxDomain` detach is supported only for a live launcher pane. FrankenTerm detaches by sending the control-mode detach key to that pane and then reports the domain as detached after tmux exits. Direct `spawn` and `spawn_pane` calls on `TmuxDomain` remain intentionally unsupported because tmux windows and panes materialize asynchronously from control-mode events.
+- SSH domain discovery still auto-loads `~/.ssh/config`, including `Match exec` criteria. FrankenTerm evaluates those commands locally by default during config resolution. Callers that need a no-spawn posture must deny `Match exec` evaluation explicitly and should consume match diagnostics rather than assuming silent fallback.
+- For libssh-backed SFTP files, metadata mutation on an open file is path-based rather than handle-based. Permission changes and modified-time changes are supported; access-time mutation is rejected explicitly so operators do not get a fake success path.
+
 ## Agent Fleet Guide (200+ panes)
 
 ### Recommended baseline

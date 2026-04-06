@@ -73,6 +73,7 @@ rch_write_meta_json() {
     local log_file="$1"
     local wrapper_exit_code="${2:-}"
     local meta_file probe_worker_count selected_worker sync_duration_ms remote_duration_ms remote_exit_code
+    local failure_reason_code failure_reason_detail
     local probe_worker_ids_json="[]"
     local probe_worker_ids_raw=""
     local skipped_smoke_preflight="false"
@@ -124,6 +125,8 @@ rch_write_meta_json() {
     sync_duration_ms="$(rch_extract_sync_duration_ms "${log_file}")"
     remote_duration_ms="$(rch_extract_remote_duration_ms "${log_file}")"
     remote_exit_code="$(rch_extract_remote_exit_code "${log_file}")"
+    failure_reason_code="$(rch_extract_failure_reason_code "${log_file}")"
+    failure_reason_detail="$(rch_extract_failure_reason_detail "${log_file}")"
 
     jq -cn \
         --arg log_file "${log_file}" \
@@ -133,6 +136,8 @@ rch_write_meta_json() {
         --arg remote_duration_ms "${remote_duration_ms}" \
         --arg remote_exit_code "${remote_exit_code}" \
         --arg wrapper_exit_code "${wrapper_exit_code}" \
+        --arg failure_reason_code "${failure_reason_code}" \
+        --arg failure_reason_detail "${failure_reason_detail}" \
         --argjson probe_worker_ids "${probe_worker_ids_json}" \
         --argjson skipped_smoke_preflight "${skipped_smoke_preflight}" \
         --argjson reachable_workers_detected "${reachable_workers_detected}" \
@@ -147,6 +152,8 @@ rch_write_meta_json() {
           remote_duration_ms: (if $remote_duration_ms == "" then null else ($remote_duration_ms | tonumber) end),
           remote_exit_code: (if $remote_exit_code == "" then null else ($remote_exit_code | tonumber) end),
           wrapper_exit_code: (if $wrapper_exit_code == "" then null else ($wrapper_exit_code | tonumber) end),
+          failure_reason_code: (if $failure_reason_code == "" then null else $failure_reason_code end),
+          failure_reason_detail: (if $failure_reason_detail == "" then null else $failure_reason_detail end),
           skipped_smoke_preflight: $skipped_smoke_preflight,
           reachable_workers_detected: $reachable_workers_detected,
           fail_open_detected: $fail_open_detected,
@@ -188,6 +195,42 @@ rch_extract_remote_duration_ms() {
 rch_extract_remote_exit_code() {
     local output_file="$1"
     sed -nE 's/.*Remote command finished: exit=([-0-9]+) in [0-9]+ms.*/\1/p' "${output_file}" 2>/dev/null | tail -n 1 | tr -cd '0-9-'
+}
+
+rch_extract_failure_reason_code() {
+    local output_file="$1"
+
+    if grep -Fq "can't find crate for \`core\`" "${output_file}" 2>/dev/null; then
+        printf '%s\n' "RCH-CROSS-RUST-TARGET-MISSING"
+    elif grep -Fq "x86_64-w64-mingw32-gcc: not found" "${output_file}" 2>/dev/null; then
+        printf '%s\n' "RCH-CROSS-CC-MISSING-WINDOWS"
+    elif grep -Eq "cc: error: unrecognized command-line option '-arch'|cc: error: unrecognized command-line option '-mmacosx-version-min=" "${output_file}" 2>/dev/null; then
+        printf '%s\n' "RCH-CROSS-CC-MISSING-DARWIN"
+    elif grep -Eq "No package 'wayland-client' found|Package wayland-client was not found in the pkg-config search path" "${output_file}" 2>/dev/null; then
+        printf '%s\n' "RCH-PKG-CONFIG-MISSING-WAYLAND"
+    elif grep -Eq "was not found in the pkg-config search path|No package '.*' found" "${output_file}" 2>/dev/null; then
+        printf '%s\n' "RCH-PKG-CONFIG-DEPENDENCY-MISSING"
+    elif grep -Fq "Error building OpenSSL:" "${output_file}" 2>/dev/null; then
+        printf '%s\n' "RCH-VENDORED-OPENSSL-BUILD-FAILED"
+    fi
+}
+
+rch_extract_failure_reason_detail() {
+    local output_file="$1"
+
+    if grep -Fq "can't find crate for \`core\`" "${output_file}" 2>/dev/null; then
+        grep -F "can't find crate for \`core\`" "${output_file}" 2>/dev/null | tail -n 1
+    elif grep -Fq "x86_64-w64-mingw32-gcc: not found" "${output_file}" 2>/dev/null; then
+        grep -F "x86_64-w64-mingw32-gcc: not found" "${output_file}" 2>/dev/null | tail -n 1
+    elif grep -Eq "cc: error: unrecognized command-line option '-arch'|cc: error: unrecognized command-line option '-mmacosx-version-min=" "${output_file}" 2>/dev/null; then
+        grep -E "cc: error: unrecognized command-line option '-arch'|cc: error: unrecognized command-line option '-mmacosx-version-min=" "${output_file}" 2>/dev/null | head -n 1
+    elif grep -Eq "No package 'wayland-client' found|Package wayland-client was not found in the pkg-config search path" "${output_file}" 2>/dev/null; then
+        grep -E "No package 'wayland-client' found|Package wayland-client was not found in the pkg-config search path" "${output_file}" 2>/dev/null | head -n 1
+    elif grep -Eq "was not found in the pkg-config search path|No package '.*' found" "${output_file}" 2>/dev/null; then
+        grep -E "was not found in the pkg-config search path|No package '.*' found" "${output_file}" 2>/dev/null | head -n 1
+    elif grep -Fq "Error building OpenSSL:" "${output_file}" 2>/dev/null; then
+        grep -F "Error building OpenSSL:" "${output_file}" 2>/dev/null | tail -n 1
+    fi
 }
 
 probe_has_reachable_workers() {
