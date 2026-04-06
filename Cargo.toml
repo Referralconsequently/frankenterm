@@ -535,7 +535,7 @@ fastapi = { version = "0.2.0", package = "fastapi-rust" }
 
 # FrankenSearch (optional integration, enabled via frankenterm-core feature flag)
 # Pinned to a specific rev of the upstream GitHub repo for reproducibility.
-frankensearch = { git = "https://github.com/Dicklesworthstone/frankensearch", rev = "7086d9646520e8c0d4908a88d0854a7f979f1580", package = "frankensearch", default-features = false, features = ["hybrid"] }
+frankensearch = { git = "https://github.com/Referralconsequently/frankensearch", rev = "7086d9646520e8c0d4908a88d0854a7f979f1580", package = "frankensearch", default-features = false, features = ["hybrid"] }
 # Agent detection (optional integration, enabled via frankenterm-core feature flag)
 franken-agent-detection = "0.1.0"
 
@@ -566,5 +566,5 @@ rich_rust = { git = "https://github.com/Dicklesworthstone/rich_rust", rev = "478
 [patch."https://github.com/Dicklesworthstone/fastapi_rust"]
 asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "bbfaa67fd5a4e266e27a1ca3af0acde5257a4feb" }
 
-[patch."https://github.com/Dicklesworthstone/frankensearch"]
+[patch."https://github.com/Referralconsequently/frankensearch"]
 asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "bbfaa67fd5a4e266e27a1ca3af0acde5257a4feb" }
